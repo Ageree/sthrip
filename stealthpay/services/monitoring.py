@@ -367,16 +367,17 @@ def create_system_health_check() -> HealthCheck:
     )
 
 
-def setup_default_monitoring() -> HealthMonitor:
-    """Setup monitoring with default checks"""
-    monitor = HealthMonitor()
-    
-    # Register default checks
+def setup_default_monitoring(include_wallet=False) -> HealthMonitor:
+    """Set up monitoring with default health checks"""
+    monitor = get_monitor()
+
     monitor.register_check(create_database_health_check())
     monitor.register_check(create_redis_health_check())
-    monitor.register_check(create_wallet_health_check())
     monitor.register_check(create_system_health_check())
-    
+
+    if include_wallet:
+        monitor.register_check(create_wallet_health_check())
+
     return monitor
 
 
@@ -388,5 +389,5 @@ def get_monitor() -> HealthMonitor:
     """Get global health monitor"""
     global _monitor
     if _monitor is None:
-        _monitor = setup_default_monitoring()
+        _monitor = HealthMonitor()
     return _monitor
