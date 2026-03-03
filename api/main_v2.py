@@ -18,16 +18,12 @@ from pydantic import BaseModel, Field
 # Import our services
 from stealthpay.db.database import create_tables, get_db
 from stealthpay.db.models import Agent
-from stealthpay.db.repository import AgentRepository, TransactionRepository
+from stealthpay.db.repository import AgentRepository, TransactionRepository, BalanceRepository
 from stealthpay.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 from stealthpay.services.fee_collector import get_fee_collector
 from stealthpay.services.agent_registry import get_registry, AgentRegistry
 from stealthpay.services.monitoring import get_monitor, setup_default_monitoring
 from stealthpay.services.webhook_service import get_webhook_service, queue_webhook
-
-# Legacy imports for wallet operations
-from stealthpay import StealthPay
-from stealthpay.types import PaymentStatus
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -361,76 +357,9 @@ async def get_rate_limit_status(agent: Agent = Depends(get_current_agent)):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/v2/payments/send")
-async def send_payment(
-    req: PaymentRequest,
-    background_tasks: BackgroundTasks,
-    agent: Agent = Depends(get_current_agent)
-):
-    """
-    Send P2P payment directly
-    
-    This is the free option - no fees, but normal blockchain confirmation time
-    """
-    # Initialize wallet (in production, use agent's configured wallet)
-    try:
-        wallet = StealthPay.from_env()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Wallet unavailable: {str(e)}")
-    
-    # Send payment
-    try:
-        payment = wallet.pay(
-            to_address=req.to_address,
-            amount=req.amount,
-            memo=req.memo,
-            privacy_level=req.privacy_level or agent.privacy_level.value
-        )
-        
-        # Record transaction in database
-        with get_db() as db:
-            repo = TransactionRepository(db)
-            # Try to find recipient agent
-            from stealthpay.db.models import Agent
-            recipient = db.query(Agent).filter(
-                Agent.xmr_address == req.to_address
-            ).first()
-            
-            repo.create(
-                tx_hash=payment.tx_hash,
-                network="monero",
-                from_agent_id=agent.id,
-                to_agent_id=recipient.id if recipient else None,
-                amount=req.amount,
-                fee=payment.fee,
-                fee_collected=0,  # No fee for P2P
-                payment_type="p2p",
-                memo=req.memo
-            )
-        
-        # Queue webhook
-        background_tasks.add_task(
-            queue_webhook,
-            str(agent.id),
-            "payment.sent",
-            {
-                "tx_hash": payment.tx_hash,
-                "amount": req.amount,
-                "to_address": req.to_address
-            }
-        )
-        
-        return {
-            "tx_hash": payment.tx_hash,
-            "amount": payment.amount,
-            "fee": payment.fee,
-            "status": payment.status.value,
-            "payment_type": "p2p",
-            "fee_collected": 0,
-            "timestamp": payment.timestamp.isoformat()
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+async def send_payment():
+    """Direct P2P not available in hub-only mode. Use /v2/payments/hub-routing instead."""
+    raise HTTPException(status_code=501, detail="Direct P2P not available. Use /v2/payments/hub-routing for payments.")
 
 
 @app.post("/v2/payments/hub-routing")
@@ -441,39 +370,57 @@ async def send_hub_routed_payment(
 ):
     """
     Send payment via hub routing
-    
+
     Fee: 0.1% (or higher for urgent)
     Benefit: Instant confirmation, reputation verification
     """
+    from decimal import Decimal
+
     registry = get_registry()
     collector = get_fee_collector()
-    
+
     # Find recipient
     recipient = registry.get_profile(req.to_agent_name)
     if not recipient:
         raise HTTPException(status_code=404, detail="Recipient agent not found")
-    
+
     if not recipient.xmr_address:
         raise HTTPException(status_code=400, detail="Recipient has no XMR address configured")
-    
-    # Create hub route with fee
-    route = collector.create_hub_route(
-        from_agent_id=str(agent.id),
-        to_agent_id=recipient.id,
-        amount=req.amount,
+
+    amount = Decimal(str(req.amount))
+
+    # Calculate fee
+    fee_info = collector.calculate_hub_routing_fee(
+        amount=amount,
         from_agent_tier=agent.tier.value,
         urgency=req.urgency
     )
-    
-    # In production, this would:
-    # 1. Check sender balance
-    # 2. Reserve funds
-    # 3. Mark as confirmed (Hub takes the risk)
-    # 4. Queue on-chain settlement
-    
-    # For now, confirm immediately
+    total_deduction = fee_info["total_deduction"]
+
+    # Check and deduct sender balance, credit recipient
+    with get_db() as db:
+        balance_repo = BalanceRepository(db)
+        available = balance_repo.get_available(agent.id)
+        if available < total_deduction:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient balance: {float(available)} XMR available, {float(total_deduction)} XMR needed (amount + fee)"
+            )
+        balance_repo.deduct(agent.id, total_deduction)
+        balance_repo.credit(recipient.id, amount)
+
+    # Create hub route record
+    route = collector.create_hub_route(
+        from_agent_id=str(agent.id),
+        to_agent_id=recipient.id,
+        amount=amount,
+        from_agent_tier=agent.tier.value,
+        urgency=req.urgency
+    )
+
+    # Confirm immediately (hub takes the risk)
     collector.confirm_hub_route(route["payment_id"])
-    
+
     # Queue webhook
     background_tasks.add_task(
         queue_webhook,
@@ -481,12 +428,12 @@ async def send_hub_routed_payment(
         "payment.sent",
         {
             "payment_id": route["payment_id"],
-            "amount": req.amount,
+            "amount": float(amount),
             "to_agent": req.to_agent_name,
-            "fee": route["fee"]
+            "fee": float(fee_info["fee_amount"])
         }
     )
-    
+
     return {
         "payment_id": route["payment_id"],
         "status": "confirmed",
@@ -496,9 +443,10 @@ async def send_hub_routed_payment(
             "address": recipient.xmr_address,
             "trust_score": recipient.trust_score
         },
-        "amount": req.amount,
-        "fee": route["fee"],
-        "total_deduction": route["fee"]["total_deduction"],
+        "amount": float(amount),
+        "fee": float(fee_info["fee_amount"]),
+        "fee_percent": float(fee_info["fee_percent"]),
+        "total_deducted": float(total_deduction),
         "confirmed_at": datetime.utcnow().isoformat()
     }
 
@@ -535,45 +483,97 @@ async def get_payment_history(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ESCROW
+# BALANCE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class DepositRequest(BaseModel):
+    amount: float = Field(gt=0, le=10000, description="Amount to deposit")
+
+
+class WithdrawRequest(BaseModel):
+    amount: float = Field(gt=0, le=10000, description="Amount to withdraw")
+    address: str = Field(min_length=10, max_length=200, description="XMR address to withdraw to")
+
+
+@app.get("/v2/balance")
+async def get_balance(agent: Agent = Depends(get_current_agent)):
+    """Get agent's hub balance"""
+    with get_db() as db:
+        repo = BalanceRepository(db)
+        balance = repo.get_or_create(agent.id)
+        return {
+            "available": float(balance.available or 0),
+            "pending": float(balance.pending or 0),
+            "total_deposited": float(balance.total_deposited or 0),
+            "total_withdrawn": float(balance.total_withdrawn or 0),
+            "deposit_address": balance.deposit_address,
+            "token": "XMR"
+        }
+
+
+@app.post("/v2/balance/deposit")
+async def deposit_balance(
+    req: DepositRequest,
+    agent: Agent = Depends(get_current_agent)
+):
+    """
+    Deposit XMR to hub balance.
+    On stagenet: direct credit for testing.
+    On mainnet: would verify on-chain deposit to agent's subaddress.
+    """
+    from decimal import Decimal
+    amount = Decimal(str(req.amount))
+
+    with get_db() as db:
+        repo = BalanceRepository(db)
+        balance = repo.deposit(agent.id, amount)
+        return {
+            "status": "deposited",
+            "amount": float(amount),
+            "new_balance": float(balance.available),
+            "token": "XMR"
+        }
+
+
+@app.post("/v2/balance/withdraw")
+async def withdraw_balance(
+    req: WithdrawRequest,
+    agent: Agent = Depends(get_current_agent)
+):
+    """Withdraw XMR from hub balance to external address"""
+    from decimal import Decimal
+    amount = Decimal(str(req.amount))
+
+    with get_db() as db:
+        repo = BalanceRepository(db)
+        available = repo.get_available(agent.id)
+        if available < amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient balance: {float(available)} XMR available"
+            )
+        repo.deduct(agent.id, amount)
+        balance = repo.get_or_create(agent.id)
+        balance.total_withdrawn = (balance.total_withdrawn or Decimal("0")) + amount
+
+    return {
+        "status": "withdrawn",
+        "amount": float(amount),
+        "to_address": req.address,
+        "remaining_balance": float(balance.available),
+        "token": "XMR"
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ESCROW (DISABLED)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/v2/escrow/create")
-async def create_escrow(
-    req: EscrowCreateRequest,
-    agent: Agent = Depends(get_current_agent)
-):
-    """Create 2-of-3 escrow deal"""
-    from stealthpay import StealthPay
-    
-    try:
-        wallet = StealthPay.from_env()
-        
-        escrow = wallet.create_escrow(
-            seller_address=req.seller_address,
-            arbiter_address=req.arbiter_address or wallet.address,  # Default to self
-            amount=req.amount,
-            description=req.description,
-            timeout_hours=req.timeout_hours
-        )
-        
-        # Calculate fees
-        collector = get_fee_collector()
-        fees = collector.calculate_escrow_fee(req.amount, use_arbiter=True)
-        
-        return {
-            "escrow_id": escrow.id,
-            "status": escrow.status.value,
-            "amount": req.amount,
-            "fees": fees,
-            "buyer": str(agent.id),
-            "seller": req.seller_address,
-            "timeout_hours": req.timeout_hours,
-            "created_at": escrow.created_at.isoformat()
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+async def create_escrow():
+    """Escrow is not available in this version"""
+    raise HTTPException(status_code=501, detail="Escrow not available. Use hub routing for payments.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
