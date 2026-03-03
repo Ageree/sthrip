@@ -4,10 +4,15 @@ PostgreSQL, Redis, proper authentication
 """
 
 import os
+import json
 import asyncio
+import logging
 from datetime import datetime
 from typing import Optional, List
 from contextlib import asynccontextmanager
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logger = logging.getLogger("stealthpay")
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -113,9 +118,9 @@ class PaymentRequest(BaseModel):
 
 
 class HubPaymentRequest(BaseModel):
-    to_agent_name: str = Field(..., description="Recipient agent name")
-    amount: float = Field(..., gt=0)
-    memo: Optional[str] = None
+    to_agent_name: str = Field(..., min_length=1, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$', description="Recipient agent name")
+    amount: float = Field(..., gt=0, le=10000, description="Amount in XMR")
+    memo: Optional[str] = Field(default=None, max_length=500)
     urgency: str = Field(default="normal", pattern=r"^(normal|urgent)$")
 
 
@@ -434,6 +439,16 @@ async def send_hub_routed_payment(
         }
     )
 
+    logger.info(json.dumps({
+        "event": "hub_payment",
+        "payment_id": route["payment_id"],
+        "from_agent": agent.agent_name,
+        "to_agent": req.to_agent_name,
+        "amount": float(amount),
+        "fee": float(fee_info["fee_amount"]),
+        "urgency": req.urgency
+    }))
+
     return {
         "payment_id": route["payment_id"],
         "status": "confirmed",
@@ -528,12 +543,15 @@ async def deposit_balance(
     with get_db() as db:
         repo = BalanceRepository(db)
         balance = repo.deposit(agent.id, amount)
-        return {
-            "status": "deposited",
-            "amount": float(amount),
-            "new_balance": float(balance.available),
-            "token": "XMR"
-        }
+
+    logger.info(json.dumps({"event": "deposit", "agent": agent.agent_name, "amount": float(amount)}))
+
+    return {
+        "status": "deposited",
+        "amount": float(amount),
+        "new_balance": float(balance.available),
+        "token": "XMR"
+    }
 
 
 @app.post("/v2/balance/withdraw")
@@ -556,6 +574,8 @@ async def withdraw_balance(
         repo.deduct(agent.id, amount)
         balance = repo.get_or_create(agent.id)
         balance.total_withdrawn = (balance.total_withdrawn or Decimal("0")) + amount
+
+    logger.info(json.dumps({"event": "withdrawal", "agent": agent.agent_name, "amount": float(amount), "to_address": req.address[:20] + "..."}))
 
     return {
         "status": "withdrawn",
