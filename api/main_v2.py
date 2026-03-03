@@ -380,6 +380,7 @@ async def send_hub_routed_payment(
     Benefit: Instant confirmation, reputation verification
     """
     from decimal import Decimal
+    from uuid import UUID as _UUID
 
     registry = get_registry()
     collector = get_fee_collector()
@@ -412,7 +413,7 @@ async def send_hub_routed_payment(
                 detail=f"Insufficient balance: {float(available)} XMR available, {float(total_deduction)} XMR needed (amount + fee)"
             )
         balance_repo.deduct(agent.id, total_deduction)
-        balance_repo.credit(recipient.id, amount)
+        balance_repo.credit(_UUID(recipient.id), amount)
 
     # Create hub route record
     route = collector.create_hub_route(

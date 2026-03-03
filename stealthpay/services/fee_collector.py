@@ -8,6 +8,7 @@ import secrets
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, Dict, List
+from uuid import UUID
 from dataclasses import dataclass
 from enum import Enum
 
@@ -188,11 +189,13 @@ class FeeCollector:
         payment_id = f"hp_{secrets.token_hex(16)}"
         
         # Create route record
+        _from = UUID(from_agent_id) if isinstance(from_agent_id, str) else from_agent_id
+        _to = UUID(to_agent_id) if isinstance(to_agent_id, str) else to_agent_id
         with get_db() as db:
             route = HubRoute(
                 payment_id=payment_id,
-                from_agent_id=from_agent_id,
-                to_agent_id=to_agent_id,
+                from_agent_id=_from,
+                to_agent_id=_to,
                 amount=amount,
                 token=token,
                 fee_percent=fee_breakdown["fee_percent"],

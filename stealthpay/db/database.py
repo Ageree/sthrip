@@ -42,7 +42,7 @@ def init_engine(database_url: Optional[str] = None):
         echo=os.getenv("SQL_ECHO", "false").lower() == "true"
     )
     
-    _SessionFactory = sessionmaker(bind=_engine)
+    _SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False)
     
     return _engine
 
