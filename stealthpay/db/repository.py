@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, and_
 
 from . import models
+from .models import AgentBalance
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -626,3 +627,59 @@ class ReputationRepository:
         ).order_by(
             desc(models.AgentReputation.trust_score)
         ).limit(limit).all()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BALANCE REPOSITORY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BalanceRepository:
+    def __init__(self, db):
+        self.db = db
+
+    def get_or_create(self, agent_id, token="XMR"):
+        """Get balance record, create if not exists"""
+        balance = self.db.query(AgentBalance).filter(
+            AgentBalance.agent_id == agent_id,
+            AgentBalance.token == token
+        ).first()
+        if not balance:
+            balance = AgentBalance(agent_id=agent_id, token=token)
+            self.db.add(balance)
+            self.db.flush()
+        return balance
+
+    def get_available(self, agent_id, token="XMR"):
+        """Get available balance"""
+        balance = self.get_or_create(agent_id, token)
+        return balance.available or Decimal("0")
+
+    def deposit(self, agent_id, amount, token="XMR"):
+        """Credit agent balance after deposit confirmed"""
+        balance = self.get_or_create(agent_id, token)
+        balance.available = (balance.available or Decimal("0")) + amount
+        balance.total_deposited = (balance.total_deposited or Decimal("0")) + amount
+        balance.updated_at = datetime.utcnow()
+        return balance
+
+    def deduct(self, agent_id, amount, token="XMR"):
+        """Deduct from available balance (for hub routing)"""
+        balance = self.get_or_create(agent_id, token)
+        if (balance.available or Decimal("0")) < amount:
+            raise ValueError(f"Insufficient balance: {balance.available} < {amount}")
+        balance.available = balance.available - amount
+        balance.updated_at = datetime.utcnow()
+        return balance
+
+    def credit(self, agent_id, amount, token="XMR"):
+        """Credit to available balance (receiving hub payment)"""
+        balance = self.get_or_create(agent_id, token)
+        balance.available = (balance.available or Decimal("0")) + amount
+        balance.updated_at = datetime.utcnow()
+        return balance
+
+    def set_deposit_address(self, agent_id, address, token="XMR"):
+        """Set the deposit subaddress for an agent"""
+        balance = self.get_or_create(agent_id, token)
+        balance.deposit_address = address
+        return balance

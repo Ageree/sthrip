@@ -423,19 +423,38 @@ class AuditLog(Base):
 class FeeCollection(Base):
     """Revenue tracking"""
     __tablename__ = "fee_collections"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
+
     source_type = Column(String(50), nullable=False)
     source_id = Column(UUID(as_uuid=True), nullable=True)
-    
+
     amount = Column(Numeric(20, 12), nullable=False)
     token = Column(String(20), nullable=False)
     usd_value_at_collection = Column(Numeric(20, 2), nullable=True)
-    
+
     status = Column(SQLEnum(FeeCollectionStatus), default=FeeCollectionStatus.PENDING)
-    
+
     collection_tx_hash = Column(String(255), nullable=True)
     withdrawn_at = Column(DateTime, nullable=True)
-    
+
     created_at = Column(DateTime, default=func.now())
+
+
+class AgentBalance(Base):
+    __tablename__ = "agent_balances"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    token = Column(String(10), nullable=False, default="XMR")
+    available = Column(Numeric(20, 12), nullable=False, default=0)
+    pending = Column(Numeric(20, 12), nullable=False, default=0)
+    total_deposited = Column(Numeric(20, 12), nullable=False, default=0)
+    total_withdrawn = Column(Numeric(20, 12), nullable=False, default=0)
+    deposit_address = Column(String(200))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "token", name="uq_agent_balance"),
+    )

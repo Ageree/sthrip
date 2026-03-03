@@ -451,3 +451,24 @@ $$ language 'plpgsql';
 
 CREATE TRIGGER update_trust_score BEFORE INSERT OR UPDATE ON agent_reputation
     FOR EACH ROW EXECUTE FUNCTION calculate_trust_score();
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- AGENT BALANCES (for hub routing)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Agent balances for hub routing (custodial)
+CREATE TABLE IF NOT EXISTS agent_balances (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    agent_id UUID NOT NULL REFERENCES agents(id),
+    token VARCHAR(10) NOT NULL DEFAULT 'XMR',
+    available NUMERIC(20,12) NOT NULL DEFAULT 0,
+    pending NUMERIC(20,12) NOT NULL DEFAULT 0,
+    total_deposited NUMERIC(20,12) NOT NULL DEFAULT 0,
+    total_withdrawn NUMERIC(20,12) NOT NULL DEFAULT 0,
+    deposit_address VARCHAR(200),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(agent_id, token)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_balances_agent ON agent_balances(agent_id);
