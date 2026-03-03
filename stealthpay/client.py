@@ -3,6 +3,7 @@ Main StealthPay client for AI Agents
 """
 
 import os
+import random
 import time
 from typing import Optional, List, Dict, Callable
 from datetime import datetime

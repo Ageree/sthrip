@@ -26,6 +26,16 @@ class MoneroWalletRPC:
         self.timeout = timeout
         self.headers = {"Content-Type": "application/json"}
     
+    @classmethod
+    def from_env(cls):
+        """Create wallet RPC from environment variables"""
+        import os
+        host = os.environ.get("MONERO_RPC_HOST", "127.0.0.1")
+        port = int(os.environ.get("MONERO_RPC_PORT", "18082"))
+        user = os.environ.get("MONERO_RPC_USER", "")
+        password = os.environ.get("MONERO_RPC_PASS", "")
+        return cls(host=host, port=port, user=user, password=password)
+
     def _call(self, method: str, params: Optional[Dict] = None) -> Any:
         """Make JSON-RPC call"""
         payload = {
