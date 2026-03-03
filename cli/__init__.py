@@ -1,0 +1,3 @@
+"""
+StealthPay CLI
+"""

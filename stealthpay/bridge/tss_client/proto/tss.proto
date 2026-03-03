@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package tss;
+
+option go_package = "stealthpay/tss/proto";
+
+// TSS Service for distributed key generation and threshold signing
+service TSSService {
+  // GenerateKey performs distributed key generation (DKG)
+  rpc GenerateKey(KeyGenRequest) returns (KeyGenResponse);
+  
+  // Sign creates a threshold signature
+  rpc Sign(SignRequest) returns (SignResponse);
+  
+  // Reshare performs proactive secret sharing
+  rpc Reshare(ReshareRequest) returns (ReshareResponse);
+  
+  // GetPublicKey returns the group public key
+  rpc GetPublicKey(PublicKeyRequest) returns (PublicKeyResponse);
+}
+
+message KeyGenRequest {
+  string party_id = 1;
+  int32 threshold = 2;  // t-of-n threshold
+  int32 total_parties = 3;
+  repeated string peer_ids = 4;
+  bytes seed = 5;  // Optional seed for deterministic key generation
+}
+
+message KeyGenResponse {
+  bytes key_share = 1;  // Encrypted key share for this party
+  bytes public_key = 2;  // Group public key
+  string share_id = 3;
+  bool success = 4;
+  string error = 5;
+}
+
+message SignRequest {
+  bytes message_hash = 1;
+  string party_id = 2;
+  bytes key_share = 3;
+  repeated string peer_ids = 4;
+  repeated string participants = 5;  // Parties participating in signing
+}
+
+message SignResponse {
+  bytes signature = 1;  // ECDSA signature (r, s)
+  bytes recovery_id = 2;  // For Ethereum compatibility
+  bool success = 3;
+  string error = 4;
+}
+
+message ReshareRequest {
+  string party_id = 1;
+  bytes old_key_share = 2;
+  int32 new_threshold = 3;
+  int32 new_total = 4;
+  repeated string peer_ids = 5;
+}
+
+message ReshareResponse {
+  bytes new_key_share = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+message PublicKeyRequest {
+  string party_id = 1;
+  bytes key_share = 2;
+}
+
+message PublicKeyResponse {
+  bytes public_key = 1;
+  bytes address = 2;  // Ethereum address
+  bool success = 3;
+  string error = 4;
+}
+
+// Messages for P2P communication between parties
+message P2PMessage {
+  string from = 1;
+  string to = 2;
+  bytes payload = 3;
+  string round = 4;
+  int32 sequence = 5;
+}
+
+message P2PResponse {
+  bool success = 1;
+  string error = 2;
+}

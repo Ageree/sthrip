@@ -1,0 +1,388 @@
+# StealthPay Full Infrastructure
+# Includes: Bitcoin, Monero, MPC Nodes, Bridge, Monitoring
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # Bitcoin Regtest Node (for testing)
+  # ============================================================================
+  bitcoin:
+    image: ruimarinho/bitcoin-core:24
+    container_name: stealthpay-bitcoin
+    command:
+      - -regtest=1
+      - -server=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcuser=bitcoin
+      - -rpcpassword=bitcoin
+      - -rpcport=18443
+      - -fallbackfee=0.0001
+      - -txindex=1
+    ports:
+      - "18443:18443"
+      - "18444:18444"
+    volumes:
+      - bitcoin_data:/home/bitcoin/.bitcoin
+    networks:
+      - stealthpay
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=bitcoin", "-rpcpassword=bitcoin", "getblockchaininfo"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # Monero Stagenet Node (for testing)
+  # ============================================================================
+  monero:
+    image: ghcr.io/sethforprivacy/simple-monerod:latest
+    container_name: stealthpay-monero
+    command:
+      - --stagenet
+      - --p2p-bind-ip=0.0.0.0
+      - --p2p-bind-port=38080
+      - --rpc-bind-ip=0.0.0.0
+      - --rpc-bind-port=38081
+      - --confirm-external-bind
+      - --non-interactive
+    ports:
+      - "38080:38080"
+      - "38081:38081"
+    volumes:
+      - monero_data:/home/monero/.bitmonero
+    networks:
+      - stealthpay
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:38081/get_height"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # Monero Wallet RPC
+  # ============================================================================
+  monero-wallet:
+    image: ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest
+    container_name: stealthpay-monero-wallet
+    command:
+      - --stagenet
+      - --daemon-host=monero
+      - --daemon-port=38081
+      - --rpc-bind-port=38082
+      - --rpc-bind-ip=0.0.0.0
+      - --confirm-external-bind
+      - --wallet-dir=/wallets
+      - --disable-rpc-login
+    ports:
+      - "38082:38082"
+    volumes:
+      - monero_wallets:/wallets
+    depends_on:
+      - monero
+    networks:
+      - stealthpay
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:38082/json_rpc", "-H", "Content-Type: application/json", "-d", '{"jsonrpc":"2.0","id":"test","method":"get_version"}']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # MPC Relayer Nodes (5 nodes for 3-of-5 threshold)
+  # ============================================================================
+  mpc-node-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.mpc
+    container_name: stealthpay-mpc-node-1
+    environment:
+      - NODE_ID=mpc_node_1
+      - NODE_INDEX=1
+      - P2P_PORT=10001
+      - P2P_HOST=0.0.0.0
+      - BOOTSTRAP_PEERS=mpc-node-2:10002,mpc-node-3:10003,mpc-node-4:10004,mpc-node-5:10005
+      - ETH_RPC_URL=http://ethereum:8545
+      - BRIDGE_CONTRACT=0x...
+      - XMR_WALLET_HOST=monero-wallet
+      - XMR_WALLET_PORT=38082
+      - XMR_WALLET_NAME=mpc_wallet_1
+      - LOG_LEVEL=INFO
+    ports:
+      - "10001:10001"
+    depends_on:
+      - bitcoin
+      - monero-wallet
+    networks:
+      - stealthpay
+    volumes:
+      - mpc_keys_1:/keys
+    command: python -m stealthpay.bridge.relayers.mpc_node_v2
+    restart: unless-stopped
+
+  mpc-node-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.mpc
+    container_name: stealthpay-mpc-node-2
+    environment:
+      - NODE_ID=mpc_node_2
+      - NODE_INDEX=2
+      - P2P_PORT=10002
+      - P2P_HOST=0.0.0.0
+      - BOOTSTRAP_PEERS=mpc-node-1:10001,mpc-node-3:10003,mpc-node-4:10004,mpc-node-5:10005
+      - ETH_RPC_URL=http://ethereum:8545
+      - BRIDGE_CONTRACT=0x...
+      - XMR_WALLET_HOST=monero-wallet
+      - XMR_WALLET_PORT=38082
+      - XMR_WALLET_NAME=mpc_wallet_2
+      - LOG_LEVEL=INFO
+    ports:
+      - "10002:10002"
+    depends_on:
+      - bitcoin
+      - monero-wallet
+    networks:
+      - stealthpay
+    volumes:
+      - mpc_keys_2:/keys
+    command: python -m stealthpay.bridge.relayers.mpc_node_v2
+    restart: unless-stopped
+
+  mpc-node-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.mpc
+    container_name: stealthpay-mpc-node-3
+    environment:
+      - NODE_ID=mpc_node_3
+      - NODE_INDEX=3
+      - P2P_PORT=10003
+      - P2P_HOST=0.0.0.0
+      - BOOTSTRAP_PEERS=mpc-node-1:10001,mpc-node-2:10002,mpc-node-4:10004,mpc-node-5:10005
+      - ETH_RPC_URL=http://ethereum:8545
+      - BRIDGE_CONTRACT=0x...
+      - XMR_WALLET_HOST=monero-wallet
+      - XMR_WALLET_PORT=38082
+      - XMR_WALLET_NAME=mpc_wallet_3
+      - LOG_LEVEL=INFO
+    ports:
+      - "10003:10003"
+    depends_on:
+      - bitcoin
+      - monero-wallet
+    networks:
+      - stealthpay
+    volumes:
+      - mpc_keys_3:/keys
+    command: python -m stealthpay.bridge.relayers.mpc_node_v2
+    restart: unless-stopped
+
+  mpc-node-4:
+    build:
+      context: .
+      dockerfile: Dockerfile.mpc
+    container_name: stealthpay-mpc-node-4
+    environment:
+      - NODE_ID=mpc_node_4
+      - NODE_INDEX=4
+      - P2P_PORT=10004
+      - P2P_HOST=0.0.0.0
+      - BOOTSTRAP_PEERS=mpc-node-1:10001,mpc-node-2:10002,mpc-node-3:10003,mpc-node-5:10005
+      - ETH_RPC_URL=http://ethereum:8545
+      - BRIDGE_CONTRACT=0x...
+      - XMR_WALLET_HOST=monero-wallet
+      - XMR_WALLET_PORT=38082
+      - XMR_WALLET_NAME=mpc_wallet_4
+      - LOG_LEVEL=INFO
+    ports:
+      - "10004:10004"
+    depends_on:
+      - bitcoin
+      - monero-wallet
+    networks:
+      - stealthpay
+    volumes:
+      - mpc_keys_4:/keys
+    command: python -m stealthpay.bridge.relayers.mpc_node_v2
+    restart: unless-stopped
+
+  mpc-node-5:
+    build:
+      context: .
+      dockerfile: Dockerfile.mpc
+    container_name: stealthpay-mpc-node-5
+    environment:
+      - NODE_ID=mpc_node_5
+      - NODE_INDEX=5
+      - P2P_PORT=10005
+      - P2P_HOST=0.0.0.0
+      - BOOTSTRAP_PEERS=mpc-node-1:10001,mpc-node-2:10002,mpc-node-3:10003,mpc-node-4:10004
+      - ETH_RPC_URL=http://ethereum:8545
+      - BRIDGE_CONTRACT=0x...
+      - XMR_WALLET_HOST=monero-wallet
+      - XMR_WALLET_PORT=38082
+      - XMR_WALLET_NAME=mpc_wallet_5
+      - LOG_LEVEL=INFO
+    ports:
+      - "10005:10005"
+    depends_on:
+      - bitcoin
+      - monero-wallet
+    networks:
+      - stealthpay
+    volumes:
+      - mpc_keys_5:/keys
+    command: python -m stealthpay.bridge.relayers.mpc_node_v2
+    restart: unless-stopped
+
+  # ============================================================================
+  # Hardhat Local Ethereum (for testing)
+  # ============================================================================
+  ethereum:
+    image: ethereumoptimism/hardhat:latest
+    container_name: stealthpay-ethereum
+    ports:
+      - "8545:8545"
+    volumes:
+      - ./contracts:/contracts
+    networks:
+      - stealthpay
+    command: npx hardhat node --fork https://mainnet.infura.io/v3/YOUR_KEY
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8545", "-X", "POST", "-H", "Content-Type: application/json", "-d", '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # StealthPay API Server
+  # ============================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stealthpay-api
+    environment:
+      - BITCOIN_RPC_HOST=bitcoin
+      - BITCOIN_RPC_PORT=18443
+      - BITCOIN_RPC_USER=bitcoin
+      - BITCOIN_RPC_PASS=bitcoin
+      - MONERO_RPC_HOST=monero-wallet
+      - MONERO_RPC_PORT=38082
+      - ETH_RPC_URL=http://ethereum:8545
+      - BRIDGE_CONTRACT=0x...
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      - bitcoin
+      - monero-wallet
+      - ethereum
+    networks:
+      - stealthpay
+    command: python -m stealthpay.api.main
+    restart: unless-stopped
+
+  # ============================================================================
+  # Monitoring: Prometheus
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: stealthpay-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - stealthpay
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+  # ============================================================================
+  # Monitoring: Grafana
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: stealthpay-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - stealthpay
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+
+  # ============================================================================
+  # Redis (for caching and coordination)
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: stealthpay-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - stealthpay
+
+  # ============================================================================
+  # Hashicorp Vault (for secure key storage)
+  # ============================================================================
+  vault:
+    image: hashicorp/vault:latest
+    container_name: stealthpay-vault
+    ports:
+      - "8200:8200"
+    volumes:
+      - vault_data:/vault/file
+      - ./vault/config:/vault/config
+    networks:
+      - stealthpay
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=root
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    cap_add:
+      - IPC_LOCK
+    command: server -dev
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  stealthpay:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  bitcoin_data:
+  monero_data:
+  monero_wallets:
+  mpc_keys_1:
+  mpc_keys_2:
+  mpc_keys_3:
+  mpc_keys_4:
+  mpc_keys_5:
+  prometheus_data:
+  grafana_data:
+  redis_data:
+  vault_data:

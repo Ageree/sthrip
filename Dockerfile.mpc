@@ -1,0 +1,62 @@
+# Dockerfile for MPC Relayer Node
+
+FROM python:3.11-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libssl-dev \
+    libsecp256k1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt /tmp/
+RUN pip install --no-cache-dir --user -r /tmp/requirements.txt
+
+# Install additional crypto libraries
+RUN pip install --no-cache-dir --user \
+    cryptography>=41.0.0 \
+    ecdsa>=0.18.0 \
+    websockets>=12.0 \
+    pycryptodome>=3.19.0
+
+# Production stage
+FROM python:3.11-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libssl3 \
+    libsecp256k1-1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -s /bin/bash mpc
+
+# Copy Python packages from builder
+COPY --from=builder /root/.local /home/mpc/.local
+
+# Set environment
+ENV PATH=/home/mpc/.local/bin:$PATH
+ENV PYTHONPATH=/app:$PYTHONPATH
+ENV PYTHONUNBUFFERED=1
+
+# Create app directory
+WORKDIR /app
+
+# Copy application code
+COPY --chown=mpc:mpc stealthpay/ /app/stealthpay/
+COPY --chown=mpc:mpc cli/ /app/cli/
+
+# Create keys directory
+RUN mkdir -p /keys && chown mpc:mpc /keys
+
+# Switch to non-root user
+USER mpc
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import stealthpay.bridge.tss; print('OK')" || exit 1
+
+# Default command (can be overridden)
+CMD ["python", "-m", "stealthpay.bridge.relayers.mpc_node_v2"]

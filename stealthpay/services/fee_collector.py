@@ -1,0 +1,380 @@
+"""
+Fee collection service for hub-routed payments
+Supports multiple fee models and revenue tracking
+"""
+
+import hashlib
+import secrets
+from datetime import datetime
+from decimal import Decimal
+from typing import Optional, Dict, List
+from dataclasses import dataclass
+from enum import Enum
+
+from ..db.database import get_db
+from ..db.models import HubRoute, HubRouteStatus, FeeCollection, FeeCollectionStatus
+from ..db.repository import AgentRepository
+
+
+class FeeType(Enum):
+    """Types of fees we collect"""
+    HUB_ROUTING = "hub_routing"       # 0.1-0.3% for instant routing
+    ESCROW = "escrow"                  # 0.5-1% for escrow service
+    CROSS_CHAIN = "cross_chain"        # 0.3-0.5% for bridge
+    VERIFIED_BADGE = "verified_badge"  # $29/month subscription
+    PREMIUM_DISCOVERY = "premium_discovery"  # $99/month
+    API_CALLS = "api_calls"            # $0.001 per reputation check
+
+
+@dataclass
+class FeeConfig:
+    """Fee configuration"""
+    fee_type: FeeType
+    percent: Decimal  # For percentage-based fees
+    fixed_amount: Decimal  # For fixed fees
+    min_fee: Decimal
+    max_fee: Decimal
+
+
+# Default fee configurations
+DEFAULT_FEES: Dict[FeeType, FeeConfig] = {
+    FeeType.HUB_ROUTING: FeeConfig(
+        fee_type=FeeType.HUB_ROUTING,
+        percent=Decimal("0.001"),  # 0.1%
+        fixed_amount=Decimal("0"),
+        min_fee=Decimal("0.0001"),  # Minimum 0.0001 XMR
+        max_fee=Decimal("1.0")      # Maximum 1 XMR
+    ),
+    FeeType.ESCROW: FeeConfig(
+        fee_type=FeeType.ESCROW,
+        percent=Decimal("0.01"),   # 1%
+        fixed_amount=Decimal("0"),
+        min_fee=Decimal("0.001"),
+        max_fee=Decimal("10.0")
+    ),
+    FeeType.CROSS_CHAIN: FeeConfig(
+        fee_type=FeeType.CROSS_CHAIN,
+        percent=Decimal("0.005"),  # 0.5%
+        fixed_amount=Decimal("0"),
+        min_fee=Decimal("0.0001"),
+        max_fee=Decimal("5.0")
+    ),
+    FeeType.API_CALLS: FeeConfig(
+        fee_type=FeeType.API_CALLS,
+        percent=Decimal("0"),
+        fixed_amount=Decimal("0.001"),  # $0.001 per call
+        min_fee=Decimal("0.001"),
+        max_fee=Decimal("0.001")
+    ),
+}
+
+
+class FeeCollector:
+    """
+    Fee collection for hub-routed payments
+    
+    Fee Model:
+    - P2P Direct: 0% (free)
+    - Hub Routing: 0.1% (for speed)
+    - Escrow: 1% (for protection)
+    - Cross-chain: 0.5%
+    - API calls: $0.001 per call
+    """
+    
+    def __init__(self, db_session=None):
+        self.db = db_session
+        self.fee_wallet_address = None  # Set from config
+    
+    def calculate_hub_routing_fee(
+        self,
+        amount: Decimal,
+        from_agent_tier: str = "free",
+        urgency: str = "normal"
+    ) -> Dict:
+        """
+        Calculate fee for hub-routed payment
+        
+        Args:
+            amount: Payment amount
+            from_agent_tier: Agent tier (premium gets discounts)
+            urgency: 'normal' or 'urgent' (urgent = higher fee)
+        
+        Returns:
+            Fee breakdown
+        """
+        config = DEFAULT_FEES[FeeType.HUB_ROUTING]
+        
+        # Base fee calculation
+        fee_percent = config.percent
+        
+        # Tier discounts
+        if from_agent_tier == "premium":
+            fee_percent = fee_percent * Decimal("0.5")  # 50% off
+        elif from_agent_tier == "verified":
+            fee_percent = fee_percent * Decimal("0.75")  # 25% off
+        
+        # Urgency premium
+        if urgency == "urgent":
+            fee_percent = fee_percent * Decimal("2.0")
+        
+        # Calculate fee
+        fee_amount = amount * fee_percent
+        
+        # Apply min/max
+        fee_amount = max(fee_amount, config.min_fee)
+        fee_amount = min(fee_amount, config.max_fee)
+        
+        return {
+            "base_amount": amount,
+            "fee_amount": fee_amount,
+            "fee_percent": fee_percent,
+            "tier_discount": from_agent_tier,
+            "urgency": urgency,
+            "total_deduction": amount + fee_amount,  # Total from sender
+            "recipient_receives": amount  # What recipient gets
+        }
+    
+    def calculate_escrow_fee(
+        self,
+        amount: Decimal,
+        use_arbiter: bool = True
+    ) -> Dict:
+        """Calculate escrow fees"""
+        config = DEFAULT_FEES[FeeType.ESCROW]
+        
+        platform_fee = amount * config.percent
+        platform_fee = max(platform_fee, config.min_fee)
+        platform_fee = min(platform_fee, config.max_fee)
+        
+        # Arbiter fee (if used)
+        arbiter_fee = Decimal("0")
+        if use_arbiter:
+            arbiter_fee = amount * Decimal("0.005")  # 0.5%
+            arbiter_fee = min(arbiter_fee, Decimal("1.0"))
+        
+        total_fee = platform_fee + arbiter_fee
+        
+        return {
+            "escrow_amount": amount,
+            "platform_fee": platform_fee,
+            "platform_fee_percent": config.percent,
+            "arbiter_fee": arbiter_fee,
+            "total_fee": total_fee,
+            "buyer_deposits": amount + total_fee,
+            "seller_receives": amount
+        }
+    
+    def create_hub_route(
+        self,
+        from_agent_id: str,
+        to_agent_id: str,
+        amount: Decimal,
+        token: str = "XMR",
+        from_agent_tier: str = "free",
+        urgency: str = "normal"
+    ) -> Dict:
+        """
+        Create hub-routed payment with fee
+        
+        Returns:
+            Route details with fee breakdown
+        """
+        # Calculate fee
+        fee_breakdown = self.calculate_hub_routing_fee(
+            amount, from_agent_tier, urgency
+        )
+        
+        # Generate unique payment ID
+        payment_id = f"hp_{secrets.token_hex(16)}"
+        
+        # Create route record
+        with get_db() as db:
+            route = HubRoute(
+                payment_id=payment_id,
+                from_agent_id=from_agent_id,
+                to_agent_id=to_agent_id,
+                amount=amount,
+                token=token,
+                fee_percent=fee_breakdown["fee_percent"],
+                fee_amount=fee_breakdown["fee_amount"],
+                fee_collected=False,
+                instant_confirmation=(urgency == "urgent"),
+                status=HubRouteStatus.PENDING
+            )
+            db.add(route)
+            db.flush()
+            
+            return {
+                "route_id": str(route.id),
+                "payment_id": payment_id,
+                "from_agent_id": from_agent_id,
+                "to_agent_id": to_agent_id,
+                "amount": amount,
+                "token": token,
+                "fee": fee_breakdown,
+                "status": "pending",
+                "created_at": datetime.utcnow().isoformat()
+            }
+    
+    def confirm_hub_route(self, payment_id: str, settlement_tx_hash: Optional[str] = None) -> Dict:
+        """
+        Confirm hub route and collect fee
+        
+        This is called when:
+        1. Instant confirmation: Hub takes risk, confirms immediately
+        2. On-chain confirmation: Payment confirmed on blockchain
+        """
+        with get_db() as db:
+            route = db.query(HubRoute).filter(
+                HubRoute.payment_id == payment_id
+            ).first()
+            
+            if not route:
+                raise ValueError(f"Route not found: {payment_id}")
+            
+            if route.status != HubRouteStatus.PENDING:
+                raise ValueError(f"Route already {route.status.value}")
+            
+            # Update route status
+            route.status = HubRouteStatus.CONFIRMED
+            route.confirmed_at = datetime.utcnow()
+            route.settlement_tx_hash = settlement_tx_hash
+            
+            # Mark fee as collected
+            route.fee_collected = True
+            route.fee_collected_at = datetime.utcnow()
+            
+            # Record fee collection
+            fee_record = FeeCollection(
+                source_type=FeeType.HUB_ROUTING.value,
+                source_id=route.id,
+                amount=route.fee_amount,
+                token=route.token,
+                status=FeeCollectionStatus.PENDING
+            )
+            db.add(fee_record)
+            
+            return {
+                "payment_id": payment_id,
+                "status": "confirmed",
+                "fee_collected": route.fee_amount,
+                "confirmed_at": route.confirmed_at.isoformat()
+            }
+    
+    def settle_hub_route(self, payment_id: str, settlement_tx_hash: str) -> Dict:
+        """
+        Final settlement of hub route on-chain
+        
+        Called when funds are actually moved on blockchain
+        """
+        with get_db() as db:
+            route = db.query(HubRoute).filter(
+                HubRoute.payment_id == payment_id
+            ).first()
+            
+            if not route:
+                raise ValueError(f"Route not found: {payment_id}")
+            
+            route.status = HubRouteStatus.SETTLED
+            route.settled_at = datetime.utcnow()
+            route.settlement_tx_hash = settlement_tx_hash
+            
+            return {
+                "payment_id": payment_id,
+                "status": "settled",
+                "settlement_tx": settlement_tx_hash,
+                "settled_at": route.settled_at.isoformat()
+            }
+    
+    def get_revenue_stats(self, days: int = 30) -> Dict:
+        """Get revenue statistics"""
+        from sqlalchemy import func
+        from datetime import timedelta
+        
+        since = datetime.utcnow() - timedelta(days=days)
+        
+        with get_db() as db:
+            # Hub routing revenue
+            hub_revenue = db.query(func.sum(HubRoute.fee_amount)).filter(
+                HubRoute.fee_collected == True,
+                HubRoute.fee_collected_at >= since
+            ).scalar() or Decimal('0')
+            
+            # Escrow revenue
+            escrow_revenue = db.query(func.sum(FeeCollection.amount)).filter(
+                FeeCollection.source_type == FeeType.ESCROW.value,
+                FeeCollection.created_at >= since
+            ).scalar() or Decimal('0')
+            
+            # API calls revenue
+            api_revenue = db.query(func.sum(FeeCollection.amount)).filter(
+                FeeCollection.source_type == FeeType.API_CALLS.value,
+                FeeCollection.created_at >= since
+            ).scalar() or Decimal('0')
+            
+            # Total routes
+            total_routes = db.query(HubRoute).filter(
+                HubRoute.created_at >= since
+            ).count()
+            
+            return {
+                "period_days": days,
+                "hub_routing_revenue_xmr": float(hub_revenue),
+                "escrow_revenue_xmr": float(escrow_revenue),
+                "api_calls_revenue_usd": float(api_revenue),
+                "total_routes": total_routes,
+                "average_fee_per_route": float(hub_revenue / total_routes) if total_routes > 0 else 0
+            }
+    
+    def get_pending_fees(self, token: str = "XMR") -> List[Dict]:
+        """Get pending fees ready for withdrawal"""
+        with get_db() as db:
+            pending = db.query(FeeCollection).filter(
+                FeeCollection.status == FeeCollectionStatus.PENDING,
+                FeeCollection.token == token
+            ).all()
+            
+            return [
+                {
+                    "id": str(fee.id),
+                    "source_type": fee.source_type,
+                    "amount": float(fee.amount),
+                    "token": fee.token,
+                    "created_at": fee.created_at.isoformat()
+                }
+                for fee in pending
+            ]
+    
+    def withdraw_fees(self, fee_ids: List[str], tx_hash: str) -> Dict:
+        """Mark fees as withdrawn"""
+        total = Decimal('0')
+        
+        with get_db() as db:
+            for fee_id in fee_ids:
+                fee = db.query(FeeCollection).filter(
+                    FeeCollection.id == fee_id
+                ).first()
+                
+                if fee and fee.status == FeeCollectionStatus.PENDING:
+                    fee.status = FeeCollectionStatus.WITHDRAWN
+                    fee.collection_tx_hash = tx_hash
+                    fee.withdrawn_at = datetime.utcnow()
+                    total += fee.amount
+            
+            return {
+                "withdrawn_fees": len(fee_ids),
+                "total_amount": float(total),
+                "tx_hash": tx_hash
+            }
+
+
+# Global instance
+_collector: Optional[FeeCollector] = None
+
+
+def get_fee_collector() -> FeeCollector:
+    """Get global fee collector"""
+    global _collector
+    if _collector is None:
+        _collector = FeeCollector()
+    return _collector

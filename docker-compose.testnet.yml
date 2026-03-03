@@ -1,0 +1,197 @@
+version: '3.8'
+
+services:
+  # TSS Service (Go)
+  tss-service:
+    build:
+      context: ./tss-service
+      dockerfile: Dockerfile
+    environment:
+      - TSS_NODE_ID=tss-primary
+      - TSS_PORT=50051
+    ports:
+      - "50051:50051"
+    networks:
+      - stealthpay-testnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=:50051"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MPC Node 1 (US)
+  mpc-node-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.mpc
+    environment:
+      - NODE_ID=mpc_node_1
+      - NODE_INDEX=1
+      - NETWORK=testnet
+      - ETH_RPC_URL=https://rpc.sepolia.org
+      - BRIDGE_CONTRACT=${BRIDGE_CONTRACT}
+      - TSS_ENDPOINT=tss-service:50051
+      - XMR_WALLET_HOST=monero-wallet
+      - XMR_WALLET_PORT=38082
+      - HSM_TYPE=vault
+      - VAULT_ADDR=${VAULT_ADDR}
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      - P2P_PORT=10001
+    volumes:
+      - ./certs/node1.crt:/keys/cert.pem:ro
+      - ./certs/node1.key:/keys/key.pem:ro
+      - ./certs/ca.crt:/keys/ca.pem:ro
+    ports:
+      - "10001:10001"
+    networks:
+      - stealthpay-testnet
+    depends_on:
+      - tss-service
+      - monero-wallet
+      - redis
+    restart: unless-stopped
+
+  # MPC Node 2 (EU)
+  mpc-node-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.mpc
+    environment:
+      - NODE_ID=mpc_node_2
+      - NODE_INDEX=2
+      - NETWORK=testnet
+      - ETH_RPC_URL=https://rpc.sepolia.org
+      - BRIDGE_CONTRACT=${BRIDGE_CONTRACT}
+      - TSS_ENDPOINT=tss-service:50051
+      - XMR_WALLET_HOST=monero-wallet
+      - XMR_WALLET_PORT=38082
+      - HSM_TYPE=vault
+      - VAULT_ADDR=${VAULT_ADDR}
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      - P2P_PORT=10002
+    volumes:
+      - ./certs/node2.crt:/keys/cert.pem:ro
+      - ./certs/node2.key:/keys/key.pem:ro
+      - ./certs/ca.crt:/keys/ca.pem:ro
+    ports:
+      - "10002:10002"
+    networks:
+      - stealthpay-testnet
+    depends_on:
+      - tss-service
+      - monero-wallet
+      - redis
+    restart: unless-stopped
+
+  # MPC Node 3 (APAC)
+  mpc-node-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.mpc
+    environment:
+      - NODE_ID=mpc_node_3
+      - NODE_INDEX=3
+      - NETWORK=testnet
+      - ETH_RPC_URL=https://rpc.sepolia.org
+      - BRIDGE_CONTRACT=${BRIDGE_CONTRACT}
+      - TSS_ENDPOINT=tss-service:50051
+      - XMR_WALLET_HOST=monero-wallet
+      - XMR_WALLET_PORT=38082
+      - HSM_TYPE=vault
+      - VAULT_ADDR=${VAULT_ADDR}
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      - P2P_PORT=10003
+    volumes:
+      - ./certs/node3.crt:/keys/cert.pem:ro
+      - ./certs/node3.key:/keys/key.pem:ro
+      - ./certs/ca.crt:/keys/ca.pem:ro
+    ports:
+      - "10003:10003"
+    networks:
+      - stealthpay-testnet
+    depends_on:
+      - tss-service
+      - monero-wallet
+      - redis
+    restart: unless-stopped
+
+  # Monero Wallet RPC (Stagenet)
+  monero-wallet:
+    image: ghcr.io/sethforprivacy/monero-wallet-rpc:latest
+    command:
+      - --stagenet
+      - --daemon-host=stagenet.community.rino.io
+      - --daemon-port=38081
+      - --rpc-bind-port=38082
+      - --wallet-dir=/wallets
+      - --disable-rpc-login
+      - --confirm-external-bind
+    volumes:
+      - monero-wallets:/wallets
+    ports:
+      - "38082:38082"
+    networks:
+      - stealthpay-testnet
+    restart: unless-stopped
+
+  # Redis for caching and rate limiting
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - stealthpay-testnet
+    restart: unless-stopped
+
+  # PostgreSQL for persistence
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=stealthpay
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-changeme}
+      - POSTGRES_DB=stealthpay
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - stealthpay-testnet
+    restart: unless-stopped
+
+  # Monitoring - Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - stealthpay-testnet
+    restart: unless-stopped
+
+  # Monitoring - Grafana
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - stealthpay-testnet
+    restart: unless-stopped
+
+volumes:
+  monero-wallets:
+  redis-data:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  stealthpay-testnet:
+    driver: bridge

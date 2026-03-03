@@ -1,0 +1,100 @@
+# StealthPay Full Stack Deployment
+version: '3.8'
+
+services:
+  # Monero node (daemon)
+  monerod:
+    image: ghcr.io/sethforprivacy/simple-monerod:latest
+    restart: unless-stopped
+    ports:
+      - "18080:18080"  # P2P
+      - "18081:18081"  # RPC restricted
+    volumes:
+      - monero_data:/home/monero/.bitmonero
+    command:
+      - --rpc-restricted-bind-ip=0.0.0.0
+      - --rpc-restricted-bind-port=18081
+      - --no-igd
+      - --enable-dns-blocklist
+      - --prune-blockchain
+
+  # Monero wallet RPC
+  monero-wallet-rpc:
+    image: ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest
+    restart: unless-stopped
+    ports:
+      - "18082:18082"
+    volumes:
+      - monero_wallets:/home/monero/wallets
+    environment:
+      - WALLET_FILE=/home/monero/wallets/stealthpay
+      - WALLET_PASSWORD=${WALLET_PASSWORD:-}
+      - RPC_BIND_PORT=18082
+      - RPC_BIND_IP=0.0.0.0
+      - DAEMON_HOST=monerod
+      - DAEMON_PORT=18081
+      - CONFIRM_EXTERNAL_BIND=true
+    depends_on:
+      - monerod
+    command: >
+      --wallet-file /home/monero/wallets/stealthpay
+      --password "${WALLET_PASSWORD:-}"
+      --rpc-bind-port 18082
+      --rpc-bind-ip 0.0.0.0
+      --daemon-host monerod
+      --daemon-port 18081
+      --confirm-external-bind
+      --trusted-daemon
+      --non-interactive
+
+  # StealthPay Python SDK
+  stealthpay-python:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - MONERO_RPC_HOST=monero-wallet-rpc
+      - MONERO_RPC_PORT=18082
+      - MONERO_RPC_USER=${RPC_USER:-}
+      - MONERO_RPC_PASS=${RPC_PASS:-}
+    depends_on:
+      - monero-wallet-rpc
+    volumes:
+      - ./examples:/app/examples:ro
+    command: python examples/basic_payment.py
+    profiles: ["demo"]
+
+  # StealthPay TypeScript SDK
+  stealthpay-ts:
+    build:
+      context: ../stealthpay-ts
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - MONERO_RPC_HOST=monero-wallet-rpc
+      - MONERO_RPC_PORT=18082
+    depends_on:
+      - monero-wallet-rpc
+    profiles: ["demo"]
+
+  # Watchtower (auto-updates)
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_POLL_INTERVAL=3600
+      - WATCHTOWER_CLEANUP=true
+    profiles: ["production"]
+
+volumes:
+  monero_data:
+    driver: local
+  monero_wallets:
+    driver: local
+
+networks:
+  default:
+    name: stealthpay_network
