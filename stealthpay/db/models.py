@@ -211,11 +211,11 @@ class Transaction(Base):
     confirmations = Column(Integer, default=0)
     
     memo = Column(Text, nullable=True)
-    metadata = Column(JSON, default=dict)
-    
+    tx_metadata = Column("metadata", JSON, default=dict)
+
     confirmed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=func.now())
-    
+
     # Relationships
     from_agent = relationship("Agent", foreign_keys=[from_agent_id], back_populates="sent_transactions")
     to_agent = relationship("Agent", foreign_keys=[to_agent_id], back_populates="received_transactions")
@@ -256,9 +256,9 @@ class EscrowDeal(Base):
     dispute_reason = Column(Text, nullable=True)
     arbiter_decision = Column(String(20), nullable=True)
     arbiter_signature = Column(Text, nullable=True)
-    
-    metadata = Column(JSON, default=dict)
-    
+
+    deal_metadata = Column("metadata", JSON, default=dict)
+
     created_at = Column(DateTime, default=func.now())
     funded_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
