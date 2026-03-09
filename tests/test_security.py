@@ -313,20 +313,27 @@ class TestSecurityHeaders:
         assert response.headers["X-Frame-Options"] == "DENY"
 
 
-class TestDocsDisabled:
-    """OpenAPI docs must be disabled in production (no ENVIRONMENT set)."""
+class TestDocsAvailable:
+    """Custom branded docs are available in all environments."""
 
-    def test_docs_disabled_in_production(self, client):
+    def test_docs_available(self, client):
         response = client.get("/docs")
-        assert response.status_code == 404
+        assert response.status_code == 200
+        assert "redoc" in response.text.lower()
 
-    def test_redoc_disabled_in_production(self, client):
+    def test_default_redoc_disabled(self, client):
+        """Default FastAPI /redoc is disabled (custom /docs serves Redoc instead)."""
         response = client.get("/redoc")
         assert response.status_code == 404
 
-    def test_openapi_json_disabled_in_production(self, client):
+    def test_openapi_json_available(self, client):
         response = client.get("/openapi.json")
-        assert response.status_code == 404
+        assert response.status_code == 200
+
+    def test_swagger_playground_available(self, client):
+        response = client.get("/docs/playground")
+        assert response.status_code == 200
+        assert "swagger" in response.text.lower()
 
 
 class TestDisabledEndpoints:

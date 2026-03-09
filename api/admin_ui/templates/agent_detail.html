@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.agent_name }}{% endblock %}
+{% block content %}
+<div class="flex items-center gap-3 mb-6">
+    <a href="/admin/agents" class="text-indigo-600 hover:underline text-sm">&larr; Back</a>
+    <h1 class="text-2xl font-bold text-gray-800">{{ agent.agent_name }}</h1>
+    <span class="inline-block px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs capitalize">{{ agent.tier.value if agent.tier else "" }}</span>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Available Balance</p>
+        <p class="text-2xl font-bold text-indigo-600 mt-1">{{ balance.available if balance else "0" }} XMR</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Pending</p>
+        <p class="text-2xl font-bold text-yellow-600 mt-1">{{ balance.pending if balance else "0" }} XMR</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Trust Score</p>
+        <p class="text-2xl font-bold text-green-600 mt-1">{{ reputation.trust_score if reputation else "0" }}</p>
+    </div>
+</div>
+
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-3">Agent Details</h2>
+    <dl class="grid grid-cols-2 gap-4 text-sm">
+        <div>
+            <dt class="text-gray-500">Agent ID</dt>
+            <dd class="font-mono text-gray-800">{{ agent.id }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Status</dt>
+            <dd>{{ "Active" if agent.is_active else "Disabled" }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Privacy Level</dt>
+            <dd class="capitalize">{{ agent.privacy_level.value if agent.privacy_level else "" }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Created</dt>
+            <dd>{{ agent.created_at.strftime('%Y-%m-%d %H:%M') if agent.created_at else "" }}</dd>
+        </div>
+        {% if agent.xmr_address %}
+        <div class="col-span-2">
+            <dt class="text-gray-500">XMR Address</dt>
+            <dd class="font-mono text-xs break-all">{{ agent.xmr_address }}</dd>
+        </div>
+        {% endif %}
+    </dl>
+</div>
+
+{% if transactions %}
+<div class="bg-white rounded-lg shadow p-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-3">Recent Transactions</h2>
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="text-left px-3 py-2 font-medium text-gray-600">Date</th>
+                <th class="text-left px-3 py-2 font-medium text-gray-600">Type</th>
+                <th class="text-right px-3 py-2 font-medium text-gray-600">Amount</th>
+                <th class="text-left px-3 py-2 font-medium text-gray-600">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for tx in transactions %}
+            <tr class="border-t">
+                <td class="px-3 py-2 text-gray-500">{{ tx.created_at.strftime('%Y-%m-%d') if tx.created_at else "" }}</td>
+                <td class="px-3 py-2">{{ "Sent" if tx.from_agent_id == agent.id else "Received" }}</td>
+                <td class="px-3 py-2 text-right font-mono">{{ tx.amount }}</td>
+                <td class="px-3 py-2 capitalize">{{ tx.status.value if tx.status else "" }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

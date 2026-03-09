@@ -25,7 +25,9 @@ from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 
 from api.middleware import configure_middleware
 from api.helpers import get_hub_mode, get_wallet_service, create_deposit_monitor
+from api.docs import setup_docs
 from api.routers import health, agents, payments, balance, webhooks, admin
+from api.admin_ui.views import setup_admin_ui
 
 # Re-export for backward compatibility (existing tests patch these)
 from api.deps import get_current_agent, verify_admin_key as _verify_admin_key  # noqa: F401
@@ -212,16 +214,15 @@ async def lifespan(app: FastAPI):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def create_app() -> FastAPI:
-    _is_dev = os.getenv("ENVIRONMENT", "production") == "dev"
-
     application = FastAPI(
         title="Sthrip API",
         description="Production-ready anonymous payments for AI Agents",
         version="2.0.0",
         lifespan=lifespan,
-        docs_url="/docs" if _is_dev else None,
-        redoc_url="/redoc" if _is_dev else None,
-        openapi_url="/openapi.json" if _is_dev else None,
+        # Disable default docs — custom docs served via api.docs
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
 
     @application.exception_handler(Exception)
@@ -238,6 +239,10 @@ def create_app() -> FastAPI:
     application.include_router(balance.router)
     application.include_router(webhooks.router)
     application.include_router(admin.router)
+    setup_admin_ui(application)
+
+    # Custom branded docs — available in all environments
+    setup_docs(application)
 
     return application
 

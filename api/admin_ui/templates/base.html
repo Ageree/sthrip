@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>{% block title %}Admin{% endblock %} — Sthrip</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', system-ui, sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-indigo-900 text-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+            <a href="/admin/" class="text-xl font-bold tracking-tight">Sthrip Admin</a>
+            <div class="flex gap-6 text-sm">
+                <a href="/admin/" class="hover:text-indigo-200">Overview</a>
+                <a href="/admin/agents" class="hover:text-indigo-200">Agents</a>
+                <a href="/admin/transactions" class="hover:text-indigo-200">Transactions</a>
+                <a href="/admin/balances" class="hover:text-indigo-200">Balances</a>
+                <a href="/admin/logout" class="hover:text-red-300">Logout</a>
+            </div>
+        </div>
+    </nav>
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
