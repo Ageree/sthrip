@@ -1,4 +1,4 @@
-# Testing StealthPay
+# Testing Sthrip
 
 > ⚠️ **ВАЖНО**: Тестируем ТОЛЬКО на testnet (Sepolia + Stagenet) - монеты бесплатные и бесполезные ($0)
 
@@ -189,7 +189,7 @@ npx hardhat run scripts/deploy.js --network sepolia
 docker-compose -f docker-compose.testnet.yml up mpc-node-1
 
 # Или без докера
-python -m stealthpay.bridge.relayers.mpc_node_v2
+python -m sthrip.bridge.relayers.mpc_node_v2
 ```
 
 ---

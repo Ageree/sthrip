@@ -1,4 +1,4 @@
-# Testing StealthPay with Real (Testnet) Money
+# Testing Sthrip with Real (Testnet) Money
 
 ## ⚠️ ВАЖНО
 
@@ -52,9 +52,9 @@ cd tss-service
 make run
 
 # Тест key generation
-cd ../stealthpay
+cd ../sthrip
 python -c "
-from stealthpay.bridge.tss_client import TSSClient
+from sthrip.bridge.tss_client import TSSClient
 client = TSSClient('localhost:50051')
 
 # Генерация ключа (тестовая)
@@ -71,7 +71,7 @@ print(f'Public key: {key.public_key.hex()[:20]}...')
 
 #### 1.2 Stealth Addresses Test
 ```python
-from stealthpay.bridge.privacy import StealthAddressGenerator
+from sthrip.bridge.privacy import StealthAddressGenerator
 
 generator = StealthAddressGenerator()
 keys = generator.generate_master_keys()
@@ -94,7 +94,7 @@ print("✓ Ownership verified")
 
 #### 1.3 ZK Proofs Test
 ```python
-from stealthpay.bridge.privacy import ZKVerifier
+from sthrip.bridge.privacy import ZKVerifier
 
 verifier = ZKVerifier()
 
@@ -154,7 +154,7 @@ const { ethers } = require("hardhat");
 
 async function test() {
   const bridge = await ethers.getContractAt(
-    "StealthPayBridge",
+    "SthripBridge",
     "0xDEPLOYED_ADDRESS"
   );
   
@@ -195,7 +195,7 @@ npx hardhat run test-bridge-sepolia.js --network sepolia
 docker-compose -f docker-compose.testnet.yml up mpc-node-1
 
 # Проверить логи
-docker logs -f stealthpay-mpc-node-1
+docker logs -f sthrip-mpc-node-1
 ```
 
 #### 3.2 End-to-End Test (минимальная сумма)
@@ -208,8 +208,8 @@ Amount: 0.001 ETH (тестовые, бесплатные)
 
 import asyncio
 from web3 import Web3
-from stealthpay.bridge.tss_client import TSSClient
-from stealthpay.bridge.privacy import StealthAddressGenerator
+from sthrip.bridge.tss_client import TSSClient
+from sthrip.bridge.privacy import StealthAddressGenerator
 
 # Конфигурация
 SEPOLIA_RPC = "https://sepolia.infura.io/v3/YOUR_KEY"

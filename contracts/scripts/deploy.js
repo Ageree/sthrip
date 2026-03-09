@@ -7,7 +7,7 @@ async function main() {
   const network = await ethers.provider.getNetwork();
   
   console.log("═══════════════════════════════════════════");
-  console.log("  StealthPay Bridge Deployment");
+  console.log("  Sthrip Bridge Deployment");
   console.log("═══════════════════════════════════════════");
   console.log("Network:", network.name);
   console.log("Chain ID:", network.chainId.toString());
@@ -55,17 +55,17 @@ async function main() {
   }
 
   // Deploy Bridge
-  console.log("Deploying StealthPay Bridge...");
+  console.log("Deploying Sthrip Bridge...");
   const feeCollector = process.env.FEE_COLLECTOR || deployer.address;
   
-  const StealthPayBridge = await ethers.getContractFactory("StealthPayBridge");
-  const bridge = await StealthPayBridge.deploy(
+  const SthripBridge = await ethers.getContractFactory("SthripBridge");
+  const bridge = await SthripBridge.deploy(
     mpcNodes,
     feeCollector,
     await insuranceFund.getAddress()
   );
   await bridge.waitForDeployment();
-  console.log("✓ StealthPayBridge:", await bridge.getAddress());
+  console.log("✓ SthripBridge:", await bridge.getAddress());
 
   // Configure contracts
   console.log("Configuring contracts...");

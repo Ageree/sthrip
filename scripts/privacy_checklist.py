@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Privacy Checklist for StealthPay
+Privacy Checklist for Sthrip
 
 Проверяет, что все компоненты приватности настроены.
 """
@@ -89,7 +89,7 @@ class PrivacyAudit:
     
     async def run(self) -> bool:
         """Run all checks"""
-        print("🔒 StealthPay Privacy Audit")
+        print("🔒 Sthrip Privacy Audit")
         print("=" * 50)
         
         passed = 0
@@ -164,7 +164,7 @@ class PrivacyAudit:
     async def _check_stealth_enabled(self) -> Tuple[bool, str]:
         """Check stealth addresses are enabled"""
         try:
-            from stealthpay.bridge.privacy import StealthAddressGenerator
+            from sthrip.bridge.privacy import StealthAddressGenerator
             return True, "Stealth address module available"
         except ImportError:
             return False, "Stealth address module not found"
@@ -177,7 +177,7 @@ class PrivacyAudit:
     async def _check_coinjoin(self) -> Tuple[bool, str]:
         """Check CoinJoin coordination"""
         try:
-            from stealthpay.bridge.mixing import CoinJoinCoordinator
+            from sthrip.bridge.mixing import CoinJoinCoordinator
             return True, "CoinJoin available"
         except ImportError:
             return False, "CoinJoin module not found"
@@ -185,7 +185,7 @@ class PrivacyAudit:
     async def _check_time_delays(self) -> Tuple[bool, str]:
         """Check time delays configured"""
         try:
-            from stealthpay.bridge.mixing import Tumbler
+            from sthrip.bridge.mixing import Tumbler
             return True, "Tumbler module available"
         except ImportError:
             return False, "Tumbler module not found"

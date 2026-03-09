@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== StealthPay Database Initialization ==="
+echo "=== Sthrip Database Initialization ==="
 
 # Create extensions
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
@@ -10,10 +10,10 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     CREATE EXTENSION IF NOT EXISTS "pgcrypto";
     
     -- Create application schema
-    CREATE SCHEMA IF NOT EXISTS stealthpay;
+    CREATE SCHEMA IF NOT EXISTS sthrip;
     
     -- Set search path
-    ALTER DATABASE $POSTGRES_DB SET search_path TO stealthpay, public;
+    ALTER DATABASE $POSTGRES_DB SET search_path TO sthrip, public;
     
     echo "Extensions and schema created successfully"
 EOSQL

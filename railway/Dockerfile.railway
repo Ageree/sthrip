@@ -1,37 +1,45 @@
-# StealthPay Railway Dockerfile
-# Optimized for Railway.app deployment
+# Sthrip Railway Dockerfile — multi-stage build
+# Builder: installs gcc + deps into venv
+# Runtime: copies only venv + app code (smaller image, no compiler)
 
-FROM python:3.11-slim
+FROM python:3.11-slim AS builder
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
-    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.lock /tmp/requirements.lock
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/requirements.lock
+
+# ── Runtime stage ───────────────────────────────────────────────────────────
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y \
+    libpq5 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN groupadd -r appuser && useradd -r -g appuser -u 1000 appuser
+
 WORKDIR /app
+COPY --chown=appuser:appuser . .
 
-# Copy requirements first (for caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY . .
-
-# Create non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Railway sets PORT environment variable
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Health check
+# Railway sets PORT; healthcheck uses /ready endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/ready || exit 1
 
 # Start command (overridden by railway.toml)
 CMD ["uvicorn", "api.main_v2:app", "--host", "0.0.0.0", "--port", "8000"]

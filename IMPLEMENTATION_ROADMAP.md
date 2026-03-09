@@ -1,4 +1,4 @@
-# StealthPay Implementation Roadmap
+# Sthrip Implementation Roadmap
 ## План реализации CRITICAL → MEDIUM
 
 **Версия:** 1.0  
@@ -54,7 +54,7 @@ import (
     "net"
     
     "google.golang.org/grpc"
-    pb "stealthpay/tss/proto"
+    pb "sthrip/tss/proto"
 )
 
 type TSSServer struct {
@@ -87,7 +87,7 @@ func main() {
 
 #### День 6-7: Python Client
 ```python
-# stealthpay/bridge/tss_client.py
+# sthrip/bridge/tss_client.py
 import grpc
 from typing import List
 
@@ -132,7 +132,7 @@ class TSSClient:
 #### День 1-3: Solidity Contract Implementation
 
 ```solidity
-// contracts/StealthPayBridge.sol
+// contracts/SthripBridge.sol
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
@@ -140,7 +140,7 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 
-contract StealthPayBridge is ReentrancyGuard, Pausable, AccessControl {
+contract SthripBridge is ReentrancyGuard, Pausable, AccessControl {
     bytes32 public constant MPC_ROLE = keccak256("MPC_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     
@@ -351,7 +351,7 @@ module.exports = {
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("StealthPayBridge", function() {
+describe("SthripBridge", function() {
   let bridge;
   let owner;
   let alice;
@@ -361,7 +361,7 @@ describe("StealthPayBridge", function() {
   beforeEach(async function() {
     [owner, alice, bob, ...mpcNodes] = await ethers.getSigners();
     
-    const Bridge = await ethers.getContractFactory("StealthPayBridge");
+    const Bridge = await ethers.getContractFactory("SthripBridge");
     bridge = await Bridge.deploy(mpcNodes.slice(0, 5).map(n => n.address));
     await bridge.waitForDeployment();
   });
@@ -440,7 +440,7 @@ npx hardhat verify --network sepolia <CONTRACT_ADDRESS> <MPC_NODE_1> <MPC_NODE_2
 #### День 1-2: AWS KMS Setup
 
 ```python
-# stealthpay/bridge/hsm/aws_kms.py
+# sthrip/bridge/hsm/aws_kms.py
 import boto3
 from typing import Optional
 from dataclasses import dataclass
@@ -474,7 +474,7 @@ class AWSKMSManager:
         
         # Create alias
         self.client.create_alias(
-            AliasName=f"alias/stealthpay-mpc-{party_id}",
+            AliasName=f"alias/sthrip-mpc-{party_id}",
             TargetKeyId=key_id
         )
         
@@ -502,7 +502,7 @@ class AWSKMSManager:
 #### День 3-4: Hashicorp Vault Integration
 
 ```python
-# stealthpay/bridge/hsm/vault.py
+# sthrip/bridge/hsm/vault.py
 import hvac
 from typing import Optional
 
@@ -572,9 +572,9 @@ import json
 from typing import List
 from getpass import getpass
 
-from stealthpay.bridge.hsm.vault import VaultManager
-from stealthpay.bridge.hsm.aws_kms import AWSKMSManager
-from stealthpay.bridge.tss_client import TSSClient
+from sthrip.bridge.hsm.vault import VaultManager
+from sthrip.bridge.hsm.aws_kms import AWSKMSManager
+from sthrip.bridge.tss_client import TSSClient
 
 def key_ceremony(
     party_id: int,
@@ -696,7 +696,7 @@ EOF
 mkdir -p audit-package/
 
 # 1. Source code
-cp -r stealthpay/ audit-package/
+cp -r sthrip/ audit-package/
 cp -r contracts/ audit-package/
 
 # 2. Documentation
@@ -706,7 +706,7 @@ cp SECURITY_AUDIT.md audit-package/
 
 # 3. Test results
 cp -r tests/ audit-package/
-python -m pytest tests/ --cov=stealthpay --cov-report=html -v > audit-package/test-results.txt
+python -m pytest tests/ --cov=sthrip --cov-report=html -v > audit-package/test-results.txt
 
 # 4. Deployment scripts
 cp -r scripts/ audit-package/
@@ -714,13 +714,13 @@ cp docker-compose*.yml audit-package/
 
 # 5. Create audit brief
 cat > audit-package/AUDIT_BRIEF.md << 'EOF'
-# StealthPay Security Audit Brief
+# Sthrip Security Audit Brief
 
 ## Scope
-- Smart Contracts: contracts/StealthPayBridge.sol
-- TSS Implementation: stealthpay/bridge/tss/
-- MPC Node: stealthpay/bridge/relayers/mpc_node_v2.py
-- P2P Network: stealthpay/bridge/p2p/
+- Smart Contracts: contracts/SthripBridge.sol
+- TSS Implementation: sthrip/bridge/tss/
+- MPC Node: sthrip/bridge/relayers/mpc_node_v2.py
+- P2P Network: sthrip/bridge/p2p/
 
 ## Focus Areas
 1. Reentrancy attacks
@@ -736,11 +736,11 @@ cat > audit-package/AUDIT_BRIEF.md << 'EOF'
 
 ## Contacts
 - Technical Lead: [email]
-- Security: security@stealthpay.io
+- Security: security@sthrip.io
 EOF
 
 # Zip package
-zip -r stealthpay-audit-package.zip audit-package/
+zip -r sthrip-audit-package.zip audit-package/
 ```
 
 #### День 4-5: Bug Bounty Program Setup
@@ -774,7 +774,7 @@ zip -r stealthpay-audit-package.zip audit-package/
 5. Keep findings confidential
 
 ## Contact
-security@stealthpay.io
+security@sthrip.io
 ```
 
 #### День 6-7: Insurance Fund Setup
@@ -930,7 +930,7 @@ contract PriceOracle {
 ```
 
 ```python
-# stealthpay/bridge/oracle/chainlink.py
+# sthrip/bridge/oracle/chainlink.py
 import requests
 from decimal import Decimal
 from typing import Optional
@@ -1002,7 +1002,7 @@ class ChainlinkOracle:
 #### День 3-4: DEX Liquidity Oracles
 
 ```python
-# stealthpay/bridge/oracle/dex.py
+# sthrip/bridge/oracle/dex.py
 from web3 import Web3
 
 class UniswapV3Oracle:
@@ -1049,7 +1049,7 @@ class UniswapV3Oracle:
 #### День 5-7: Oracle Aggregation & Testing
 
 ```python
-# stealthpay/bridge/oracle/aggregator.py
+# sthrip/bridge/oracle/aggregator.py
 from typing import List, Dict
 from decimal import Decimal
 import statistics
@@ -1116,7 +1116,7 @@ mkdir -p certs/
 
 # Generate CA
 openssl req -x509 -newkey rsa:4096 -keyout certs/ca.key -out certs/ca.crt \
-    -days 365 -nodes -subj "/C=US/O=StealthPay/CN=StealthPay CA"
+    -days 365 -nodes -subj "/C=US/O=Sthrip/CN=Sthrip CA"
 
 # Generate certificates for each MPC node
 for i in {1..5}; do
@@ -1125,7 +1125,7 @@ for i in {1..5}; do
     
     # Certificate request
     openssl req -new -key certs/node${i}.key -out certs/node${i}.csr \
-        -subj "/C=US/O=StealthPay/CN=mpc-node-${i}"
+        -subj "/C=US/O=Sthrip/CN=mpc-node-${i}"
     
     # Sign with CA
     openssl x509 -req -in certs/node${i}.csr -CA certs/ca.crt -CAkey certs/ca.key \
@@ -1146,7 +1146,7 @@ echo "✓ Certificates generated in certs/"
 #### День 3-4: mTLS WebSocket Implementation
 
 ```python
-# stealthpay/bridge/p2p/tls_node.py
+# sthrip/bridge/p2p/tls_node.py
 import ssl
 import asyncio
 import websockets
@@ -1249,7 +1249,7 @@ class MTLSNode:
 # tests/test_p2p_tls.py
 import pytest
 import asyncio
-from stealthpay.bridge.p2p.tls_node import MTLSNode
+from sthrip.bridge.p2p.tls_node import MTLSNode
 
 @pytest.mark.asyncio
 async def test_mtls_connection():
@@ -1315,7 +1315,7 @@ async function main() {
     ];
     
     // Deploy Bridge
-    const Bridge = await ethers.getContractFactory("StealthPayBridge");
+    const Bridge = await ethers.getContractFactory("SthripBridge");
     const bridge = await Bridge.deploy(mpcNodes);
     await bridge.deployed();
     
@@ -1390,7 +1390,7 @@ services:
       - ./certs/ca.crt:/keys/ca.pem:ro
     ports:
       - "10001:10001"
-    command: python -m stealthpay.bridge.relayers.mpc_node_v2
+    command: python -m sthrip.bridge.relayers.mpc_node_v2
     restart: unless-stopped
     
   # ... nodes 2-5 similar
@@ -1428,7 +1428,7 @@ docker-compose -f docker-compose.testnet.yml up -d
 ### Неделя 11: Rate Limiting & DoS Protection
 
 ```python
-# stealthpay/bridge/security/rate_limiter.py
+# sthrip/bridge/security/rate_limiter.py
 import redis
 import time
 from typing import Optional
@@ -1523,7 +1523,7 @@ class DDoSProtector:
 ### Неделя 12: Database Layer
 
 ```python
-# stealthpay/db/models.py
+# sthrip/db/models.py
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Numeric, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -1565,7 +1565,7 @@ class BridgeTransfer(Base):
     completed_at = Column(DateTime)
 
 # Initialize
-def init_db(database_url: str = "postgresql://user:pass@localhost/stealthpay"):
+def init_db(database_url: str = "postgresql://user:pass@localhost/sthrip"):
     engine = create_engine(database_url)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
@@ -1587,7 +1587,7 @@ def swap_wizard():
     """Interactive swap wizard"""
     console.print("""
 [bold green]╔═══════════════════════════════════════════╗
-║         StealthPay Swap Wizard            ║
+║         Sthrip Swap Wizard            ║
 ╚═══════════════════════════════════════════╝[/]
     """)
     
@@ -1641,7 +1641,7 @@ def swap_wizard():
     
     console.print("\n[bold green]✓ Swap initiated successfully![/]")
     console.print(f"Swap ID: [cyan]{swap_id}[/]")
-    console.print("\nUse [bold]stealthpay swap status[/] to monitor progress")
+    console.print("\nUse [bold]sthrip swap status[/] to monitor progress")
 ```
 
 ### Неделя 14: Final Testing & Documentation

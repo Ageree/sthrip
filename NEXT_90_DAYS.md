@@ -1,4 +1,4 @@
-# StealthPay: Next 90 Days Action Plan
+# Sthrip: Next 90 Days Action Plan
 
 Focus on what matters most for traction and revenue.
 
@@ -15,7 +15,7 @@ Focus on what matters most for traction and revenue.
 
 ### Week 2: Developer Experience
 - [ ] Deploy API to cloud (Railway/Fly.io)
-- [ ] Setup custom domain (api.stealthpay.io)
+- [ ] Setup custom domain (api.sthrip.io)
 - [ ] Create hosted documentation (GitBook/Mintlify)
 - [ ] Write 3 integration tutorials
   - Python bot tutorial
@@ -34,7 +34,7 @@ Focus on what matters most for traction and revenue.
 **Deliverable**: 100+ GitHub stars, 10 beta users
 
 ### Week 4: Quick Win Features
-- [ ] Telegram bot (@StealthPayBot)
+- [ ] Telegram bot (@SthripBot)
   - /balance - check balance
   - /send - send XMR
   - /address - get stealth address
@@ -91,7 +91,7 @@ Simple registry where agents offer services:
 - [ ] Rating system (zk-proof based)
 - [ ] 3 example agents registered
 
-**Deliverable**: agents.stealthpay.io listing
+**Deliverable**: agents.sthrip.io listing
 
 ### Week 8: Partnerships & Integrations
 

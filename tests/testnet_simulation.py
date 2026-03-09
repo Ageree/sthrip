@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Testnet Simulation for StealthPay
+Testnet Simulation for Sthrip
 
 Simulates full atomic swap and bridge operations on testnet
 without requiring actual blockchain nodes.
@@ -14,7 +14,7 @@ from decimal import Decimal
 from datetime import datetime
 
 print("=" * 60)
-print("🧪 STEALTHPAY TESTNET SIMULATION")
+print("🧪 STHRIP TESTNET SIMULATION")
 print("=" * 60)
 print()
 print("Simulating operations on:")
@@ -145,10 +145,10 @@ def test_htlc_creation(btc):
     
     # Import actual modules
     import sys
-    sys.path.insert(0, '/Users/saveliy/Documents/Agent Payments/stealthpay')
+    sys.path.insert(0, '/Users/saveliy/Documents/Agent Payments/sthrip')
     
-    from stealthpay.swaps.btc.htlc import BitcoinHTLC
-    from stealthpay.swaps.utils.bitcoin import generate_keypair
+    from sthrip.swaps.btc.htlc import BitcoinHTLC
+    from sthrip.swaps.utils.bitcoin import generate_keypair
     
     # Generate keys
     sender_priv, sender_pub = generate_keypair()
@@ -191,7 +191,7 @@ def test_xmr_multisig(xmr):
     
     print("\n🔗 Setting up XMR multisig...")
     
-    from stealthpay.swaps.xmr.multisig import MoneroMultisig, SwapRole
+    from sthrip.swaps.xmr.multisig import MoneroMultisig, SwapRole
     
     # Alice (seller)
     alice_multisig = MoneroMultisig(xmr, SwapRole.SELLER, wallet_password="test123")
@@ -230,9 +230,9 @@ def test_tss_signing():
     
     print("\n✍️  Testing threshold signing...")
     
-    from stealthpay.bridge.tss.dkg import DistributedKeyGenerator
-    from stealthpay.bridge.tss.signer import ThresholdSigner, SigningSession
-    from stealthpay.bridge.tss.aggregator import SignatureAggregator
+    from sthrip.bridge.tss.dkg import DistributedKeyGenerator
+    from sthrip.bridge.tss.signer import ThresholdSigner, SigningSession
+    from sthrip.bridge.tss.aggregator import SignatureAggregator
     
     n, threshold = 5, 3
     
@@ -304,7 +304,7 @@ def test_full_swap(btc, xmr):
     
     print("\n🔄 Executing atomic swap simulation...")
     
-    from stealthpay.swaps.coordinator import SwapFactory, SwapConfig
+    from sthrip.swaps.coordinator import SwapFactory, SwapConfig
     
     config = SwapConfig(
         btc_amount=Decimal("0.0001"),
@@ -363,7 +363,7 @@ def test_bridge():
     
     print("\n🌉 Simulating cross-chain bridge...")
     
-    from stealthpay.bridge.relayers.coordinator import BridgeCoordinator, BridgeFeeCalculator
+    from sthrip.bridge.relayers.coordinator import BridgeCoordinator, BridgeFeeCalculator
     
     # Fee calculation
     calc = BridgeFeeCalculator()

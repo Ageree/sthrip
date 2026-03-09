@@ -1,4 +1,4 @@
-# StealthPay - Остаток работ (TODO)
+# Sthrip - Остаток работ (TODO)
 
 ## 🚨 CRITICAL (Блокеры для production)
 
@@ -31,7 +31,7 @@
 - [ ] Insurance fund для компенсаций
 
 **Контракты для аудита:**
-- `StealthPayBridge.sol` - ETH bridge
+- `SthripBridge.sol` - ETH bridge
 - HTLC factory (если деплоится на Ethereum)
 
 ---

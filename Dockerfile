@@ -1,4 +1,4 @@
-# StealthPay Python SDK Production Image
+# Sthrip Python SDK Production Image
 FROM python:3.11-slim as builder
 
 WORKDIR /app
@@ -19,32 +19,32 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Create non-root user
-RUN groupadd -r stealthpay && useradd -r -g stealthpay stealthpay
+RUN groupadd -r sthrip && useradd -r -g sthrip sthrip
 
 # Copy dependencies from builder
-COPY --from=builder /root/.local /home/stealthpay/.local
-ENV PATH=/home/stealthpay/.local/bin:$PATH
+COPY --from=builder /root/.local /home/sthrip/.local
+ENV PATH=/home/sthrip/.local/bin:$PATH
 
 # Copy application
-COPY stealthpay/ ./stealthpay/
+COPY sthrip/ ./sthrip/
 COPY setup.py .
 COPY README.md .
 
 # Install package
 RUN pip install --no-cache-dir -e . && \
-    chown -R stealthpay:stealthpay /app && \
-    chown -R stealthpay:stealthpay /home/stealthpay
+    chown -R sthrip:sthrip /app && \
+    chown -R sthrip:sthrip /home/sthrip
 
 # Switch to non-root user
-USER stealthpay
+USER sthrip
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "from stealthpay import StealthPay; print('OK')" || exit 1
+    CMD python -c "from sthrip import Sthrip; print('OK')" || exit 1
 
 # Labels
-LABEL maintainer="dev@stealthpay.io" \
+LABEL maintainer="dev@sthrip.io" \
       version="0.1.0" \
       description="Anonymous payments SDK for AI Agents"
 
-CMD ["python", "-c", "print('StealthPay SDK v0.1.0 - Ready for import: from stealthpay import StealthPay')"]
+CMD ["python", "-c", "print('Sthrip SDK v0.1.0 - Ready for import: from sthrip import Sthrip')"]

@@ -1,4 +1,4 @@
-# StealthPay Threat Model
+# Sthrip Threat Model
 
 ## Scope
 

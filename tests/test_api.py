@@ -1,4 +1,5 @@
-"""Integration tests for the StealthPay API"""
+"""Integration tests for the Sthrip API"""
+import os
 import pytest
 from decimal import Decimal
 from unittest.mock import patch, MagicMock, PropertyMock
@@ -8,7 +9,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 from contextlib import contextmanager
 
-from stealthpay.db.models import (
+from sthrip.db.models import (
     Base, Agent, AgentReputation, AgentBalance, AgentTier,
     RateLimitTier, PrivacyLevel, HubRoute, FeeCollection
 )
@@ -73,17 +74,47 @@ def client(db_engine, db_session_factory):
     mock_webhook = MagicMock()
     mock_webhook.get_delivery_stats.return_value = {"total": 0}
 
-    with patch("stealthpay.db.database.get_db", side_effect=get_test_db), \
-         patch("stealthpay.services.agent_registry.get_db", side_effect=get_test_db), \
-         patch("stealthpay.services.fee_collector.get_db", side_effect=get_test_db), \
-         patch("stealthpay.services.webhook_service.get_db", side_effect=get_test_db), \
-         patch("api.main_v2.get_db", side_effect=get_test_db), \
-         patch("stealthpay.db.database.create_tables"), \
-         patch("stealthpay.services.rate_limiter.get_rate_limiter", return_value=mock_limiter), \
-         patch("stealthpay.services.monitoring.get_monitor", return_value=mock_monitor), \
-         patch("stealthpay.services.monitoring.setup_default_monitoring", return_value=mock_monitor), \
-         patch("stealthpay.services.webhook_service.get_webhook_service", return_value=mock_webhook), \
-         patch("stealthpay.services.webhook_service.queue_webhook"):
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        stack.enter_context(patch.dict(os.environ, {"HUB_MODE": "ledger"}))
+        # Patch get_db in all modules
+        for mod in [
+            "sthrip.db.database",
+            "sthrip.services.agent_registry",
+            "sthrip.services.fee_collector",
+            "sthrip.services.webhook_service",
+            "api.deps",
+            "api.routers.health",
+            "api.routers.agents",
+            "api.routers.payments",
+            "api.routers.balance",
+            "api.routers.webhooks",
+        ]:
+            stack.enter_context(patch(f"{mod}.get_db", side_effect=get_test_db))
+        stack.enter_context(patch("sthrip.db.database.create_tables"))
+        # Patch rate limiter
+        for mod in [
+            "sthrip.services.rate_limiter",
+            "api.deps",
+            "api.routers.agents",
+            "api.main_v2",
+        ]:
+            stack.enter_context(patch(f"{mod}.get_rate_limiter", return_value=mock_limiter))
+        # Patch monitoring & webhooks
+        stack.enter_context(patch("sthrip.services.monitoring.get_monitor", return_value=mock_monitor))
+        stack.enter_context(patch("sthrip.services.monitoring.setup_default_monitoring", return_value=mock_monitor))
+        stack.enter_context(patch("sthrip.services.webhook_service.get_webhook_service", return_value=mock_webhook))
+        stack.enter_context(patch("sthrip.services.webhook_service.queue_webhook"))
+        # Patch audit_log in all modules
+        for mod in [
+            "api.deps",
+            "api.routers.agents",
+            "api.routers.payments",
+            "api.routers.balance",
+            "api.routers.admin",
+            "api.main_v2",
+        ]:
+            stack.enter_context(patch(f"{mod}.audit_log"))
 
         from api.main_v2 import app
         yield TestClient(app, raise_server_exceptions=False)
@@ -124,7 +155,7 @@ class TestPublicEndpoints:
     def test_root(self, client):
         r = client.get("/")
         assert r.status_code == 200
-        assert "StealthPay" in r.json()["name"]
+        assert "Sthrip" in r.json()["name"]
 
     def test_health(self, client):
         r = client.get("/health")
@@ -205,7 +236,7 @@ class TestBalance:
                     headers={"Authorization": f"Bearer {key}"})
         # Withdraw
         r = client.post("/v2/balance/withdraw",
-                        json={"amount": 3.0, "address": "some_xmr_address_to_withdraw"},
+                        json={"amount": 3.0, "address": "5" + "a" * 94},
                         headers={"Authorization": f"Bearer {key}"})
         assert r.status_code == 200
         assert r.json()["remaining_balance"] == 7.0
@@ -213,7 +244,7 @@ class TestBalance:
     def test_withdraw_insufficient(self, client, registered_agent):
         key, _ = registered_agent
         r = client.post("/v2/balance/withdraw",
-                        json={"amount": 100.0, "address": "some_xmr_address_to_withdraw"},
+                        json={"amount": 100.0, "address": "5" + "a" * 94},
                         headers={"Authorization": f"Bearer {key}"})
         assert r.status_code == 400
         assert "Insufficient" in r.json()["detail"]

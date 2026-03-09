@@ -1,6 +1,6 @@
 # Real Monero Wallet Setup
 
-Step-by-step guide to create a real Monero wallet for StealthPay.
+Step-by-step guide to create a real Monero wallet for Sthrip.
 
 ## Prerequisites
 
@@ -11,9 +11,9 @@ Monero binaries already installed at `~/monero/`
 Run this command in your terminal:
 
 ```bash
-cd ~/stealthpay-wallet
+cd ~/sthrip-wallet
 ~/monero/monero-wallet-cli \
-  --generate-new-wallet stealthpay \
+  --generate-new-wallet sthrip \
   --daemon-address node.moneroworld.com:18089
 ```
 
@@ -50,9 +50,9 @@ make start-rpc
 
 Or manually:
 ```bash
-cd ~/stealthpay-wallet
+cd ~/sthrip-wallet
 ~/monero/monero-wallet-rpc \
-  --wallet-file stealthpay \
+  --wallet-file sthrip \
   --password "" \
   --rpc-bind-port 18082 \
   --rpc-bind-ip 127.0.0.1 \
@@ -75,8 +75,8 @@ You should see:
 In another terminal:
 
 ```bash
-cd stealthpay
-python3 -c "from stealthpay import StealthPay; a = StealthPay.from_env(); print(f'✅ Connected! Address: {a.address}')"
+cd sthrip
+python3 -c "from sthrip import Sthrip; a = Sthrip.from_env(); print(f'✅ Connected! Address: {a.address}')"
 ```
 
 ## Step 5: Get XMR
@@ -86,7 +86,7 @@ python3 -c "from stealthpay import StealthPay; a = StealthPay.from_env(); print(
 1. Register on Kraken, Binance, or KuCoin
 2. Complete KYC verification
 3. Buy XMR with card/bank transfer
-4. Withdraw to your StealthPay address:
+4. Withdraw to your Sthrip address:
 
 ```bash
 make balance
@@ -107,7 +107,7 @@ For testing without real money:
 # Create testnet wallet
 ~/monero/monero-wallet-cli \
   --testnet \
-  --generate-new-wallet stealthpay-testnet \
+  --generate-new-wallet sthrip-testnet \
   --daemon-address node.moneroworld.com:28089
 
 # Get free testnet XMR from faucet:
@@ -124,8 +124,8 @@ make balance
 
 # Or with Python
 python3 -c "
-from stealthpay import StealthPay
-agent = StealthPay.from_env()
+from sthrip import Sthrip
+agent = Sthrip.from_env()
 info = agent.get_info()
 print(f'Balance: {info.balance} XMR')
 print(f'Address: {info.address}')
@@ -139,8 +139,8 @@ print(f'Address: {info.address}')
 - Check port 18082 is not blocked
 
 ### "Wallet file not found"
-- Check `~/stealthpay-wallet/` exists
-- Verify `stealthpay.keys` file exists
+- Check `~/sthrip-wallet/` exists
+- Verify `sthrip.keys` file exists
 
 ### "Daemon not synced"
 - First connection may take 5-10 minutes to sync
@@ -152,7 +152,7 @@ print(f'Address: {info.address}')
 2. **Password**: Use strong password for production
 3. **Firewall**: RPC binds to localhost only (127.0.0.1)
 4. **Updates**: Keep Monero binaries updated
-5. **Privacy**: Don't reuse addresses - StealthPay handles this
+5. **Privacy**: Don't reuse addresses - Sthrip handles this
 
 ## Next Steps
 
@@ -160,10 +160,10 @@ Once wallet is ready:
 
 ```bash
 # Run demo with real XMR
-cd stealthpay
+cd sthrip
 python3 -c "
-from stealthpay import StealthPay
-agent = StealthPay.from_env()
+from sthrip import Sthrip
+agent = Sthrip.from_env()
 
 # Create stealth address
 stealth = agent.create_stealth_address('first-payment')

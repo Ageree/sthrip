@@ -1,6 +1,6 @@
-# StealthPay Privacy Guide
+# Sthrip Privacy Guide
 
-Ultimate guide to maximizing anonymity with StealthPay.
+Ultimate guide to maximizing anonymity with Sthrip.
 
 ## 🛡️ Privacy Levels
 
@@ -63,7 +63,7 @@ payment = agent.pay(
 Don't send immediately:
 
 ```python
-from stealthpay.privacy import TransactionTiming
+from sthrip.privacy import TransactionTiming
 
 config = PrivacyConfig(
     timing_strategy=TransactionTiming.NIGHT_TIME
@@ -82,7 +82,7 @@ Strategies:
 Randomize wallet behavior:
 
 ```python
-from stealthpay.antifingerprint import FingerprintRandomizer
+from sthrip.antifingerprint import FingerprintRandomizer
 
 fr = FingerprintRandomizer()
 
@@ -101,7 +101,7 @@ fee = fr.get_fee_multiplier()  # Random 1.0-5.0x
 Occasionally send to random addresses:
 
 ```python
-from stealthpay.antifingerprint import DecoyManager
+from sthrip.antifingerprint import DecoyManager
 
 dm = DecoyManager(decoy_probability=0.1)  # 10% chance
 
@@ -116,7 +116,7 @@ if dm.maybe_create_decoy():
 Don't rely on single node:
 
 ```python
-from stealthpay.network import NodeManager
+from sthrip.network import NodeManager
 
 nm = NodeManager()
 nm.add_node(MoneroNode("node1.com", 18081, 18082))
@@ -132,7 +132,7 @@ node = nm.get_node(strategy=NodePriority.RANDOM)
 Calculate your privacy level:
 
 ```python
-from stealthpay.privacy import calculate_privacy_score
+from sthrip.privacy import calculate_privacy_score
 
 score = calculate_privacy_score(
     mixin=20,
@@ -168,9 +168,9 @@ score = calculate_privacy_score(
 ## 🔥 Maximum Privacy Example
 
 ```python
-from stealthpay import StealthPay
-from stealthpay.privacy import PrivacyConfig, TransactionTiming
-from stealthpay.antifingerprint import FingerprintRandomizer
+from sthrip import Sthrip
+from sthrip.privacy import PrivacyConfig, TransactionTiming
+from sthrip.antifingerprint import FingerprintRandomizer
 
 # Maximum privacy config
 config = PrivacyConfig(
@@ -182,7 +182,7 @@ config = PrivacyConfig(
     use_decoy_change=True
 )
 
-agent = StealthPay.from_env()
+agent = Sthrip.from_env()
 agent.privacy = PrivacyEnhancer(config)
 agent.fingerprinter = FingerprintRandomizer()
 

@@ -1,10 +1,10 @@
 #!/bin/bash
-# Setup test environment for StealthPay
+# Setup test environment for Sthrip
 
 set -e
 
 echo "═══════════════════════════════════════════════════════════════════"
-echo "  StealthPay Test Environment Setup"
+echo "  Sthrip Test Environment Setup"
 echo "═══════════════════════════════════════════════════════════════════"
 echo
 
@@ -78,7 +78,7 @@ echo "📝 Creating environment configuration..."
 
 if [ ! -f .env ]; then
     cat > .env << 'EOF'
-# StealthPay Test Environment
+# Sthrip Test Environment
 # Get free Sepolia ETH from: https://sepolia-faucet.pk910.de/
 
 # Sepolia Configuration

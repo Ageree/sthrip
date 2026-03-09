@@ -36,7 +36,7 @@ pytestmark = [
 def check_bitcoin_node():
     """Check if Bitcoin regtest is available"""
     try:
-        from stealthpay.swaps.btc.rpc_client import create_regtest_client
+        from sthrip.swaps.btc.rpc_client import create_regtest_client
         client = create_regtest_client()
         client.get_block_count()
         return True
@@ -47,7 +47,7 @@ def check_bitcoin_node():
 def check_monero_node():
     """Check if Monero stagenet is available"""
     try:
-        from stealthpay.swaps.xmr.wallet import create_stagenet_wallet
+        from sthrip.swaps.xmr.wallet import create_stagenet_wallet
         wallet = create_stagenet_wallet()
         wallet.get_address()
         return True
@@ -62,7 +62,7 @@ MONERO_AVAILABLE = check_monero_node()
 @pytest.fixture
 async def bitcoin_rpc():
     """Bitcoin RPC client fixture"""
-    from stealthpay.swaps.btc.rpc_client import create_regtest_client
+    from sthrip.swaps.btc.rpc_client import create_regtest_client
     
     if not BITCOIN_AVAILABLE:
         pytest.skip("Bitcoin regtest node not available")
@@ -81,7 +81,7 @@ async def bitcoin_rpc():
 @pytest.fixture
 async def monero_wallets():
     """Monero wallet fixtures for Alice and Bob"""
-    from stealthpay.swaps.xmr.wallet import create_stagenet_wallet
+    from sthrip.swaps.xmr.wallet import create_stagenet_wallet
     
     if not MONERO_AVAILABLE:
         pytest.skip("Monero stagenet node not available")
@@ -100,9 +100,9 @@ class TestFullAtomicSwap:
     
     async def test_complete_swap(self, bitcoin_rpc, monero_wallets):
         """Test complete swap flow"""
-        from stealthpay.swaps.coordinator import SwapFactory, SwapConfig
-        from stealthpay.swaps.btc.htlc import create_simple_htlc_for_swap
-        from stealthpay.swaps.utils.bitcoin import generate_keypair
+        from sthrip.swaps.coordinator import SwapFactory, SwapConfig
+        from sthrip.swaps.btc.htlc import create_simple_htlc_for_swap
+        from sthrip.swaps.utils.bitcoin import generate_keypair
         
         print("\n=== Starting Atomic Swap Integration Test ===\n")
         
@@ -235,8 +235,8 @@ class TestFullAtomicSwap:
     
     async def test_htlc_creation(self, bitcoin_rpc):
         """Test HTLC creation and funding"""
-        from stealthpay.swaps.btc.htlc import BitcoinHTLC
-        from stealthpay.swaps.utils.bitcoin import generate_keypair
+        from sthrip.swaps.btc.htlc import BitcoinHTLC
+        from sthrip.swaps.utils.bitcoin import generate_keypair
         
         htlc = BitcoinHTLC(bitcoin_rpc, network="regtest")
         
@@ -269,8 +269,8 @@ class TestFullAtomicSwap:
     
     async def test_refund_path(self, bitcoin_rpc):
         """Test HTLC refund after timeout"""
-        from stealthpay.swaps.btc.htlc import BitcoinHTLC
-        from stealthpay.swaps.utils.bitcoin import generate_keypair
+        from sthrip.swaps.btc.htlc import BitcoinHTLC
+        from sthrip.swaps.utils.bitcoin import generate_keypair
         
         htlc = BitcoinHTLC(bitcoin_rpc, network="regtest")
         
@@ -320,9 +320,9 @@ class TestBitcoinHTLCOperations:
     
     async def test_htlc_claim_transaction(self, bitcoin_rpc):
         """Test creating claim transaction"""
-        from stealthpay.swaps.btc.transactions import HTLCTransactionBuilder
-        from stealthpay.swaps.btc.htlc import BitcoinHTLC
-        from stealthpay.swaps.utils.bitcoin import generate_keypair
+        from sthrip.swaps.btc.transactions import HTLCTransactionBuilder
+        from sthrip.swaps.btc.htlc import BitcoinHTLC
+        from sthrip.swaps.utils.bitcoin import generate_keypair
         
         # Setup
         sender_priv, sender_pub = generate_keypair()
@@ -367,11 +367,11 @@ class TestBitcoinHTLCOperations:
     
     async def test_htlc_funding_detection(self, bitcoin_rpc):
         """Test detecting HTLC funding"""
-        from stealthpay.swaps.btc.watcher import SimpleHTLCWatcher
+        from sthrip.swaps.btc.watcher import SimpleHTLCWatcher
         
         # Create and fund HTLC
-        from stealthpay.swaps.btc.htlc import BitcoinHTLC
-        from stealthpay.swaps.utils.bitcoin import generate_keypair
+        from sthrip.swaps.btc.htlc import BitcoinHTLC
+        from sthrip.swaps.utils.bitcoin import generate_keypair
         
         sender_priv, sender_pub = generate_keypair()
         recipient_priv, recipient_pub = generate_keypair()

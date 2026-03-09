@@ -1,5 +1,5 @@
 """
-StealthPay CLI - Command line interface for agents
+Sthrip CLI - Command line interface for agents
 Quick way to manage payments without writing code
 """
 
@@ -12,8 +12,8 @@ from datetime import datetime
 # Add parent to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stealthpay import StealthPay
-from stealthpay.privacy import PrivacyConfig, TransactionTiming, calculate_privacy_score
+from sthrip import Sthrip
+from sthrip.privacy import PrivacyConfig, TransactionTiming, calculate_privacy_score
 from cli.swap_commands import add_swap_subparser, handle_swap_command
 from cli.bridge_commands import add_bridge_subparser, handle_bridge_command
 
@@ -23,7 +23,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='🥷 StealthPay CLI - Anonymous payments for AI Agents'
+        description='🥷 Sthrip CLI - Anonymous payments for AI Agents'
     )
     
     subparsers = parser.add_subparsers(dest='command', help='Commands')
@@ -65,7 +65,7 @@ def main():
     
     # Connect to wallet
     try:
-        agent = StealthPay.from_env()
+        agent = Sthrip.from_env()
     except Exception as e:
         print(f"❌ Error connecting to wallet: {e}")
         return

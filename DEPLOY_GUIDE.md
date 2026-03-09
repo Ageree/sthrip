@@ -1,4 +1,4 @@
-# StealthPay Deployment Guide
+# Sthrip Deployment Guide
 ## Railway + Hetzner + Cloudflare Stack
 
 **Время:** ~30 минут  
@@ -40,7 +40,7 @@
 🔗 https://www.namecheap.com
 1. Купи домен (~$10/год)
    - Рекомендую: `.io`, `.app`, `.dev`
-   - Примеры: `stealthpay.io`, `agentpay.app`
+   - Примеры: `sthrip.io`, `agentpay.app`
 2. Или купи в Cloudflare (удобнее)
 
 ---
@@ -85,7 +85,7 @@ bash /tmp/setup-monero.sh
 ### 3.3 Сохрани credentials
 Скрипт выведет:
 ```
-RPC Username: stealthpay
+RPC Username: sthrip
 RPC Password: xxxxxxxxxxxxxxxxxxxxxxx
 Wallet Password: yyyyyyyyyyyyyyyyyyyyy
 ```
@@ -94,7 +94,7 @@ Wallet Password: yyyyyyyyyyyyyyyyyyyyy
 
 ### 3.4 Создать кошелёк
 ```bash
-sudo /opt/monero/create-wallet.sh stealthpay
+sudo /opt/monero/create-wallet.sh sthrip
 ```
 
 Сохрани seed phrase (12 или 24 слова)!
@@ -150,7 +150,7 @@ REDIS_URL=${{Redis.REDIS_URL}}
 # Monero (из Hetzner)
 MONERO_RPC_HOST=YOUR_HETZNER_IP
 MONERO_RPC_PORT=18082
-MONERO_RPC_USER=stealthpay
+MONERO_RPC_USER=sthrip
 MONERO_RPC_PASS=your_rpc_password_from_step_3
 
 # Security (сгенерируй случайные)
@@ -166,7 +166,7 @@ cors_origins=https://yourdomain.com,https://app.yourdomain.com
 2. Или нажми "Deploy" вручную
 3. Дождись зелёного статуса (Healthy)
 
-**Сохрани Railway Domain** (типа `stealthpay-api.up.railway.app`)
+**Сохрани Railway Domain** (типа `sthrip-api.up.railway.app`)
 
 ---
 
@@ -312,4 +312,4 @@ Cloudflare → SSL/TLS → Overview
 - [ ] Подключить TypeScript SDK
 - [ ] Настроить мониторинг (опционально)
 
-**Поздравляю! StealthPay теперь работает! 🚀**
+**Поздравляю! Sthrip теперь работает! 🚀**

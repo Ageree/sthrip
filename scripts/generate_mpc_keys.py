@@ -15,7 +15,7 @@ from pathlib import Path
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from stealthpay.bridge.tss.dkg import DistributedKeyGenerator, SecureKeyStorage
+from sthrip.bridge.tss.dkg import DistributedKeyGenerator, SecureKeyStorage
 
 
 def main():

@@ -1,4 +1,4 @@
-# StealthPay Testnet Testing Report
+# Sthrip Testnet Testing Report
 
 **Date:** 2026-03-02  
 **Network:** Bitcoin Testnet3 + Monero Stagenet  
@@ -209,13 +209,13 @@ PYTHONPATH=. python tests/testnet_simulation.py
 
 ```bash
 # Terminal 1: Alice (Seller XMR)
-stealthpay swap create-seller \
+sthrip swap create-seller \
     --btc-amount 0.001 \
     --xmr-amount 0.1 \
     --receive-btc tb1q...
 
 # Terminal 2: Bob (Buyer XMR)
-stealthpay swap create-buyer \
+sthrip swap create-buyer \
     --btc-amount 0.001 \
     --xmr-amount 0.1 \
     --receive-xmr 44...
@@ -287,7 +287,7 @@ stealthpay swap create-buyer \
 ## 📞 Support
 
 For issues with testnet testing:
-- GitHub Issues: [stealthpay/issues]
+- GitHub Issues: [sthrip/issues]
 - Documentation: [QUICKSTART.md](QUICKSTART.md)
 
 ---

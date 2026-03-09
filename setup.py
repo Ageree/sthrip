@@ -1,5 +1,5 @@
 """
-StealthPay - Anonymous Payments for AI Agents
+Sthrip - Anonymous Payments for AI Agents
 """
 
 from setuptools import setup, find_packages
@@ -8,14 +8,14 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="stealthpay",
+    name="sthrip",
     version="2.0.0",
-    author="StealthPay Team",
-    author_email="hello@stealthpay.io",
+    author="Sthrip Team",
+    author_email="hello@sthrip.io",
     description="Anonymous payments for AI Agents via Monero",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/stealthpay/stealthpay",
+    url="https://github.com/sthrip/sthrip",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -79,9 +79,9 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "stealthpay=stealthpay.cli.main:main",
-            "stealthpay-api=stealthpay.api.main_v2:main",
-            "stealthpay-mcp=stealthpay.integrations.mcp_server:main",
+            "sthrip=sthrip.cli.main:main",
+            "sthrip-api=sthrip.api.main_v2:main",
+            "sthrip-mcp=sthrip.integrations.mcp_server:main",
         ],
     },
     include_package_data=True,

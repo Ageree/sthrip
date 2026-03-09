@@ -1,3 +1,3 @@
 """
-StealthPay REST API
+Sthrip REST API
 """

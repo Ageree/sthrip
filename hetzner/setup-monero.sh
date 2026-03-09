@@ -1,5 +1,5 @@
 #!/bin/bash
-# StealthPay Monero Node Setup for Hetzner
+# Sthrip Monero Node Setup for Hetzner
 # Run this on your Hetzner CX11 VPS (Ubuntu 22.04)
 
 set -e
@@ -19,12 +19,12 @@ MONERO_VERSION="v0.18.3.1"
 MONERO_DIR="/opt/monero"
 WALLET_DIR="/opt/monero/wallets"
 DATA_DIR="/opt/monero/data"
-RPC_USER="${MONERO_RPC_USER:-stealthpay}"
+RPC_USER="${MONERO_RPC_USER:-sthrip}"
 RPC_PASS="${MONERO_RPC_PASS:-$(openssl rand -base64 32)}"
-WALLET_NAME="${MONERO_WALLET_NAME:-stealthpay}"
+WALLET_NAME="${MONERO_WALLET_NAME:-sthrip}"
 WALLET_PASS="${MONERO_WALLET_PASS:-$(openssl rand -base64 32)}"
 
-echo "=== StealthPay Monero Node Setup ==="
+echo "=== Sthrip Monero Node Setup ==="
 echo "This will install Monero daemon and wallet RPC"
 echo ""
 
@@ -185,9 +185,9 @@ EOF
 log "Creating wallet setup script..."
 cat > /opt/monero/create-wallet.sh <<'EOF'
 #!/bin/bash
-# Create new wallet for StealthPay
+# Create new wallet for Sthrip
 
-WALLET_NAME="${1:-stealthpay}"
+WALLET_NAME="${1:-sthrip}"
 WALLET_DIR="/opt/monero/wallets"
 WALLET_FILE="$WALLET_DIR/$WALLET_NAME"
 

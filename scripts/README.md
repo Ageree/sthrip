@@ -1,4 +1,4 @@
-# StealthPay Scripts
+# Sthrip Scripts
 
 ## Key Ceremony
 

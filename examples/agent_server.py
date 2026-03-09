@@ -2,7 +2,7 @@
 Example: AI Agent as a service provider accepting anonymous payments
 """
 
-from stealthpay import StealthPay
+from sthrip import Sthrip
 import time
 
 
@@ -13,7 +13,7 @@ class AnonymousAgentService:
     """
     
     def __init__(self, rpc_host="127.0.0.1", rpc_port=18082):
-        self.agent = StealthPay(rpc_host=rpc_host, rpc_port=rpc_port)
+        self.agent = Sthrip(rpc_host=rpc_host, rpc_port=rpc_port)
         self.stealth_addresses = {}  # Track payments
         
     def offer_service(self, service_name: str, price_xmr: float):

@@ -2,12 +2,12 @@
 
 ## Overview
 
-This document prepares StealthPay for professional security audits.
+This document prepares Sthrip for professional security audits.
 
 ## Audit Scope
 
 ### Phase 1: Smart Contracts (2-3 weeks)
-- StealthPayBridge.sol
+- SthripBridge.sol
 - InsuranceFund.sol
 - PriceOracle.sol
 
@@ -27,7 +27,7 @@ This document prepares StealthPay for professional security audits.
 audit-package/
 ├── 01-source-code/
 │   ├── contracts/
-│   │   ├── StealthPayBridge.sol
+│   │   ├── SthripBridge.sol
 │   │   ├── InsuranceFund.sol
 │   │   └── PriceOracle.sol
 │   └── tss-service/

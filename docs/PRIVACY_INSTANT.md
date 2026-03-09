@@ -1,4 +1,4 @@
-# StealthPay: INSTANT Maximum Privacy
+# Sthrip: INSTANT Maximum Privacy
 
 ## Принцип: Математика, а не ожидание
 
@@ -38,7 +38,7 @@
 
 ### 1. Stealth Addresses (Мгновенно)
 ```python
-from stealthpay.bridge.privacy import StealthAddressGenerator
+from sthrip.bridge.privacy import StealthAddressGenerator
 
 generator = StealthAddressGenerator()
 keys = generator.generate_master_keys()
@@ -54,7 +54,7 @@ stealth = generator.generate_stealth_address(
 
 ### 2. CoinJoin (1-2 минуты)
 ```python
-from stealthpay.bridge.mixing import CoinJoinCoordinator, ChaumianCoinJoin
+from sthrip.bridge.mixing import CoinJoinCoordinator, ChaumianCoinJoin
 
 coordinator = ChaumianCoinJoin(
     denomination=100000,  # 0.001 BTC
@@ -72,7 +72,7 @@ await coordinator.register_output(round_id, stealth_address, peer_id)
 
 ### 3. Submarine Swaps (Мгновенно)
 ```python
-from stealthpay.bridge.mixing import SubmarineSwapService
+from sthrip.bridge.mixing import SubmarineSwapService
 
 service = SubmarineSwapService()
 
@@ -88,7 +88,7 @@ swap = await service.create_swap_in(
 
 ### 4. Zero-Knowledge Proofs (Мгновенно)
 ```python
-from stealthpay.bridge.privacy import ZKVerifier
+from sthrip.bridge.privacy import ZKVerifier
 
 verifier = ZKVerifier()
 
@@ -113,8 +113,8 @@ is_valid = verifier.verify_ownership(proof, public_key)
 ## Полный сценарий: Отправка средств
 
 ```python
-from stealthpay.bridge.privacy import StealthAddressGenerator
-from stealthpay.bridge.mixing import ChaumianCoinJoin
+from sthrip.bridge.privacy import StealthAddressGenerator
+from sthrip.bridge.mixing import ChaumianCoinJoin
 
 # 1. Генерируем stealth address для получателя (<1 сек)
 generator = StealthAddressGenerator()

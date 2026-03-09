@@ -1,11 +1,11 @@
 #!/bin/bash
-# Testnet Testing Script for StealthPay
+# Testnet Testing Script for Sthrip
 # Tests Atomic Swaps on Bitcoin Testnet3 and Monero Stagenet
 
 set -e
 
 echo "============================================"
-echo "🧪 StealthPay Testnet Testing"
+echo "🧪 Sthrip Testnet Testing"
 echo "============================================"
 echo ""
 echo "⚠️  WARNING: This will use real testnet funds!"
@@ -72,7 +72,7 @@ print("\n🔌 Testing node connectivity...")
 # Test Bitcoin
 print("\n1. Bitcoin Testnet3:")
 try:
-    from stealthpay.swaps.btc.rpc_client import create_testnet_client
+    from sthrip.swaps.btc.rpc_client import create_testnet_client
     btc = create_testnet_client()
     height = btc.get_block_count()
     print(f"   ✓ Connected! Block height: {height}")
@@ -94,7 +94,7 @@ except Exception as e:
 # Test Monero
 print("\n2. Monero Stagenet:")
 try:
-    from stealthpay.swaps.xmr.wallet import create_stagenet_wallet
+    from sthrip.swaps.xmr.wallet import create_stagenet_wallet
     xmr = create_stagenet_wallet()
     address = xmr.get_address()
     print(f"   ✓ Connected! Address: {address[:20]}...")
@@ -129,8 +129,8 @@ sys.path.insert(0, '.')
 
 print("\n🔑 Testing key generation...")
 
-from stealthpay.swaps.utils.bitcoin import generate_keypair
-from stealthpay.bridge.tss.dkg import DistributedKeyGenerator
+from sthrip.swaps.utils.bitcoin import generate_keypair
+from sthrip.bridge.tss.dkg import DistributedKeyGenerator
 
 # Bitcoin keys
 print("\n1. Bitcoin secp256k1 keys:")
@@ -167,9 +167,9 @@ sys.path.insert(0, '.')
 print("\n📜 Testing HTLC creation...")
 
 from decimal import Decimal
-from stealthpay.swaps.btc.htlc import BitcoinHTLC, create_simple_htlc_for_swap
-from stealthpay.swaps.btc.rpc_client import create_testnet_client
-from stealthpay.swaps.utils.bitcoin import generate_keypair
+from sthrip.swaps.btc.htlc import BitcoinHTLC, create_simple_htlc_for_swap
+from sthrip.swaps.btc.rpc_client import create_testnet_client
+from sthrip.swaps.utils.bitcoin import generate_keypair
 
 # Connect to Bitcoin testnet
 btc = create_testnet_client()
@@ -230,8 +230,8 @@ sys.path.insert(0, '.')
 
 print("\n🔗 Testing Monero 2-of-2 multisig setup...")
 
-from stealthpay.swaps.xmr.wallet import create_stagenet_wallet
-from stealthpay.swaps.xmr.multisig import MoneroMultisig, SwapRole
+from sthrip.swaps.xmr.wallet import create_stagenet_wallet
+from sthrip.swaps.xmr.multisig import MoneroMultisig, SwapRole
 
 # Create wallet connections
 print("\n1. Connecting to Monero wallets...")
@@ -270,9 +270,9 @@ sys.path.insert(0, '.')
 
 print("\n✍️  Testing threshold signing (3-of-5)...")
 
-from stealthpay.bridge.tss.dkg import DistributedKeyGenerator
-from stealthpay.bridge.tss.signer import ThresholdSigner, SigningSession
-from stealthpay.bridge.tss.aggregator import SignatureAggregator
+from sthrip.bridge.tss.dkg import DistributedKeyGenerator
+from sthrip.bridge.tss.signer import ThresholdSigner, SigningSession
+from sthrip.bridge.tss.aggregator import SignatureAggregator
 
 # Setup
 n, threshold = 5, 3
@@ -344,9 +344,9 @@ sys.path.insert(0, '.')
 print("\n🔄 Simulating full atomic swap on testnet...")
 
 from decimal import Decimal
-from stealthpay.swaps.coordinator import SwapFactory, SwapConfig
-from stealthpay.swaps.btc.rpc_client import create_testnet_client
-from stealthpay.swaps.xmr.wallet import create_stagenet_wallet
+from sthrip.swaps.coordinator import SwapFactory, SwapConfig
+from sthrip.swaps.btc.rpc_client import create_testnet_client
+from sthrip.swaps.xmr.wallet import create_stagenet_wallet
 
 # Setup
 print("\n1. Initializing swap coordinators...")
@@ -398,9 +398,9 @@ print("   [6] Bob claims XMR (uses preimage)")
 print("\n✓ Swap simulation complete!")
 print("\n💡 To execute real swap:")
 print("   1. Get testnet coins")
-print("   2. Run: stealthpay swap create-seller")
+print("   2. Run: sthrip swap create-seller")
 print("   3. Coordinate with counterparty")
-print("   4. Monitor with: stealthpay swap status")
+print("   4. Monitor with: sthrip swap status")
 PYEOF
 }
 
@@ -425,7 +425,7 @@ main() {
     echo "   Monero:  https://community.xmr.to/xmr-faucet/stagenet/"
     echo ""
     echo "2. Execute real swap:"
-    echo "   stealthpay swap create-seller --btc-amount 0.001 --xmr-amount 0.1 ..."
+    echo "   sthrip swap create-seller --btc-amount 0.001 --xmr-amount 0.1 ..."
     echo ""
 }
 

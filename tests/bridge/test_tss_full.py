@@ -15,9 +15,9 @@ import os
 # Disable legacy provider warning
 os.environ['CRYPTOGRAPHY_OPENSSL_NO_LEGACY'] = '1'
 
-from stealthpay.bridge.tss.dkg import DistributedKeyGenerator, SecureKeyStorage
-from stealthpay.bridge.tss.signer import ThresholdSigner, SigningSession
-from stealthpay.bridge.tss.aggregator import SignatureAggregator
+from sthrip.bridge.tss.dkg import DistributedKeyGenerator, SecureKeyStorage
+from sthrip.bridge.tss.signer import ThresholdSigner, SigningSession
+from sthrip.bridge.tss.aggregator import SignatureAggregator
 
 
 class TestFullTSSFlow:
@@ -202,7 +202,7 @@ class TestSignatureFormats:
     
     def test_signature_der_encoding(self):
         """Test DER encoding of signatures"""
-        from stealthpay.bridge.tss.aggregator import ECDSASignature
+        from sthrip.bridge.tss.aggregator import ECDSASignature
         
         sig = ECDSASignature(
             r=0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef,

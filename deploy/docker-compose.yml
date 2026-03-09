@@ -4,12 +4,12 @@ services:
   # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
-    container_name: stealthpay-postgres
+    container_name: sthrip-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-stealthpay}
+      POSTGRES_USER: ${POSTGRES_USER:-sthrip}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB:-stealthpay}
+      POSTGRES_DB: ${POSTGRES_DB:-sthrip}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -17,12 +17,12 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stealthpay} -d ${POSTGRES_DB:-stealthpay}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sthrip} -d ${POSTGRES_DB:-sthrip}"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - stealthpay-network
+      - sthrip-network
     logging:
       driver: "json-file"
       options:
@@ -32,7 +32,7 @@ services:
   # Redis for caching and rate limiting
   redis:
     image: redis:7-alpine
-    container_name: stealthpay-redis
+    container_name: sthrip-redis
     restart: unless-stopped
     command: redis-server --requirepass ${REDIS_PASSWORD}
     volumes:
@@ -45,23 +45,23 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - stealthpay-network
+      - sthrip-network
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
 
-  # StealthPay API
+  # Sthrip API
   api:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    container_name: stealthpay-api
+    container_name: sthrip-api
     restart: unless-stopped
     environment:
       # Database
-      DATABASE_URL: postgresql://${POSTGRES_USER:-stealthpay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-stealthpay}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sthrip}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sthrip}
       
       # Redis
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -77,9 +77,6 @@ services:
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      
-      # Security
-      SECRET_KEY: ${SECRET_KEY}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -88,7 +85,7 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - stealthpay-network
+      - sthrip-network
     logging:
       driver: "json-file"
       options:
@@ -108,17 +105,17 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    container_name: stealthpay-webhook-worker
+    container_name: sthrip-webhook-worker
     restart: unless-stopped
-    command: python -c "import asyncio; from stealthpay.services.webhook_service import get_webhook_service; asyncio.run(get_webhook_service().start_worker())"
+    command: python -c "import asyncio; from sthrip.services.webhook_service import get_webhook_service; asyncio.run(get_webhook_service().start_worker())"
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-stealthpay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-stealthpay}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sthrip}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sthrip}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
     depends_on:
       - postgres
       - redis
     networks:
-      - stealthpay-network
+      - sthrip-network
     logging:
       driver: "json-file"
       options:
@@ -128,7 +125,7 @@ services:
   # Nginx Reverse Proxy
   nginx:
     image: nginx:alpine
-    container_name: stealthpay-nginx
+    container_name: sthrip-nginx
     restart: unless-stopped
     ports:
       - "80:80"
@@ -140,7 +137,7 @@ services:
     depends_on:
       - api
     networks:
-      - stealthpay-network
+      - sthrip-network
     logging:
       driver: "json-file"
       options:
@@ -150,10 +147,10 @@ services:
   # Optional: Monero Wallet RPC (if self-hosted)
   # monero-wallet-rpc:
   #   image: ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest
-  #   container_name: stealthpay-monero
+  #   container_name: sthrip-monero
   #   restart: unless-stopped
   #   environment:
-  #     WALLET_FILE: /wallets/stealthpay
+  #     WALLET_FILE: /wallets/sthrip
   #     WALLET_PASSWORD: ${MONERO_WALLET_PASSWORD}
   #     RPC_BIND_PORT: 18082
   #     RPC_BIND_IP: 0.0.0.0
@@ -164,7 +161,7 @@ services:
   #   ports:
   #     - "127.0.0.1:18082:18082"
   #   networks:
-  #     - stealthpay-network
+  #     - sthrip-network
 
 volumes:
   postgres_data:
@@ -177,7 +174,7 @@ volumes:
   #   driver: local
 
 networks:
-  stealthpay-network:
+  sthrip-network:
     driver: bridge
     ipam:
       config:

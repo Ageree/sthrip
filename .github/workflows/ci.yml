@@ -13,30 +13,48 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.9', '3.10', '3.11', '3.12']
-    
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: sthrip_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pytest pytest-cov black mypy
-    
+
     - name: Lint with black
-      run: black --check stealthpay/
-    
+      run: black --check sthrip/
+
     - name: Type check with mypy
-      run: mypy stealthpay/ --ignore-missing-imports
-    
+      run: mypy sthrip/ --ignore-missing-imports
+
     - name: Test with pytest
-      run: pytest tests/ -v --cov=stealthpay --cov-report=xml
-    
+      env:
+        DATABASE_URL: postgresql://test:test@localhost:5432/sthrip_test
+        CI_HAS_POSTGRES: "true"
+      run: pytest tests/ -v --cov=sthrip --cov-report=xml
+
     - name: Upload coverage
       uses: codecov/codecov-action@v3
       with:
@@ -47,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ../stealthpay-ts
+        working-directory: ../sthrip-ts
     
     steps:
     - uses: actions/checkout@v4
@@ -57,7 +75,7 @@ jobs:
       with:
         node-version: '20'
         cache: 'npm'
-        cache-dependency-path: stealthpay-ts/package.json
+        cache-dependency-path: sthrip-ts/package.json
     
     - name: Install dependencies
       run: npm ci
@@ -92,7 +110,7 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: stealthpay/sdk-python
+        images: sthrip/sdk-python
         tags: |
           type=ref,event=branch
           type=semver,pattern={{version}}
@@ -112,9 +130,9 @@ jobs:
     - name: Build and push TypeScript SDK
       uses: docker/build-push-action@v5
       with:
-        context: ../stealthpay-ts
+        context: ../sthrip-ts
         push: true
-        tags: stealthpay/sdk-typescript:${{ github.ref_name }}
+        tags: sthrip/sdk-typescript:${{ github.ref_name }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -149,7 +167,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     defaults:
       run:
-        working-directory: ../stealthpay-ts
+        working-directory: ../sthrip-ts
     
     steps:
     - uses: actions/checkout@v4

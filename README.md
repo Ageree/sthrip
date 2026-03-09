@@ -1,22 +1,22 @@
-# StealthPay - Anonymous Payments for AI Agents
+# Sthrip - Anonymous Payments for AI Agents
 
-[![PyPI version](https://badge.fury.io/py/stealthpay.svg)](https://badge.fury.io/py/stealthpay)
+[![PyPI version](https://badge.fury.io/py/sthrip.svg)](https://badge.fury.io/py/sthrip)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-StealthPay enables AI agents to make anonymous, censorship-resistant payments using Monero. Perfect for agent-to-agent transactions, escrow deals, and micropayments.
+Sthrip enables AI agents to make anonymous, censorship-resistant payments using Monero. Perfect for agent-to-agent transactions, escrow deals, and micropayments.
 
 ## 🚀 Quick Start
 
 ```bash
-pip install stealthpay
+pip install sthrip
 ```
 
 ```python
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
 # Connect to your Monero wallet
-agent = StealthPay.from_env()
+agent = Sthrip.from_env()
 
 # Check balance
 info = agent.get_info()
@@ -46,7 +46,7 @@ print(f"Sent: {tx.tx_hash}")
 ┌─────────────────────────────────────────────────────────────┐
 │  Agent A                                                    │
 │  ┌──────────────┐      ┌──────────────┐                     │
-│  │   StealthPay │──────▶│   Monero     │                     │
+│  │   Sthrip │──────▶│   Monero     │                     │
 │  │   Client     │      │   Network    │                     │
 │  └──────────────┘      └──────────────┘                     │
 └─────────────────────────────────────────────────────────────┘
@@ -58,7 +58,7 @@ print(f"Sent: {tx.tx_hash}")
 ┌─────────────────────────────────────────────────────────────┐
 │  Agent B                                                    │
 │  ┌──────────────┐      ┌──────────────┐                     │
-│  │   StealthPay │◀─────│   Monero     │                     │
+│  │   Sthrip │◀─────│   Monero     │                     │
 │  │   Client     │      │   Network    │                     │
 │  └──────────────┘      └──────────────┘                     │
 └─────────────────────────────────────────────────────────────┘
@@ -69,20 +69,20 @@ print(f"Sent: {tx.tx_hash}")
 ### Basic Installation
 
 ```bash
-pip install stealthpay
+pip install sthrip
 ```
 
 ### With MCP Support (for Claude/Cursor)
 
 ```bash
-pip install stealthpay[mcp]
+pip install sthrip[mcp]
 ```
 
 ### Development Installation
 
 ```bash
-git clone https://github.com/stealthpay/stealthpay.git
-cd stealthpay
+git clone https://github.com/sthrip/sthrip.git
+cd sthrip
 pip install -e ".[dev]"
 ```
 
@@ -98,7 +98,7 @@ export MONERO_RPC_USER=your_username
 export MONERO_RPC_PASS=your_password
 
 # Database (PostgreSQL)
-export DATABASE_URL=postgresql://user:pass@localhost/stealthpay
+export DATABASE_URL=postgresql://user:pass@localhost/sthrip
 
 # Redis (for rate limiting)
 export REDIS_URL=redis://localhost:6379/0
@@ -113,9 +113,9 @@ export ADMIN_API_KEY=your_secret_key
 ### P2P Payment (Free)
 
 ```python
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
-agent = StealthPay.from_env()
+agent = Sthrip.from_env()
 
 # Send payment directly (free, but normal confirmation time)
 tx = agent.pay(
@@ -132,7 +132,7 @@ confirmed = agent.wait_for_confirmation(tx.tx_hash)
 
 ```python
 # Use hub routing for instant confirmation
-from stealthpay.services.fee_collector import get_fee_collector
+from sthrip.services.fee_collector import get_fee_collector
 
 collector = get_fee_collector()
 route = collector.create_hub_route(
@@ -193,9 +193,9 @@ print(f"Pay me: {stealth.address}")  # Use once then discard
 Start the REST API:
 
 ```bash
-stealthpay-api
+sthrip-api
 # or
-python -m stealthpay.api.main_v2
+python -m sthrip.api.main_v2
 ```
 
 ### Register Agent
@@ -243,14 +243,14 @@ curl "http://localhost:8000/v2/agents?min_trust_score=80&verified_only=true"
 
 ## 🤖 MCP Server (for Claude/Cursor)
 
-StealthPay works as an MCP tool server for AI assistants:
+Sthrip works as an MCP tool server for AI assistants:
 
 ```bash
 # Install with MCP support
-pip install stealthpay[mcp]
+pip install sthrip[mcp]
 
 # Run MCP server
-stealthpay-mcp
+sthrip-mcp
 ```
 
 Available tools:
@@ -266,8 +266,8 @@ Add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "stealthpay": {
-      "command": "stealthpay-mcp",
+    "sthrip": {
+      "command": "sthrip-mcp",
       "env": {
         "MONERO_RPC_HOST": "127.0.0.1",
         "MONERO_RPC_PORT": "18082"
@@ -295,11 +295,11 @@ Add to `claude_desktop_config.json`:
 version: '3.8'
 services:
   api:
-    image: stealthpay/api:latest
+    image: sthrip/api:latest
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://user:pass@db/stealthpay
+      - DATABASE_URL=postgresql://user:pass@db/sthrip
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
@@ -311,7 +311,7 @@ services:
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pass
-      POSTGRES_DB: stealthpay
+      POSTGRES_DB: sthrip
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -357,10 +357,10 @@ Response:
 
 ## 📚 Documentation
 
-- [Full Documentation](https://docs.stealthpay.io)
-- [API Reference](https://docs.stealthpay.io/api)
-- [Python SDK](https://docs.stealthpay.io/python)
-- [TypeScript SDK](https://docs.stealthpay.io/typescript)
+- [Full Documentation](https://docs.sthrip.io)
+- [API Reference](https://docs.sthrip.io/api)
+- [Python SDK](https://docs.sthrip.io/python)
+- [TypeScript SDK](https://docs.sthrip.io/typescript)
 
 ## 🤝 Contributing
 
@@ -372,8 +372,8 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 🔗 Links
 
-- [Website](https://stealthpay.io)
-- [Documentation](https://docs.stealthpay.io)
-- [GitHub](https://github.com/stealthpay/stealthpay)
-- [Discord](https://discord.gg/stealthpay)
-- [Twitter](https://twitter.com/stealthpay)
+- [Website](https://sthrip.io)
+- [Documentation](https://docs.sthrip.io)
+- [GitHub](https://github.com/sthrip/sthrip)
+- [Discord](https://discord.gg/sthrip)
+- [Twitter](https://twitter.com/sthrip)

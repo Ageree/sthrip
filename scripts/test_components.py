@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Component Tests for StealthPay
+Component Tests for Sthrip
 
 Tests all privacy components WITHOUT spending real money
 """
@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from stealthpay.bridge.privacy import StealthAddressGenerator, ZKVerifier
-from stealthpay.bridge.tor import OnionAddressBook
+from sthrip.bridge.privacy import StealthAddressGenerator, ZKVerifier
+from sthrip.bridge.tor import OnionAddressBook
 
 
 class TestRunner:
@@ -212,7 +212,7 @@ async def test_key_recovery():
 async def main():
     """Run all tests"""
     print("="*60)
-    print("STEALTHPAY COMPONENT TESTS")
+    print("STHRIP COMPONENT TESTS")
     print("="*60)
     print("\n🔒 Testing privacy components (no real money)")
     

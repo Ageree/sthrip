@@ -1,4 +1,4 @@
-# Testing Checklist for StealthPay
+# Testing Checklist for Sthrip
 
 ## Pre-flight Checks ✅
 
@@ -172,7 +172,7 @@ docker-compose -f docker-compose.testnet.yml up
 docker-compose down
 
 # Check no processes running
-ps aux | grep stealthpay
+ps aux | grep sthrip
 
 # Verify no pending transactions
 # (Check Sepolia explorer)

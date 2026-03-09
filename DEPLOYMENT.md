@@ -1,13 +1,13 @@
-# StealthPay Deployment Guide
+# Sthrip Deployment Guide
 
-Complete guide for deploying StealthPay in production.
+Complete guide for deploying Sthrip in production.
 
 ## Quick Start
 
 ```bash
 # Clone repository
-git clone https://github.com/yourorg/stealthpay.git
-cd stealthpay
+git clone https://github.com/yourorg/sthrip.git
+cd sthrip
 
 # Start with Docker Compose
 docker-compose up -d monerod monero-wallet-rpc
@@ -41,8 +41,8 @@ sudo usermod -aG docker $USER
 sudo apt install docker-compose-plugin
 
 # Create directories
-mkdir -p /opt/stealthpay/{data,wallets,logs}
-chmod 700 /opt/stealthpay/wallets
+mkdir -p /opt/sthrip/{data,wallets,logs}
+chmod 700 /opt/sthrip/wallets
 ```
 
 ### 3. Environment Configuration
@@ -54,7 +54,7 @@ Create `.env` file:
 WALLET_PASSWORD=your_secure_password_here
 
 # RPC Auth (optional but recommended)
-RPC_USER=stealthpay
+RPC_USER=sthrip
 RPC_PASS=your_rpc_password_here
 
 # Network
@@ -74,7 +74,7 @@ services:
       - "18080:18080"
       - "127.0.0.1:18081:18081"  # Restrict RPC to localhost
     volumes:
-      - /opt/stealthpay/data:/home/monero/.bitmonero
+      - /opt/sthrip/data:/home/monero/.bitmonero
     command:
       - --rpc-restricted-bind-ip=0.0.0.0
       - --rpc-restricted-bind-port=18081
@@ -95,9 +95,9 @@ services:
     ports:
       - "127.0.0.1:18082:18082"  # Localhost only!
     volumes:
-      - /opt/stealthpay/wallets:/home/monero/wallets
+      - /opt/sthrip/wallets:/home/monero/wallets
     environment:
-      - WALLET_FILE=/home/monero/wallets/stealthpay
+      - WALLET_FILE=/home/monero/wallets/sthrip
       - WALLET_PASSWORD=${WALLET_PASSWORD}
       - RPC_BIND_PORT=18082
       - RPC_BIND_IP=0.0.0.0
@@ -152,11 +152,11 @@ volumes:
 #!/bin/bash
 # backup.sh - Run daily via cron
 
-BACKUP_DIR="/backup/stealthpay/$(date +%Y%m%d)"
+BACKUP_DIR="/backup/sthrip/$(date +%Y%m%d)"
 mkdir -p $BACKUP_DIR
 
 # Backup wallet files
-docker cp stealthpay-monero-wallet-rpc-1:/home/monero/wallets $BACKUP_DIR/
+docker cp sthrip-monero-wallet-rpc-1:/home/monero/wallets $BACKUP_DIR/
 
 # Encrypt backup
 gpg --symmetric --cipher-algo AES256 $BACKUP_DIR/wallets.tar.gz
@@ -165,7 +165,7 @@ gpg --symmetric --cipher-algo AES256 $BACKUP_DIR/wallets.tar.gz
 aws s3 cp $BACKUP_DIR/wallets.tar.gz.gpg s3://your-backup-bucket/
 
 # Cleanup old backups
-find /backup/stealthpay -type d -mtime +7 -exec rm -rf {} \;
+find /backup/sthrip -type d -mtime +7 -exec rm -rf {} \;
 ```
 
 ### 7. Monitoring
@@ -233,7 +233,7 @@ docker-compose exec monerod monerod prune-blockchain
 
 # Mount volume
 sudo mkfs.ext4 /dev/sdb
-sudo mount /dev/sdb /opt/stealthpay/data
+sudo mount /dev/sdb /opt/sthrip/data
 ```
 
 ## Scaling
@@ -245,7 +245,7 @@ sudo mount /dev/sdb /opt/stealthpay/data
 # agent_1_wallet, agent_2_wallet, etc.
 
 # Or use accounts within single wallet
-agent = StealthPay(
+agent = Sthrip(
     rpc_host="localhost",
     rpc_port=18082,
     account_index=0  # Different for each agent
@@ -275,6 +275,6 @@ nginx:
 
 ## Support
 
-- Issues: https://github.com/yourorg/stealthpay/issues
-- Docs: https://docs.stealthpay.io
-- Discord: https://discord.gg/stealthpay
+- Issues: https://github.com/yourorg/sthrip/issues
+- Docs: https://docs.sthrip.io
+- Discord: https://discord.gg/sthrip

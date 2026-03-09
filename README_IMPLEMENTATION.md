@@ -1,4 +1,4 @@
-# StealthPay Implementation Status
+# Sthrip Implementation Status
 
 ## Phase 1: Security Foundation (Weeks 1-6) ✅
 
@@ -23,7 +23,7 @@
 ### Week 3-4: Smart Contract Development ✅
 
 **Solidity Contracts**
-- [x] StealthPayBridge.sol - Main bridge with HTLC
+- [x] SthripBridge.sol - Main bridge with HTLC
 - [x] InsuranceFund.sol - Security insurance
 - [x] PriceOracle.sol - Price feeds with Chainlink
 
@@ -52,7 +52,7 @@
 - [x] Multi-party coordination
 - [x] Backup procedures
 
-**Location**: `/stealthpay/bridge/hsm/`, `/scripts/key_ceremony.py`
+**Location**: `/sthrip/bridge/hsm/`, `/scripts/key_ceremony.py`
 
 ### Week 6: Security Audit Prep ✅
 
@@ -74,7 +74,7 @@ cd tss-service
 make deps
 
 # Generate protobuf
-cp ../stealthpay/stealthpay/bridge/tss_client/proto/tss.proto proto/
+cp ../sthrip/sthrip/bridge/tss_client/proto/tss.proto proto/
 make proto
 
 # Build
@@ -121,7 +121,7 @@ cd scripts
 ## Project Structure
 
 ```
-stealthpay/
+sthrip/
 ├── tss-service/          # Go TSS gRPC service
 │   ├── cmd/
 │   ├── internal/
@@ -131,7 +131,7 @@ stealthpay/
 │   ├── *.sol
 │   ├── test/
 │   └── scripts/
-├── stealthpay/
+├── sthrip/
 │   └── bridge/
 │       ├── tss_client/   # Python TSS client
 │       ├── hsm/          # HSM integrations

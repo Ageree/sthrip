@@ -6,13 +6,13 @@ import pytest
 from decimal import Decimal
 import hashlib
 
-from stealthpay.swaps.btc.htlc import (
+from sthrip.swaps.btc.htlc import (
     create_htlc_redeem_script,
     create_htlc_address,
     BitcoinHTLC,
     create_simple_htlc_for_swap
 )
-from stealthpay.swaps.utils.bitcoin import sha256, hash160, encode_bech32, generate_keypair
+from sthrip.swaps.utils.bitcoin import sha256, hash160, encode_bech32, generate_keypair
 
 
 class TestHTLCRedeemScript:
@@ -155,7 +155,7 @@ class TestUtils:
         assert address.startswith("tb1")
         
         # Декодируем обратно
-        from stealthpay.swaps.utils.bitcoin import decode_bech32
+        from sthrip.swaps.utils.bitcoin import decode_bech32
         decoded_hrp, decoded_ver, decoded_prog = decode_bech32(address)
         
         assert decoded_hrp == hrp

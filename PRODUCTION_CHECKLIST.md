@@ -1,4 +1,4 @@
-# StealthPay Production Checklist
+# Sthrip Production Checklist
 
 ## Pre-Launch Checklist
 
@@ -43,8 +43,8 @@ curl -fsSL https://get.docker.com | sh
 
 ### 3. Deploy
 ```bash
-git clone https://github.com/yourorg/stealthpay.git
-cd stealthpay
+git clone https://github.com/yourorg/sthrip.git
+cd sthrip
 cp .env.example .env
 # Edit .env with your passwords
 docker-compose up -d
@@ -63,9 +63,9 @@ curl -X POST http://localhost:18082/json_rpc \
 
 ### 5. Test SDK
 ```python
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
-agent = StealthPay.from_env()
+agent = Sthrip.from_env()
 print(f"Balance: {agent.balance} XMR")
 ```
 
@@ -98,7 +98,7 @@ print(f"Balance: {agent.balance} XMR")
 ## Support Contacts
 
 - Issues: GitHub Issues
-- Emergency: dev@stealthpay.io
+- Emergency: dev@sthrip.io
 
 ---
 

@@ -1,4 +1,4 @@
-# StealthPay Test Report
+# Sthrip Test Report
 
 **Date:** 2026-03-02  
 **Status:** ✅ DEMO TESTS PASSED  

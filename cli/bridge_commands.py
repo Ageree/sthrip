@@ -1,5 +1,5 @@
 """
-StealthPay CLI - Bridge Commands
+Sthrip CLI - Bridge Commands
 
 Commands for ETH↔XMR cross-chain bridge:
     bridge eth-to-xmr  - Bridge ETH to XMR
@@ -17,8 +17,8 @@ from decimal import Decimal
 # Add parent to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stealthpay.bridge.relayers.coordinator import BridgeCoordinator, BridgeTransferStatus
-from stealthpay.bridge.contracts.eth_bridge import EthereumBridgeContract
+from sthrip.bridge.relayers.coordinator import BridgeCoordinator, BridgeTransferStatus
+from sthrip.bridge.contracts.eth_bridge import EthereumBridgeContract
 
 
 def cmd_eth_to_xmr(args):
@@ -66,7 +66,7 @@ def cmd_eth_to_xmr(args):
             print(f"   Lock TX: {transfer.eth_lock_tx}")
             print(f"   Status: {transfer.status.value}")
             print(f"\n   Monitor with:")
-            print(f"   stealthpay bridge status --transfer-id {transfer.transfer_id}")
+            print(f"   sthrip bridge status --transfer-id {transfer.transfer_id}")
             
             return transfer.transfer_id
         
@@ -84,7 +84,7 @@ def cmd_xmr_to_eth(args):
     print(f"   ETH Address: {args.eth_address[:20]}...")
     
     try:
-        from stealthpay.swaps.xmr.wallet import MoneroWallet
+        from sthrip.swaps.xmr.wallet import MoneroWallet
         
         # Connect to XMR wallet
         xmr_wallet = MoneroWallet(
@@ -132,9 +132,9 @@ def cmd_run_node(args):
     print(f"   Config: {args.config}")
     
     try:
-        from stealthpay.bridge.relayers import MPCRelayerNode
-        from stealthpay.bridge.contracts.eth_bridge import EthereumBridgeContract
-        from stealthpay.swaps.xmr.wallet import MoneroWallet
+        from sthrip.bridge.relayers import MPCRelayerNode
+        from sthrip.bridge.contracts.eth_bridge import EthereumBridgeContract
+        from sthrip.swaps.xmr.wallet import MoneroWallet
         
         # Load config
         import yaml
@@ -225,7 +225,7 @@ def add_bridge_subparser(subparsers):
 def handle_bridge_command(args):
     """Handle bridge subcommands"""
     if not hasattr(args, 'bridge_command') or not args.bridge_command:
-        print("❌ No bridge command specified. Use: stealthpay bridge --help")
+        print("❌ No bridge command specified. Use: sthrip bridge --help")
         return
     
     commands = {

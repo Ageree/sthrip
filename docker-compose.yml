@@ -1,4 +1,4 @@
-# StealthPay Full Stack Deployment
+# Sthrip Full Stack Deployment
 version: '3.8'
 
 services:
@@ -27,7 +27,7 @@ services:
     volumes:
       - monero_wallets:/home/monero/wallets
     environment:
-      - WALLET_FILE=/home/monero/wallets/stealthpay
+      - WALLET_FILE=/home/monero/wallets/sthrip
       - WALLET_PASSWORD=${WALLET_PASSWORD:-}
       - RPC_BIND_PORT=18082
       - RPC_BIND_IP=0.0.0.0
@@ -37,7 +37,7 @@ services:
     depends_on:
       - monerod
     command: >
-      --wallet-file /home/monero/wallets/stealthpay
+      --wallet-file /home/monero/wallets/sthrip
       --password "${WALLET_PASSWORD:-}"
       --rpc-bind-port 18082
       --rpc-bind-ip 0.0.0.0
@@ -47,8 +47,8 @@ services:
       --trusted-daemon
       --non-interactive
 
-  # StealthPay Python SDK
-  stealthpay-python:
+  # Sthrip Python SDK
+  sthrip-python:
     build:
       context: .
       dockerfile: Dockerfile
@@ -65,10 +65,10 @@ services:
     command: python examples/basic_payment.py
     profiles: ["demo"]
 
-  # StealthPay TypeScript SDK
-  stealthpay-ts:
+  # Sthrip TypeScript SDK
+  sthrip-ts:
     build:
-      context: ../stealthpay-ts
+      context: ../sthrip-ts
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
@@ -97,4 +97,4 @@ volumes:
 
 networks:
   default:
-    name: stealthpay_network
+    name: sthrip_network

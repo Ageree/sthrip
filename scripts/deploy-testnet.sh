@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy StealthPay to Sepolia Testnet
+# Deploy Sthrip to Sepolia Testnet
 
 set -e
 
@@ -8,7 +8,7 @@ CONTRACTS_DIR="$(dirname "$0")/../contracts"
 ENV_FILE="$(dirname "$0")/../.env"
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  StealthPay Testnet Deployment"
+echo "  Sthrip Testnet Deployment"
 echo "═══════════════════════════════════════════════════════════"
 echo "Network: ${NETWORK}"
 echo

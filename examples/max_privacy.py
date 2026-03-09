@@ -2,8 +2,8 @@
 Maximum privacy example - all techniques combined
 """
 
-from stealthpay import StealthPay
-from stealthpay.privacy import PrivacyConfig, TransactionTiming, PrivacyEnhancer
+from sthrip import Sthrip
+from sthrip.privacy import PrivacyConfig, TransactionTiming, PrivacyEnhancer
 
 print("🥷 Maximum Privacy Mode")
 print("=" * 50)
@@ -22,7 +22,7 @@ config = PrivacyConfig(
 enhancer = PrivacyEnhancer(config)
 
 # Initialize agent with privacy settings
-agent = StealthPay(
+agent = Sthrip(
     rpc_host="127.0.0.1",
     rpc_port=18082,
     privacy_config=config  # Pass to client
@@ -75,7 +75,7 @@ else:
     print("   No decoy this time (random)")
 
 print("\n✅ Privacy Score:")
-from stealthpay.privacy import calculate_privacy_score
+from sthrip.privacy import calculate_privacy_score
 score = calculate_privacy_score(
     mixin=mixin,
     timing_variance=delay_seconds/3600,

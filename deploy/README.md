@@ -1,6 +1,6 @@
-# StealthPay Production Deployment
+# Sthrip Production Deployment
 
-Production-ready Docker deployment для StealthPay.
+Production-ready Docker deployment для Sthrip.
 
 ## 📁 Структура
 
@@ -32,7 +32,7 @@ deploy/
 ### 2. Настройка окружения
 
 ```bash
-cd stealthpay/deploy
+cd sthrip/deploy
 cp .env.example .env
 nano .env  # Заполните ваши данные
 ```
@@ -67,8 +67,8 @@ make clean        # Очистка ресурсов
 
 | Сервис | URL | Описание |
 |--------|-----|----------|
-| API | https://api.stealthpay.io | Основное API |
-| Health | https://api.stealthpay.io/health | Health check |
+| API | https://api.sthrip.io | Основное API |
+| Health | https://api.sthrip.io/health | Health check |
 | PostgreSQL | localhost:5432 | База данных |
 | Redis | localhost:6379 | Кэш и rate limiting |
 

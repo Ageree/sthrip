@@ -1,5 +1,5 @@
 """
-StealthPay integration for LangChain
+Sthrip integration for LangChain
 Enables LangChain agents to make anonymous payments
 """
 
@@ -16,18 +16,18 @@ except ImportError:
     BaseTool = object
     CallbackManagerForToolRun = None
 
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
 
 if LANGCHAIN_AVAILABLE:
-    class StealthPayBaseTool(BaseTool):
-        """Base tool with StealthPay client"""
+    class SthripBaseTool(BaseTool):
+        """Base tool with Sthrip client"""
         
-        stealthpay: StealthPay = Field(default=None)
+        sthrip: Sthrip = Field(default=None)
         
-        def __init__(self, stealthpay: StealthPay, **kwargs):
+        def __init__(self, sthrip: Sthrip, **kwargs):
             super().__init__(**kwargs)
-            self.stealthpay = stealthpay
+            self.sthrip = sthrip
 
 
     class SendPaymentInput(BaseModel):
@@ -37,10 +37,10 @@ if LANGCHAIN_AVAILABLE:
         memo: Optional[str] = Field(default=None, description="Optional private memo")
 
 
-    class StealthPaySendTool(StealthPayBaseTool):
+    class SthripSendTool(SthripBaseTool):
         """Tool for sending anonymous payments"""
         
-        name: str = "stealthpay_send"
+        name: str = "sthrip_send"
         description: str = """
         Send an anonymous payment in XMR (Monero) to another agent or address.
         Use this when you need to pay for a service or data.
@@ -56,7 +56,7 @@ if LANGCHAIN_AVAILABLE:
             run_manager: Optional[CallbackManagerForToolRun] = None
         ) -> str:
             try:
-                payment = self.stealthpay.pay(
+                payment = self.sthrip.pay(
                     to_address=to_address,
                     amount=amount,
                     memo=memo,
@@ -72,10 +72,10 @@ if LANGCHAIN_AVAILABLE:
         pass
 
 
-    class StealthPayBalanceTool(StealthPayBaseTool):
+    class SthripBalanceTool(SthripBaseTool):
         """Tool for checking wallet balance"""
         
-        name: str = "stealthpay_balance"
+        name: str = "sthrip_balance"
         description: str = "Check your current wallet balance in XMR"
         args_schema: Type[BaseModel] = GetBalanceInput
         
@@ -83,7 +83,7 @@ if LANGCHAIN_AVAILABLE:
             self,
             run_manager: Optional[CallbackManagerForToolRun] = None
         ) -> str:
-            info = self.stealthpay.get_info()
+            info = self.sthrip.get_info()
             return f"Balance: {info.balance:.6f} XMR, Unlocked: {info.unlocked_balance:.6f} XMR"
 
 
@@ -92,10 +92,10 @@ if LANGCHAIN_AVAILABLE:
         purpose: Optional[str] = Field(default="payment", description="Purpose of the address")
 
 
-    class StealthPayAddressTool(StealthPayBaseTool):
+    class SthripAddressTool(SthripBaseTool):
         """Tool for generating stealth addresses"""
         
-        name: str = "stealthpay_address"
+        name: str = "sthrip_address"
         description: str = "Generate a new stealth address for receiving payments"
         args_schema: Type[BaseModel] = CreateStealthAddressInput
         
@@ -104,18 +104,18 @@ if LANGCHAIN_AVAILABLE:
             purpose: Optional[str] = "payment",
             run_manager: Optional[CallbackManagerForToolRun] = None
         ) -> str:
-            stealth = self.stealthpay.create_stealth_address(purpose=purpose)
+            stealth = self.sthrip.create_stealth_address(purpose=purpose)
             return f"New stealth address: {stealth.address}"
 
 
-    def get_stealthpay_tools(stealthpay: StealthPay):
-        """Get all StealthPay tools for LangChain"""
+    def get_sthrip_tools(sthrip: Sthrip):
+        """Get all Sthrip tools for LangChain"""
         return [
-            StealthPaySendTool(stealthpay=stealthpay),
-            StealthPayBalanceTool(stealthpay=stealthpay),
-            StealthPayAddressTool(stealthpay=stealthpay),
+            SthripSendTool(sthrip=sthrip),
+            SthripBalanceTool(sthrip=sthrip),
+            SthripAddressTool(sthrip=sthrip),
         ]
 
 else:
-    def get_stealthpay_tools(stealthpay: StealthPay):
+    def get_sthrip_tools(sthrip: Sthrip):
         raise ImportError("LangChain not installed. Run: pip install langchain")

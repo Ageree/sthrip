@@ -1,4 +1,4 @@
-# StealthPay Advanced Features Implementation Plan
+# Sthrip Advanced Features Implementation Plan
 
 ## Part 1: Atomic Swaps (BTC ↔ XMR)
 
@@ -84,7 +84,7 @@ class AtomicSwap:
 
 #### 2.1 Components
 
-**File**: `stealthpay/swaps/atomic.py`
+**File**: `sthrip/swaps/atomic.py`
 ```python
 class CrossChainSwap:
     """
@@ -114,7 +114,7 @@ class CrossChainSwap:
 
 #### 2.2 Discovery/Matching
 ```python
-# File: stealthpay/swaps/market.py
+# File: sthrip/swaps/market.py
 
 class SwapMarketplace:
     """
@@ -170,16 +170,16 @@ class SwapMarketplace:
 #### 3.2 CLI Commands
 ```bash
 # Create swap offer
-stealthpay swap create --from btc --to xmr --amount 0.1 --rate 150
+sthrip swap create --from btc --to xmr --amount 0.1 --rate 150
 
 # List available swaps
-stealthpay swap list --from btc --to xmr
+sthrip swap list --from btc --to xmr
 
 # Accept swap
-stealthpay swap accept <swap_id>
+sthrip swap accept <swap_id>
 
 # Monitor swap status
-stealthpay swap status <swap_id>
+sthrip swap status <swap_id>
 ```
 
 ### Success Metrics
@@ -264,7 +264,7 @@ template ReputationProof() {
 
 #### 1.3 Implementation Components
 
-**File**: `stealthpay/zk/reputation.py`
+**File**: `sthrip/zk/reputation.py`
 ```python
 class ZKReputation:
     """
@@ -455,7 +455,7 @@ Move assets between chains without KYC, preserving privacy.
 
 ```
 ┌──────────┐      ┌──────────────┐      ┌──────────┐
-│ Ethereum │ ←──→ │  StealthPay  │ ←──→ │  Monero  │
+│ Ethereum │ ←──→ │  Sthrip  │ ←──→ │  Monero  │
 │   (ETH)  │      │    Bridge    │      │   (XMR)  │
 └────┬─────┘      └──────┬───────┘      └────┬─────┘
      │                   │                   │
@@ -608,7 +608,7 @@ class PrivacyBridge:
 ```rust
 // Solana program (Anchor)
 #[program]
-pub mod stealthpay_bridge {
+pub mod sthrip_bridge {
     use super::*;
     
     pub fn lock_sol(ctx: Context<LockSol>, amount: u64, xmr_hash: [u8; 32]) -> Result<()> {
@@ -669,7 +669,7 @@ class MultiChainBridge:
 #### 3.1 Unified API
 ```python
 # Bridge any to any
-result = stealthpay.bridge(
+result = sthrip.bridge(
     from_chain="eth",
     to_chain="xmr",
     amount=1.0,
@@ -753,4 +753,4 @@ class BridgeLiquidity:
 
 ---
 
-This plan transforms StealthPay from a payment SDK into a comprehensive privacy-preserving DeFi infrastructure for the autonomous economy.
+This plan transforms Sthrip from a payment SDK into a comprehensive privacy-preserving DeFi infrastructure for the autonomous economy.

@@ -1,4 +1,4 @@
-# Cloudflare DNS Setup for StealthPay
+# Cloudflare DNS Setup for Sthrip
 
 ## Что делаем
 Настраиваем домен + SSL + защиту от DDoS для твоего API.
@@ -7,7 +7,7 @@
 
 1. Открой https://dash.cloudflare.com
 2. Нажми "Add a Site"
-3. Введи свой домен (например: `stealthpay.io` или `api.yourdomain.com`)
+3. Введи свой домен (например: `sthrip.io` или `api.yourdomain.com`)
 4. Выбери Free Plan ($0)
 
 ## Шаг 2: Сменить NS-записи у регистратора

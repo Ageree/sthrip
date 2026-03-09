@@ -30,6 +30,7 @@ wheels/
 *.egg
 
 # Testing
+tests/
 .pytest_cache/
 .coverage
 htmlcov/
@@ -47,8 +48,15 @@ nosetests.xml
 .DS_Store
 Thumbs.db
 
-# Documentation
+# Exclude from build context
+scripts/
 docs/
+examples/
+monitoring/
+hetzner/
+contracts/
+
+# Documentation (allow README)
 *.md
 !README.md
 
@@ -66,3 +74,6 @@ docs/
 *.keys
 *.cache
 wallets/
+
+# Claude / AI
+.claude/

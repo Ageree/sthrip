@@ -30,16 +30,16 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Create app user
-RUN groupadd -r stealthpay && useradd -r -g stealthpay stealthpay
+RUN groupadd -r sthrip && useradd -r -g sthrip sthrip
 
 # Set working directory
 WORKDIR /app
 
 # Copy application code
-COPY --chown=stealthpay:stealthpay . .
+COPY --chown=sthrip:sthrip . .
 
 # Switch to non-root user
-USER stealthpay
+USER sthrip
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
@@ -49,4 +49,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 EXPOSE 8000
 
 # Run the application
-CMD ["uvicorn", "stealthpay.api.main_v2:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD ["uvicorn", "sthrip.api.main_v2:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

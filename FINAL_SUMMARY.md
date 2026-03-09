@@ -1,4 +1,4 @@
-# StealthPay - Final Implementation Summary
+# Sthrip - Final Implementation Summary
 
 🥷 **Anonymous Payments & Cross-Chain Bridge for AI Agents**
 
@@ -19,7 +19,7 @@ Production-ready atomic swap implementation using Hash Time Locked Contracts (HT
 
 **Files:**
 ```
-stealthpay/swaps/
+sthrip/swaps/
 ├── btc/
 │   ├── rpc_client.py      # Bitcoin Core RPC
 │   ├── htlc.py            # HTLC creation & scripts
@@ -47,7 +47,7 @@ MPC-based bridge with threshold signatures.
 
 **Files:**
 ```
-stealthpay/bridge/
+sthrip/bridge/
 ├── tss/
 │   ├── dkg.py             # Distributed Key Generation
 │   ├── signer.py          # Threshold signing
@@ -104,7 +104,7 @@ stealthpay/bridge/
 ```bash
 # Clone repository
 git clone <repo>
-cd stealthpay
+cd sthrip
 
 # Install dependencies
 pip install -r requirements.txt
@@ -127,25 +127,25 @@ docker-compose -f docker-compose.full.yml up -d
 python -m pytest tests/ -v
 
 # With coverage
-python -m pytest tests/ --cov=stealthpay
+python -m pytest tests/ --cov=sthrip
 ```
 
 ### 4. Use CLI
 
 ```bash
 # Atomic Swap (Seller)
-stealthpay swap create-seller \
+sthrip swap create-seller \
     --btc-amount 0.01 \
     --xmr-amount 1.0 \
     --receive-btc bc1q...
 
 # Bridge ETH → XMR
-stealthpay bridge eth-to-xmr \
+sthrip bridge eth-to-xmr \
     --amount 0.1 \
     --xmr-address 44...
 
 # Run MPC Node
-stealthpay bridge run-node \
+sthrip bridge run-node \
     --config config/node1.yaml \
     --node-id mpc_node_1
 ```
@@ -216,10 +216,10 @@ stealthpay bridge run-node \
 
 ### For AI Agents
 ```python
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
 # Agent receives payment
-agent = StealthPay.from_env()
+agent = Sthrip.from_env()
 payment = agent.await_payment(timeout=3600)
 
 # Check balance
@@ -276,7 +276,7 @@ transfer = await bridge.bridge_eth_to_xmr(
 
 ```bash
 # Fork and clone
-git clone https://github.com/yourname/stealthpay.git
+git clone https://github.com/yourname/sthrip.git
 
 # Create branch
 git checkout -b feature/your-feature
@@ -308,8 +308,8 @@ MIT License - See [LICENSE](LICENSE)
 ## 📞 Contact
 
 - **Issues:** GitHub Issues
-- **Security:** security@stealthpay.io
-- **Discord:** [StealthPay Community]
+- **Security:** security@sthrip.io
+- **Discord:** [Sthrip Community]
 
 ---
 

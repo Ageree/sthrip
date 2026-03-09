@@ -1,7 +1,7 @@
 """Tests for fee collector service"""
 import pytest
 from decimal import Decimal
-from stealthpay.services.fee_collector import FeeCollector, FeeType, DEFAULT_FEES
+from sthrip.services.fee_collector import FeeCollector, FeeType, DEFAULT_FEES
 
 
 class TestFeeCalculation:
@@ -49,3 +49,240 @@ class TestFeeCalculation:
         assert hub.percent == Decimal("0.001")
         assert hub.min_fee == Decimal("0.0001")
         assert hub.max_fee == Decimal("1.0")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Escrow fee calculation (lines 144-158)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from unittest.mock import MagicMock, patch
+
+
+class TestEscrowFeeCalculation:
+    def setup_method(self):
+        self.collector = FeeCollector.__new__(FeeCollector)
+        self.collector.db = None
+        self.collector.fee_wallet_address = None
+
+    def test_escrow_fee_with_arbiter(self):
+        result = self.collector.calculate_escrow_fee(Decimal("10.0"), use_arbiter=True)
+        assert result["escrow_amount"] == Decimal("10.0")
+        assert result["platform_fee"] == Decimal("0.1")  # 1% of 10
+        assert result["arbiter_fee"] == Decimal("0.05")   # 0.5% of 10
+        assert result["total_fee"] == Decimal("0.15")
+        assert result["buyer_deposits"] == Decimal("10.15")
+        assert result["seller_receives"] == Decimal("10.0")
+
+    def test_escrow_fee_without_arbiter(self):
+        result = self.collector.calculate_escrow_fee(Decimal("10.0"), use_arbiter=False)
+        assert result["arbiter_fee"] == Decimal("0")
+        assert result["total_fee"] == result["platform_fee"]
+
+    def test_escrow_fee_min_applied(self):
+        result = self.collector.calculate_escrow_fee(Decimal("0.01"), use_arbiter=False)
+        assert result["platform_fee"] == Decimal("0.001")  # min_fee
+
+    def test_escrow_fee_max_applied(self):
+        result = self.collector.calculate_escrow_fee(Decimal("5000.0"), use_arbiter=False)
+        assert result["platform_fee"] == Decimal("10.0")  # max_fee
+
+    def test_escrow_arbiter_fee_capped(self):
+        result = self.collector.calculate_escrow_fee(Decimal("500.0"), use_arbiter=True)
+        assert result["arbiter_fee"] == Decimal("1.0")  # capped at 1.0
+
+    def test_escrow_fee_config(self):
+        config = DEFAULT_FEES[FeeType.ESCROW]
+        assert config.percent == Decimal("0.01")
+        assert config.min_fee == Decimal("0.001")
+        assert config.max_fee == Decimal("10.0")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# settle_hub_route (lines 304-316)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSettleHubRoute:
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_settle_existing_route(self, mock_get_db):
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_route = MagicMock()
+        mock_route.settled_at = None
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_route
+
+        collector = FeeCollector()
+        result = collector.settle_hub_route("hp_abc", "tx_hash_123")
+
+        assert result["payment_id"] == "hp_abc"
+        assert result["status"] == "settled"
+        assert result["settlement_tx"] == "tx_hash_123"
+
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_settle_nonexistent_route(self, mock_get_db):
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+        mock_db.query.return_value.filter.return_value.first.return_value = None
+
+        collector = FeeCollector()
+        with pytest.raises(ValueError, match="Route not found"):
+            collector.settle_hub_route("hp_nonexistent", "tx_hash")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_revenue_stats (lines 325-354)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestGetRevenueStats:
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_returns_stats(self, mock_get_db):
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_query = MagicMock()
+        mock_db.query.return_value = mock_query
+        mock_filter = MagicMock()
+        mock_query.filter.return_value = mock_filter
+        mock_filter.scalar.return_value = Decimal("1.5")
+        mock_filter.count.return_value = 10
+
+        collector = FeeCollector()
+        result = collector.get_revenue_stats(days=30)
+
+        assert result["period_days"] == 30
+        assert "hub_routing_revenue_xmr" in result
+        assert "escrow_revenue_xmr" in result
+        assert "api_calls_revenue_usd" in result
+        assert "total_routes" in result
+        assert "average_fee_per_route" in result
+
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_zero_routes_no_division_error(self, mock_get_db):
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_query = MagicMock()
+        mock_db.query.return_value = mock_query
+        mock_filter = MagicMock()
+        mock_query.filter.return_value = mock_filter
+        mock_filter.scalar.return_value = None  # No revenue
+        mock_filter.count.return_value = 0       # No routes
+
+        collector = FeeCollector()
+        result = collector.get_revenue_stats(days=7)
+
+        assert result["total_routes"] == 0
+        assert result["average_fee_per_route"] == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_pending_fees (lines 365-371)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestGetPendingFees:
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_returns_pending_fees_list(self, mock_get_db):
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_fee = MagicMock()
+        mock_fee.id = "fee_1"
+        mock_fee.source_type = "hub_routing"
+        mock_fee.amount = Decimal("0.05")
+        mock_fee.token = "XMR"
+        mock_fee.created_at.isoformat.return_value = "2026-03-09T00:00:00"
+
+        mock_db.query.return_value.filter.return_value.all.return_value = [mock_fee]
+
+        collector = FeeCollector()
+        result = collector.get_pending_fees(token="XMR")
+
+        assert len(result) == 1
+        assert result[0]["id"] == "fee_1"
+        assert result[0]["amount"] == 0.05
+        assert result[0]["token"] == "XMR"
+
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_empty_pending_fees(self, mock_get_db):
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_db.query.return_value.filter.return_value.all.return_value = []
+
+        collector = FeeCollector()
+        result = collector.get_pending_fees()
+        assert result == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# withdraw_fees (lines 384-398)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestWithdrawFees:
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_withdraw_pending_fees(self, mock_get_db):
+        from sthrip.db.models import FeeCollectionStatus
+
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_fee_1 = MagicMock()
+        mock_fee_1.status = FeeCollectionStatus.PENDING
+        mock_fee_1.amount = Decimal("0.1")
+
+        mock_fee_2 = MagicMock()
+        mock_fee_2.status = FeeCollectionStatus.PENDING
+        mock_fee_2.amount = Decimal("0.1")
+
+        mock_db.query.return_value.filter.return_value.first.side_effect = [mock_fee_1, mock_fee_2]
+
+        collector = FeeCollector()
+        result = collector.withdraw_fees(["fee_1", "fee_2"], "tx_abc")
+
+        assert result["withdrawn_fees"] == 2
+        assert result["total_amount"] == 0.2
+        assert result["tx_hash"] == "tx_abc"
+
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_withdraw_skips_nonpending(self, mock_get_db):
+        from sthrip.db.models import FeeCollectionStatus
+
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_fee = MagicMock()
+        mock_fee.status = FeeCollectionStatus.WITHDRAWN  # Already withdrawn
+        mock_fee.amount = Decimal("0.1")
+
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_fee
+
+        collector = FeeCollector()
+        result = collector.withdraw_fees(["fee_1"], "tx_abc")
+
+        assert result["total_amount"] == 0.0
+
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_withdraw_missing_fee(self, mock_get_db):
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_db.query.return_value.filter.return_value.first.return_value = None
+
+        collector = FeeCollector()
+        result = collector.withdraw_fees(["nonexistent"], "tx_abc")
+
+        assert result["total_amount"] == 0.0
+        assert result["withdrawn_fees"] == 1

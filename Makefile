@@ -1,13 +1,13 @@
-# StealthPay Makefile - Real Monero Setup
+# Sthrip Makefile - Real Monero Setup
 
 .PHONY: help install-monero create-wallet start-rpc test balance
 
 MONERO_DIR = $(HOME)/monero
-WALLET_DIR = $(HOME)/stealthpay-wallet
+WALLET_DIR = $(HOME)/sthrip-wallet
 DAEMON_HOST = node.moneroworld.com:18089
 
 help:
-	@echo "🥷 StealthPay - Real Monero Setup"
+	@echo "🥷 Sthrip - Real Monero Setup"
 	@echo "=================================="
 	@echo ""
 	@echo "Available commands:"
@@ -37,7 +37,7 @@ create-wallet:
 	@echo "  3. Press Enter to confirm password"
 	@echo ""
 	@cd $(WALLET_DIR) && $(MONERO_DIR)/monero-wallet-cli \
-		--generate-new-wallet stealthpay \
+		--generate-new-wallet sthrip \
 		--daemon-address $(DAEMON_HOST)
 	@echo ""
 	@echo "✅ Wallet created in $(WALLET_DIR)"
@@ -48,7 +48,7 @@ start-rpc:
 	@echo "Connecting to $(DAEMON_HOST)"
 	@echo ""
 	@cd $(WALLET_DIR) && $(MONERO_DIR)/monero-wallet-rpc \
-		--wallet-file stealthpay \
+		--wallet-file sthrip \
 		--password "" \
 		--rpc-bind-port 18082 \
 		--rpc-bind-ip 127.0.0.1 \
@@ -57,11 +57,11 @@ start-rpc:
 		--trusted-daemon
 
 test:
-	@echo "🧪 Testing StealthPay connection..."
-	@python3 -c "from stealthpay import StealthPay; a = StealthPay.from_env(); print(f'✅ Connected! Balance: {a.balance} XMR')"
+	@echo "🧪 Testing Sthrip connection..."
+	@python3 -c "from sthrip import Sthrip; a = Sthrip.from_env(); print(f'✅ Connected! Balance: {a.balance} XMR')"
 
 balance:
-	@python3 -c "from stealthpay import StealthPay; a = StealthPay.from_env(); info = a.get_info(); print(f'💰 Balance: {info.balance} XMR'); print(f'📍 Address: {info.address}')"
+	@python3 -c "from sthrip import Sthrip; a = Sthrip.from_env(); info = a.get_info(); print(f'💰 Balance: {info.balance} XMR'); print(f'📍 Address: {info.address}')"
 
 get-xmr:
 	@echo "💡 How to get XMR:"
@@ -75,7 +75,7 @@ get-xmr:
 	@echo "  • HodlHodl"
 	@echo ""
 	@echo "Option 3 - Earn:"
-	@echo "  • Sell data/services via StealthPay"
+	@echo "  • Sell data/services via Sthrip"
 	@echo "  • Mining (not recommended for small amounts)"
 	@echo ""
 	@echo "⚠️  NEVER buy XMR from suspicious sources!"

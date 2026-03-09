@@ -5,7 +5,7 @@
 set -e
 
 echo "============================================"
-echo "StealthPay Integration Test"
+echo "Sthrip Integration Test"
 echo "============================================"
 
 # Colors
@@ -93,10 +93,10 @@ import sys
 sys.path.insert(0, '.')
 
 from decimal import Decimal
-from stealthpay.swaps.coordinator import SwapFactory, SwapConfig
-from stealthpay.swaps.btc.rpc_client import create_regtest_client
-from stealthpay.swaps.xmr.wallet import create_stagenet_wallet
-from stealthpay.swaps.utils.bitcoin import generate_keypair
+from sthrip.swaps.coordinator import SwapFactory, SwapConfig
+from sthrip.swaps.btc.rpc_client import create_regtest_client
+from sthrip.swaps.xmr.wallet import create_stagenet_wallet
+from sthrip.swaps.utils.bitcoin import generate_keypair
 
 async def main():
     print("\n=== Full Swap Simulation ===\n")
@@ -159,7 +159,7 @@ async def main():
         print(f"   Bob pubkey: {bob_pub.hex()[:40]}...")
         
         print("\n5. Creating HTLC...")
-        from stealthpay.swaps.btc.htlc import create_simple_htlc_for_swap
+        from sthrip.swaps.btc.htlc import create_simple_htlc_for_swap
         import hashlib
         import secrets
         

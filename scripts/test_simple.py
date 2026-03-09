@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple Working Demo of StealthPay Tests
+Simple Working Demo of Sthrip Tests
 """
 
 import asyncio
@@ -269,7 +269,7 @@ async def test_e2e_simulation():
 async def main():
     """Run all tests"""
     print("\n" + "="*70)
-    print(" STEALTHPAY TESTING SUITE - DEMO")
+    print(" STHRIP TESTING SUITE - DEMO")
     print("="*70)
     print()
     

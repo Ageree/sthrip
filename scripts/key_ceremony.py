@@ -26,8 +26,8 @@ from typing import List, Optional
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stealthpay.bridge.tss_client import TSSClient
-from stealthpay.bridge.hsm import VaultManager, AWSKMSManager
+from sthrip.bridge.tss_client import TSSClient
+from sthrip.bridge.hsm import VaultManager, AWSKMSManager
 
 
 def print_header(party_id: int):
@@ -35,7 +35,7 @@ def print_header(party_id: int):
     print("""
 ╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
-║           STEALTHPAY MPC KEY GENERATION CEREMONY                 ║
+║           STHRIP MPC KEY GENERATION CEREMONY                 ║
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 """)
@@ -181,7 +181,7 @@ def perform_key_generation(
             stored = hsm.store_key_share(
                 party_id=str(party_id),
                 key_share=key_share.data,
-                alias=f"stealthpay-mpc-party-{party_id}"
+                alias=f"sthrip-mpc-party-{party_id}"
             )
             
             print(f"✓ Key share stored in {stored.backend.upper()}")
@@ -258,7 +258,7 @@ def create_backup(party_id: int, results: dict, output_dir: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MPC Key Generation Ceremony for StealthPay"
+        description="MPC Key Generation Ceremony for Sthrip"
     )
     parser.add_argument(
         "--party-id",

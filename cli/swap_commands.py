@@ -1,5 +1,5 @@
 """
-StealthPay CLI - Atomic Swap Commands
+Sthrip CLI - Atomic Swap Commands
 
 Commands for BTC↔XMR atomic swaps:
     swap create-seller    - Create swap as XMR seller
@@ -24,9 +24,9 @@ from typing import Optional
 # Add parent to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stealthpay.swaps.coordinator import SwapCoordinator, SwapConfig, SwapFactory, SwapPhase
-from stealthpay.swaps.btc.rpc_client import BitcoinRPCClient, create_regtest_client, create_testnet_client
-from stealthpay.swaps.xmr.wallet import MoneroWallet, create_stagenet_wallet
+from sthrip.swaps.coordinator import SwapCoordinator, SwapConfig, SwapFactory, SwapPhase
+from sthrip.swaps.btc.rpc_client import BitcoinRPCClient, create_regtest_client, create_testnet_client
+from sthrip.swaps.xmr.wallet import MoneroWallet, create_stagenet_wallet
 
 
 # Storage for swap states (in-memory for now, should be persistent)
@@ -111,7 +111,7 @@ def cmd_create_seller(args):
         print(f"   Your BTC pubkey: {coordinator.state.btc_pubkey}")
         print(f"\nNext steps:")
         print(f"   1. Share your Swap ID and BTC pubkey with buyer")
-        print(f"   2. Run: stealthpay swap setup-multisig --swap-id {coordinator.state.swap_id}")
+        print(f"   2. Run: sthrip swap setup-multisig --swap-id {coordinator.state.swap_id}")
         
         return coordinator.state.swap_id
         
@@ -197,11 +197,11 @@ def cmd_setup_multisig(args):
             
             if coordinator.state.role.value == "seller":
                 print(f"\nNext step:")
-                print(f"   stealthpay swap fund-xmr --swap-id {args.swap_id}")
+                print(f"   sthrip swap fund-xmr --swap-id {args.swap_id}")
             else:
                 print(f"\nNext step:")
                 print(f"   Wait for seller to fund XMR, then:")
-                print(f"   stealthpay swap create-btc-htlc --swap-id {args.swap_id}")
+                print(f"   sthrip swap create-btc-htlc --swap-id {args.swap_id}")
             
             return True
         except Exception as e:
@@ -322,25 +322,25 @@ def cmd_status(args):
     # Show next steps
     print(f"\n   Next steps:")
     if state.phase == SwapPhase.INIT:
-        print(f"     1. Setup multisig: stealthpay swap setup-multisig --swap-id {args.swap_id}")
+        print(f"     1. Setup multisig: sthrip swap setup-multisig --swap-id {args.swap_id}")
     elif state.phase == SwapPhase.XMR_SETUP:
         if state.role.value == "seller":
-            print(f"     1. Fund XMR: stealthpay swap fund-xmr --swap-id {args.swap_id}")
+            print(f"     1. Fund XMR: sthrip swap fund-xmr --swap-id {args.swap_id}")
         else:
             print(f"     1. Wait for seller to fund XMR")
     elif state.phase == SwapPhase.XMR_FUNDING:
         if state.role.value == "buyer":
-            print(f"     1. Create BTC HTLC: stealthpay swap create-btc-htlc --swap-id {args.swap_id} --counterparty-pubkey <pubkey>")
+            print(f"     1. Create BTC HTLC: sthrip swap create-btc-htlc --swap-id {args.swap_id} --counterparty-pubkey <pubkey>")
         else:
             print(f"     1. Wait for buyer to create BTC HTLC")
     elif state.phase == SwapPhase.BTC_HTLC_CREATED:
         if state.role.value == "seller":
-            print(f"     1. Claim BTC: stealthpay swap claim-btc --swap-id {args.swap_id}")
+            print(f"     1. Claim BTC: sthrip swap claim-btc --swap-id {args.swap_id}")
         else:
             print(f"     1. Wait for seller to claim BTC")
     elif state.phase == SwapPhase.BTC_CLAIMED:
         if state.role.value == "buyer":
-            print(f"     1. Claim XMR: stealthpay swap claim-xmr --swap-id {args.swap_id} --preimage <preimage>")
+            print(f"     1. Claim XMR: sthrip swap claim-xmr --swap-id {args.swap_id} --preimage <preimage>")
 
 
 def cmd_list(args):
@@ -433,7 +433,7 @@ def add_swap_subparser(subparsers):
 def handle_swap_command(args):
     """Handle swap subcommands"""
     if not hasattr(args, 'swap_command') or not args.swap_command:
-        print("❌ No swap command specified. Use: stealthpay swap --help")
+        print("❌ No swap command specified. Use: sthrip swap --help")
         return
     
     commands = {

@@ -20,12 +20,12 @@ print("  ✓ Address never reused")
 print("  ✓ Multi-node broadcasting")
 print("=" * 60)
 
-from stealthpay import StealthPay
-from stealthpay.privacy import (
+from sthrip import Sthrip
+from sthrip.privacy import (
     PrivacyConfig, PrivacyEnhancer, TransactionTiming,
     TransactionScheduler, calculate_privacy_score
 )
-from stealthpay.antifingerprint import (
+from sthrip.antifingerprint import (
     FingerprintRandomizer, AmountRandomizer,
     TimingRandomizer, DecoyManager, FingerprintChecker
 )
@@ -45,7 +45,7 @@ config = PrivacyConfig(
     decoy_amount_variance=0.01
 )
 
-agent = StealthPay(
+agent = Sthrip(
     rpc_host="127.0.0.1",
     rpc_port=18082
 )

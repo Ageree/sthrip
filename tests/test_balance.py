@@ -4,11 +4,11 @@ from decimal import Decimal
 from uuid import uuid4
 from sqlalchemy import create_engine, String, event
 from sqlalchemy.orm import sessionmaker
-from stealthpay.db.models import (
+from sthrip.db.models import (
     Base, Agent, AgentReputation, AgentBalance,
     AgentTier, RateLimitTier, PrivacyLevel,
 )
-from stealthpay.db.repository import BalanceRepository
+from sthrip.db.repository import BalanceRepository
 
 # Only create the tables we need for testing (avoids INET type issue with SQLite)
 _TEST_TABLES = [

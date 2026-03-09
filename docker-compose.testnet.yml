@@ -12,7 +12,7 @@ services:
     ports:
       - "50051:50051"
     networks:
-      - stealthpay-testnet
+      - sthrip-testnet
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=:50051"]
@@ -45,7 +45,7 @@ services:
     ports:
       - "10001:10001"
     networks:
-      - stealthpay-testnet
+      - sthrip-testnet
     depends_on:
       - tss-service
       - monero-wallet
@@ -77,7 +77,7 @@ services:
     ports:
       - "10002:10002"
     networks:
-      - stealthpay-testnet
+      - sthrip-testnet
     depends_on:
       - tss-service
       - monero-wallet
@@ -109,7 +109,7 @@ services:
     ports:
       - "10003:10003"
     networks:
-      - stealthpay-testnet
+      - sthrip-testnet
     depends_on:
       - tss-service
       - monero-wallet
@@ -132,7 +132,7 @@ services:
     ports:
       - "38082:38082"
     networks:
-      - stealthpay-testnet
+      - sthrip-testnet
     restart: unless-stopped
 
   # Redis for caching and rate limiting
@@ -142,20 +142,20 @@ services:
     volumes:
       - redis-data:/data
     networks:
-      - stealthpay-testnet
+      - sthrip-testnet
     restart: unless-stopped
 
   # PostgreSQL for persistence
   postgres:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_USER=stealthpay
+      - POSTGRES_USER=sthrip
       - POSTGRES_PASSWORD=${DB_PASSWORD:-changeme}
-      - POSTGRES_DB=stealthpay
+      - POSTGRES_DB=sthrip
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
-      - stealthpay-testnet
+      - sthrip-testnet
     restart: unless-stopped
 
   # Monitoring - Prometheus
@@ -167,7 +167,7 @@ services:
     ports:
       - "9090:9090"
     networks:
-      - stealthpay-testnet
+      - sthrip-testnet
     restart: unless-stopped
 
   # Monitoring - Grafana
@@ -182,7 +182,7 @@ services:
     ports:
       - "3000:3000"
     networks:
-      - stealthpay-testnet
+      - sthrip-testnet
     restart: unless-stopped
 
 volumes:
@@ -193,5 +193,5 @@ volumes:
   grafana-data:
 
 networks:
-  stealthpay-testnet:
+  sthrip-testnet:
     driver: bridge

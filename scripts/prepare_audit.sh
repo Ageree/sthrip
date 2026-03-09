@@ -1,16 +1,16 @@
 #!/bin/bash
-# Prepare StealthPay for security audit
+# Prepare Sthrip for security audit
 
 set -e
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  StealthPay Security Audit Preparation"
+echo "  Sthrip Security Audit Preparation"
 echo "═══════════════════════════════════════════════════════════"
 echo
 
 AUDIT_DIR="audit-package"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-PACKAGE_NAME="stealthpay-audit-${TIMESTAMP}.zip"
+PACKAGE_NAME="sthrip-audit-${TIMESTAMP}.zip"
 
 # Clean previous audit packages
 rm -rf ${AUDIT_DIR} *.zip
@@ -23,7 +23,7 @@ mkdir -p ${AUDIT_DIR}/{01-source-code/{contracts,tss-service,python-client},02-d
 echo "Copying source code..."
 cp -r ../contracts/*.sol ${AUDIT_DIR}/01-source-code/contracts/ 2>/dev/null || true
 cp -r ../tss-service/*.go ../tss-service/**/*.go ${AUDIT_DIR}/01-source-code/tss-service/ 2>/dev/null || true
-cp -r ../stealthpay/bridge/tss_client/*.py ${AUDIT_DIR}/01-source-code/python-client/ 2>/dev/null || true
+cp -r ../sthrip/bridge/tss_client/*.py ${AUDIT_DIR}/01-source-code/python-client/ 2>/dev/null || true
 
 # Copy documentation
 echo "Copying documentation..."
@@ -37,7 +37,7 @@ cd ..
 # Python tests
 if [ -d "tests" ]; then
     echo "Running Python tests..."
-    python -m pytest tests/ -v --cov=stealthpay --cov-report=html --cov-report=term -x > ${AUDIT_DIR}/03-test-results/pytest-output.txt 2>&1 || true
+    python -m pytest tests/ -v --cov=sthrip --cov-report=html --cov-report=term -x > ${AUDIT_DIR}/03-test-results/pytest-output.txt 2>&1 || true
     cp -r htmlcov ${AUDIT_DIR}/03-test-results/ 2>/dev/null || true
 fi
 
@@ -60,10 +60,10 @@ cp -r scripts/*.py scripts/*.sh ${AUDIT_DIR}/05-scripts/ 2>/dev/null || true
 
 # Create audit brief
 cat > ${AUDIT_DIR}/05-audit-brief.md << 'EOF'
-# StealthPay Security Audit Brief
+# Sthrip Security Audit Brief
 
 ## Project Overview
-**Name**: StealthPay  
+**Name**: Sthrip  
 **Type**: Cross-chain bridge (ETH ↔ XMR)  
 **MPC**: 3-of-5 threshold signature  
 **Contracts**: Solidity 0.8.19  
@@ -73,7 +73,7 @@ cat > ${AUDIT_DIR}/05-audit-brief.md << 'EOF'
 
 ### In Scope
 1. Smart Contracts
-   - StealthPayBridge.sol
+   - SthripBridge.sol
    - InsuranceFund.sol
    - PriceOracle.sol
 
@@ -126,7 +126,7 @@ cat > ${AUDIT_DIR}/05-audit-brief.md << 'EOF'
 
 ## Contacts
 - **Technical Lead**: [Email]
-- **Security**: security@stealthpay.io
+- **Security**: security@sthrip.io
 - **Emergency**: +[Phone]
 
 ## Deliverables Expected

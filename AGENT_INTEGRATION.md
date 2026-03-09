@@ -1,16 +1,16 @@
 # Agent Integration Guide
 
-Guide for integrating StealthPay into AI Agents.
+Guide for integrating Sthrip into AI Agents.
 
 ## Quick Start for Agents
 
 ### 1. Python SDK (Recommended)
 
 ```python
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
 # Initialize
-agent = StealthPay.from_env()
+agent = Sthrip.from_env()
 
 # Check balance
 info = agent.get_info()
@@ -48,13 +48,13 @@ curl -X POST http://localhost:8000/payments/send \
 ### 3. LangChain Integration
 
 ```python
-from stealthpay import StealthPay
-from stealthpay.integrations.langchain import get_stealthpay_tools
+from sthrip import Sthrip
+from sthrip.integrations.langchain import get_sthrip_tools
 from langchain.agents import initialize_agent
 
 # Setup
-stealthpay = StealthPay.from_env()
-tools = get_stealthpay_tools(stealthpay)
+sthrip = Sthrip.from_env()
+tools = get_sthrip_tools(sthrip)
 
 # Create agent
 agent = initialize_agent(tools, llm, agent="zero-shot-react-description")
@@ -73,9 +73,9 @@ Add to Claude Desktop config:
 ```json
 {
   "mcpServers": {
-    "stealthpay": {
+    "sthrip": {
       "command": "python",
-      "args": ["/path/to/stealthpay/integrations/mcp_server.py"],
+      "args": ["/path/to/sthrip/integrations/mcp_server.py"],
       "env": {
         "MONERO_RPC_HOST": "127.0.0.1",
         "MONERO_RPC_PORT": "18082"
@@ -96,12 +96,12 @@ Agent sells data/services:
 ```python
 class ServiceAgent:
     def __init__(self):
-        self.stealthpay = StealthPay.from_env()
+        self.sthrip = Sthrip.from_env()
         self.price = 0.001
     
     def handle_request(self, service):
         # 1. Create payment request
-        stealth = self.stealthpay.create_stealth_address()
+        stealth = self.sthrip.create_stealth_address()
         
         return {
             "price": self.price,
@@ -130,7 +130,7 @@ class ConsumerAgent:
         request = self.create_request(seller_url, service)
         
         # 3. Send payment
-        payment = self.stealthpay.pay(
+        payment = self.sthrip.pay(
             request['pay_to'],
             request['price']
         )
@@ -146,7 +146,7 @@ Agent acts as trusted arbiter:
 ```python
 class ArbiterAgent:
     def create_escrow(self, buyer, seller, amount):
-        return self.stealthpay.create_escrow(
+        return self.sthrip.create_escrow(
             seller_address=seller,
             arbiter_address=self.address,
             amount=amount,
@@ -155,7 +155,7 @@ class ArbiterAgent:
     
     def resolve_dispute(self, escrow_id, decision):
         # "release" to seller or "refund" to buyer
-        return self.stealthpay.escrow.arbitrate(
+        return self.sthrip.escrow.arbitrate(
             escrow_id, decision, signature
         )
 ```
@@ -164,19 +164,19 @@ class ArbiterAgent:
 
 ```bash
 # Check balance
-stealthpay balance
+sthrip balance
 
 # Send payment
-stealthpay send 44... 0.01 --memo "API payment"
+sthrip send 44... 0.01 --memo "API payment"
 
 # Create address
-stealthpay address create --purpose "service-payment"
+sthrip address create --purpose "service-payment"
 
 # Churn for privacy
-stealthpay churn 1.0 --rounds 3
+sthrip churn 1.0 --rounds 3
 
 # Create escrow
-stealthpay escrow create 44seller... 44arbiter... 0.5 "Description"
+sthrip escrow create 44seller... 44arbiter... 0.5 "Description"
 ```
 
 ## Security Best Practices
@@ -199,7 +199,7 @@ MONERO_RPC_USER=agent
 MONERO_RPC_PASS=secret
 
 # For API
-STEALTHPAY_API_KEY=sk_...
+STHRIP_API_KEY=sk_...
 ```
 
 ## Docker Deployment
@@ -212,8 +212,8 @@ services:
     volumes:
       - ./wallet:/wallet
     
-  stealthpay-api:
-    image: stealthpay/sdk-python
+  sthrip-api:
+    image: sthrip/sdk-python
     ports:
       - "8000:8000"
     environment:
@@ -228,15 +228,15 @@ services:
 - Verify MONERO_RPC_HOST/PORT
 
 **Insufficient funds:**
-- Check balance: `stealthpay balance`
+- Check balance: `sthrip balance`
 - Wait for unlock (10 confirmations)
 
 **Payment not confirming:**
 - Normal: 20 minutes for 10 confirmations
-- Check: `stealthpay history`
+- Check: `sthrip history`
 
 ## Support
 
-- Docs: https://docs.stealthpay.io
-- Discord: https://discord.gg/stealthpay
+- Docs: https://docs.sthrip.io
+- Discord: https://discord.gg/sthrip
 - Issues: GitHub Issues

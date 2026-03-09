@@ -3,7 +3,7 @@ Example: Payment channel for instant micropayments
 Perfect for high-frequency agent interactions
 """
 
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
 print("⚡ Payment Channel Example")
 print("=" * 50)
@@ -12,8 +12,8 @@ print("=" * 50)
 # Agent B: API consumer (付费调用)
 
 print("\n🤖 Setting up agents...")
-provider = StealthPay(rpc_host="127.0.0.1", rpc_port=18082)
-consumer = StealthPay(rpc_host="127.0.0.1", rpc_port=18083)
+provider = Sthrip(rpc_host="127.0.0.1", rpc_port=18082)
+consumer = Sthrip(rpc_host="127.0.0.1", rpc_port=18083)
 
 print(f"   Provider: {provider.address[:20]}...")
 print(f"   Consumer: {consumer.address[:20]}...")

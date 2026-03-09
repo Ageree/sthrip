@@ -43,5 +43,8 @@ htmlcov/
 *.keys
 *.cache
 
+# Claude Code
+.claude/
+
 # Logs
 *.log

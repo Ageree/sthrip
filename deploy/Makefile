@@ -1,4 +1,4 @@
-# StealthPay Deployment Makefile
+# Sthrip Deployment Makefile
 
 .PHONY: help build deploy status logs rollback stop clean ssl-check
 
@@ -7,12 +7,12 @@ ENV ?= production
 COMPOSE_FILE = docker-compose.yml
 
 help: ## Show this help
-	@echo "StealthPay Deployment Commands:"
+	@echo "Sthrip Deployment Commands:"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
 init: ## Initialize deployment (first time setup)
-	@echo "Initializing StealthPay deployment..."
+	@echo "Initializing Sthrip deployment..."
 	@cp -n .env.example .env 2>/dev/null || echo ".env already exists"
 	@mkdir -p nginx/ssl backups logs
 	@echo "Please edit .env file with your configuration"
@@ -24,7 +24,7 @@ ssl-generate: ## Generate self-signed SSL certificate (for testing)
 	@openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 		-keyout nginx/ssl/privkey.pem \
 		-out nginx/ssl/fullchain.pem \
-		-subj "/C=US/ST=State/L=City/O=StealthPay/CN=localhost"
+		-subj "/C=US/ST=State/L=City/O=Sthrip/CN=localhost"
 	@echo "Self-signed certificate generated"
 
 ssl-check: ## Check SSL certificate expiration
@@ -35,7 +35,7 @@ build: ## Build Docker images
 	@docker-compose -f $(COMPOSE_FILE) build --no-cache
 
 deploy: ## Deploy application
-	@echo "Deploying StealthPay..."
+	@echo "Deploying Sthrip..."
 	@./deploy.sh $(ENV) deploy
 
 deploy-quick: ## Quick deploy (no backup)
@@ -58,16 +58,16 @@ logs-db: ## Show database logs only
 	@docker-compose -f $(COMPOSE_FILE) logs -f --tail=100 postgres
 
 db-shell: ## Open PostgreSQL shell
-	@docker-compose -f $(COMPOSE_FILE) exec postgres psql -U stealthpay -d stealthpay
+	@docker-compose -f $(COMPOSE_FILE) exec postgres psql -U sthrip -d sthrip
 
 db-backup: ## Create database backup
 	@mkdir -p backups
-	@docker-compose -f $(COMPOSE_FILE) exec -T postgres pg_dump -U stealthpay stealthpay > backups/backup_$(shell date +%Y%m%d_%H%M%S).sql
+	@docker-compose -f $(COMPOSE_FILE) exec -T postgres pg_dump -U sthrip sthrip > backups/backup_$(shell date +%Y%m%d_%H%M%S).sql
 	@echo "Backup created"
 
 db-restore: ## Restore database from backup (make db-restore FILE=backups/backup_xxx.sql)
 	@if [ -z "$(FILE)" ]; then echo "Usage: make db-restore FILE=backups/backup_xxx.sql"; exit 1; fi
-	@docker-compose -f $(COMPOSE_FILE) exec -T postgres psql -U stealthpay stealthpay < $(FILE)
+	@docker-compose -f $(COMPOSE_FILE) exec -T postgres psql -U sthrip sthrip < $(FILE)
 	@echo "Database restored from $(FILE)"
 
 rollback: ## Rollback to previous version
@@ -115,11 +115,11 @@ monitor: ## Show real-time monitoring
 # Security
 security-scan: ## Run security scan on images
 	@docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-		aquasec/trivy image stealthpay/api:latest
+		aquasec/trivy image sthrip/api:latest
 
 # Info
 info: ## Show deployment info
-	@echo "StealthPay Deployment Info"
+	@echo "Sthrip Deployment Info"
 	@echo "=========================="
 	@echo "Environment: $(ENV)"
 	@echo "Docker Compose: $(COMPOSE_FILE)"

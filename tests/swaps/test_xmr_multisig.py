@@ -6,14 +6,14 @@ import pytest
 from decimal import Decimal
 from unittest.mock import Mock, MagicMock
 
-from stealthpay.swaps.xmr.multisig import (
+from sthrip.swaps.xmr.multisig import (
     MoneroMultisig,
     SwapRole,
     MultisigState,
     MoneroMultisigManager,
     XMRSwapState
 )
-from stealthpay.swaps.xmr.wallet import MoneroWallet
+from sthrip.swaps.xmr.wallet import MoneroWallet
 
 
 class TestMultisigSession:

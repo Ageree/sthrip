@@ -6,7 +6,7 @@ This agent consumes services from data-selling agents
 import requests
 import time
 
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
 
 class DataBuyingAgent:
@@ -22,7 +22,7 @@ class DataBuyingAgent:
     """
     
     def __init__(self):
-        self.stealthpay = StealthPay.from_env()
+        self.sthrip = Sthrip.from_env()
         self.purchases = []
     
     def discover_service(self, agent_url: str) -> dict:
@@ -91,7 +91,7 @@ class DataBuyingAgent:
         # Step 2: Send payment
         print("   Step 2: Sending payment...")
         try:
-            payment = self.stealthpay.pay(
+            payment = self.sthrip.pay(
                 to_address=payment_req['payment_address'],
                 amount=payment_req['price_xmr'],
                 memo=f"Payment for {service}",
@@ -109,7 +109,7 @@ class DataBuyingAgent:
         
         while time.time() - start_time < max_wait_seconds:
             # Check our payment status
-            status = self.stealthpay.get_payment(payment.tx_hash)
+            status = self.sthrip.get_payment(payment.tx_hash)
             if status and status.is_confirmed:
                 confirmed = True
                 print(f"   ✅ Payment confirmed!")
@@ -224,7 +224,7 @@ def demo():
     print("=" * 60)
     
     # Show balance
-    info = buyer.stealthpay.get_info()
+    info = buyer.sthrip.get_info()
     print(f"\n💰 My balance: {info.balance:.4f} XMR")
     print(f"📍 My address: {info.address[:40]}...")
     

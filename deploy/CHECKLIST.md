@@ -1,4 +1,4 @@
-# StealthPay Production Deployment Checklist
+# Sthrip Production Deployment Checklist
 
 ## 🔐 Credentials Required
 
@@ -15,7 +15,7 @@
 
 ### 2. Domain & SSL
 ```
-- Domain name: ________________ (e.g., api.stealthpay.io)
+- Domain name: ________________ (e.g., api.sthrip.io)
 - SSL certificate: ________________ (или я сгенерирую Let's Encrypt)
 - SSL private key: ________________
 ```
@@ -45,7 +45,7 @@
 ```
 - Admin API Key: ________________ (64+ символов случайных)
 - Secret Key: ________________ (64+ символов случайных)
-- CORS Origins: ________________ (через запятую, например: https://app.stealthpay.io,https://admin.stealthpay.io)
+- CORS Origins: ________________ (через запятую, например: https://app.sthrip.io,https://admin.sthrip.io)
 ```
 
 ### 6. Cloudflare (опционально)
@@ -86,8 +86,8 @@
 ssh user@server-ip
 
 # 2. Клонирование репозитория
-git clone https://github.com/stealthpay/stealthpay.git
-cd stealthpay/deploy
+git clone https://github.com/sthrip/sthrip.git
+cd sthrip/deploy
 
 # 3. Создание .env файла с вашими credentials
 nano .env
@@ -110,13 +110,13 @@ make health
 
 ```bash
 # Health check
-curl https://api.stealthpay.io/health
+curl https://api.sthrip.io/health
 
 # API работает
-curl https://api.stealthpay.io/v2/agents
+curl https://api.sthrip.io/v2/agents
 
 # SSL сертификат валиден
-curl -vI https://api.stealthpay.io 2>&1 | grep "SSL certificate"
+curl -vI https://api.sthrip.io 2>&1 | grep "SSL certificate"
 ```
 
 ---
@@ -151,7 +151,7 @@ make update
 После успешного deploy:
 
 ```
-=== StealthPay Deployment ===
+=== Sthrip Deployment ===
 Environment: production
 Time: 2026-03-03 10:00:00
 
@@ -172,11 +172,11 @@ Time: 2026-03-03 10:00:00
 Current status:
            Name                         Command               State                    Ports
 ---------------------------------------------------------------------------------------------------------
-stealthpay-api             uvicorn stealthpay.api.mai ...   Up (healthy)   8000/tcp
-stealthpay-nginx           /docker-entrypoint.sh ngin ...   Up             0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp
-stealthpay-postgres        docker-entrypoint.sh postgres    Up (healthy)   5432/tcp
-stealthpay-redis           docker-entrypoint.sh redis ...   Up (healthy)   6379/tcp
-stealthpay-webhook-worker  python -c import asyncio;  ...   Up             
+sthrip-api             uvicorn sthrip.api.mai ...   Up (healthy)   8000/tcp
+sthrip-nginx           /docker-entrypoint.sh ngin ...   Up             0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp
+sthrip-postgres        docker-entrypoint.sh postgres    Up (healthy)   5432/tcp
+sthrip-redis           docker-entrypoint.sh redis ...   Up (healthy)   6379/tcp
+sthrip-webhook-worker  python -c import asyncio;  ...   Up             
 
 [INFO] Cleanup complete
 ```

@@ -8,7 +8,7 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
 
 class DataSellingAgent:
@@ -24,7 +24,7 @@ class DataSellingAgent:
     
     def __init__(self, port=8080):
         self.port = port
-        self.stealthpay = StealthPay.from_env()
+        self.sthrip = Sthrip.from_env()
         self.pending_payments = {}  # Track payment requests
         self.price_per_request = 0.001  # XMR
         
@@ -56,7 +56,7 @@ class DataSellingAgent:
             raise ValueError(f"Unknown service: {service}")
         
         # Generate unique stealth address
-        stealth = self.stealthpay.create_stealth_address(
+        stealth = self.sthrip.create_stealth_address(
             purpose=f"{service}-{int(time.time())}"
         )
         
@@ -91,7 +91,7 @@ class DataSellingAgent:
             return True
         
         # Check recent payments
-        payments = self.stealthpay.get_payments(incoming=True, limit=50)
+        payments = self.sthrip.get_payments(incoming=True, limit=50)
         
         for payment in payments:
             # Check if amount matches (with small tolerance)
@@ -166,7 +166,7 @@ class DataSellingAgent:
         """List available services"""
         return {
             "agent_name": "Data Provider Agent",
-            "agent_address": self.stealthpay.address,
+            "agent_address": self.sthrip.address,
             "services": self.services
         }
 
@@ -226,7 +226,7 @@ def run_agent_server(port=8080):
     server = HTTPServer(('0.0.0.0', port), AgentHTTPHandler)
     
     print(f"🤖 Data Selling Agent started on port {port}")
-    print(f"   Address: {agent.stealthpay.address}")
+    print(f"   Address: {agent.sthrip.address}")
     print(f"   Services: {list(agent.services.keys())}")
     print(f"\n   Endpoints:")
     print(f"   GET  /              - List services")

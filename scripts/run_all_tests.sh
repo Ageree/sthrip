@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run all tests for StealthPay
+# Run all tests for Sthrip
 
 set -e
 
@@ -10,7 +10,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo "═══════════════════════════════════════════════════════════════════"
-echo "  STEALTHPAY COMPLETE TEST SUITE"
+echo "  STHRIP COMPLETE TEST SUITE"
 echo "═══════════════════════════════════════════════════════════════════"
 echo
 

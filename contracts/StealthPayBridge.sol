@@ -6,11 +6,11 @@ import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 
 /**
- * @title StealthPayBridge
+ * @title SthripBridge
  * @notice Cross-chain bridge between Ethereum and Monero using MPC
  * @dev Implements HTLC pattern with threshold signatures
  */
-contract StealthPayBridge is ReentrancyGuard, Pausable, AccessControl {
+contract SthripBridge is ReentrancyGuard, Pausable, AccessControl {
     // ============ Roles ============
     bytes32 public constant MPC_ROLE = keccak256("MPC_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");

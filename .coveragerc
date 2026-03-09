@@ -1,0 +1,29 @@
+[run]
+source = sthrip, api
+omit =
+    */tests/*
+    */swaps/*
+    */bridge/*
+    */cli/*
+    */contracts/*
+    */examples/*
+    */scripts/*
+    */integrations/*
+    */hub/*
+    sthrip/antifingerprint.py
+    sthrip/channels.py
+    sthrip/client.py
+    sthrip/escrow.py
+    sthrip/network.py
+    sthrip/privacy.py
+    sthrip/stealth.py
+    sthrip/wallet.py
+
+[report]
+show_missing = true
+fail_under = 80
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if __name__ == .__main__
+    raise NotImplementedError

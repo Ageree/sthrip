@@ -1,4 +1,4 @@
-# StealthPay Privacy Features
+# Sthrip Privacy Features
 
 ## 🔒 INSTANT Maximum Privacy
 
@@ -34,7 +34,7 @@ Total time: 1-3 minutes for MAXIMUM privacy
 
 ### 1. Stealth Addresses (Мгновенно)
 ```python
-from stealthpay.bridge.privacy import StealthAddressGenerator
+from sthrip.bridge.privacy import StealthAddressGenerator
 
 generator = StealthAddressGenerator()
 stealth = generator.generate_stealth_address(
@@ -47,7 +47,7 @@ stealth = generator.generate_stealth_address(
 
 ### 2. CoinJoin (1-2 минуты)
 ```python
-from stealthpay.bridge.mixing import ChaumianCoinJoin
+from sthrip.bridge.mixing import ChaumianCoinJoin
 
 coinjoin = ChaumianCoinJoin(min_anonymity_set=50)
 round_id = await coinjoin.start_round()
@@ -57,7 +57,7 @@ round_id = await coinjoin.start_round()
 
 ### 3. Submarine Swaps (Мгновенно)
 ```python
-from stealthpay.bridge.mixing import SubmarineSwapService
+from sthrip.bridge.mixing import SubmarineSwapService
 
 service = SubmarineSwapService()
 swap = await service.create_swap_in(amount, refund_addr)
@@ -67,7 +67,7 @@ swap = await service.create_swap_in(amount, refund_addr)
 
 ### 4. Zero-Knowledge Proofs (Мгновенно)
 ```python
-from stealthpay.bridge.privacy import ZKVerifier
+from sthrip.bridge.privacy import ZKVerifier
 
 proof = verifier.generate_ownership_proof(sk, pk)
 # ⏱️ <500ms

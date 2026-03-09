@@ -1,12 +1,12 @@
-# StealthPay Architecture
+# Sthrip Architecture
 
 ## System Overview
 
-StealthPay is a decentralized bridge between Ethereum and Monero, using Multi-Party Computation (MPC) for secure cross-chain transactions with **INSTANT maximum privacy**.
+Sthrip is a decentralized bridge between Ethereum and Monero, using Multi-Party Computation (MPC) for secure cross-chain transactions with **INSTANT maximum privacy**.
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   User Wallet   │────▶│  StealthPay     │────▶│  Monero Network │
+│   User Wallet   │────▶│  Sthrip     │────▶│  Monero Network │
 │   (Ethereum)    │◀────│  Bridge (MPC)   │◀────│   (Stagenet)    │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
                                │
@@ -30,7 +30,7 @@ StealthPay is a decentralized bridge between Ethereum and Monero, using Multi-Pa
 
 ### 1. Smart Contracts (Ethereum)
 
-- **StealthPayBridge.sol**: Main bridge contract with HTLC pattern
+- **SthripBridge.sol**: Main bridge contract with HTLC pattern
 - **InsuranceFund.sol**: Security insurance for bridge users
 - **PriceOracle.sol**: ETH/XMR price feeds
 

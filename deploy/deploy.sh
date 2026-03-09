@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 
-# StealthPay Production Deploy Script
+# Sthrip Production Deploy Script
 # Usage: ./deploy.sh [environment]
 
 ENVIRONMENT=${1:-production}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_NAME="stealthpay"
+PROJECT_NAME="sthrip"
 
-echo "=== StealthPay Deployment ==="
+echo "=== Sthrip Deployment ==="
 echo "Environment: $ENVIRONMENT"
 echo "Time: $(date)"
 echo ""
@@ -77,8 +77,8 @@ backup_database() {
     
     if docker-compose -f "$SCRIPT_DIR/docker-compose.yml" ps | grep -q postgres; then
         docker-compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T postgres pg_dump \
-            -U "${POSTGRES_USER:-stealthpay}" \
-            "${POSTGRES_DB:-stealthpay}" > "$BACKUP_FILE" || {
+            -U "${POSTGRES_USER:-sthrip}" \
+            "${POSTGRES_DB:-sthrip}" > "$BACKUP_FILE" || {
             log_warn "Backup failed, continuing..."
             return
         }
@@ -103,7 +103,7 @@ build_app() {
     log_info "Building application..."
     
     cd "$SCRIPT_DIR/.."
-    docker build -f deploy/Dockerfile -t stealthpay/api:latest .
+    docker build -f deploy/Dockerfile -t sthrip/api:latest .
     
     log_info "Application built"
 }
@@ -179,7 +179,7 @@ rollback() {
     
     if [ -n "$LATEST_BACKUP" ]; then
         log_info "Restoring from backup: $LATEST_BACKUP"
-        docker-compose exec -T postgres psql -U "${POSTGRES_USER:-stealthpay}" "${POSTGRES_DB:-stealthpay}" < "$LATEST_BACKUP"
+        docker-compose exec -T postgres psql -U "${POSTGRES_USER:-sthrip}" "${POSTGRES_DB:-sthrip}" < "$LATEST_BACKUP"
     fi
     
     # Restart previous version

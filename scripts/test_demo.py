@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Demo/ Simulation Test for StealthPay
+Demo/ Simulation Test for Sthrip
 
 Shows how testing works WITHOUT real money
 This simulates what would happen on Sepolia
@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from stealthpay.bridge.privacy import StealthAddressGenerator, ZKVerifier
+from sthrip.bridge.privacy import StealthAddressGenerator, ZKVerifier
 
 
 class Colors:
@@ -379,7 +379,7 @@ async def demo_privacy_features():
 async def main():
     """Run all demo tests"""
     print("\n" + "="*70)
-    print(" STEALTHPAY TESTING DEMONSTRATION")
+    print(" STHRIP TESTING DEMONSTRATION")
     print("="*70)
     print()
     print("This demo shows how testing works WITHOUT real money")

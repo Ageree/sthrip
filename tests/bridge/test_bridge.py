@@ -6,15 +6,15 @@ import pytest
 from decimal import Decimal
 from unittest.mock import Mock, MagicMock
 
-from stealthpay.bridge.contracts.eth_bridge import EthereumBridgeContract, BridgeLock
-from stealthpay.bridge.relayers.coordinator import (
+from sthrip.bridge.contracts.eth_bridge import EthereumBridgeContract, BridgeLock
+from sthrip.bridge.relayers.coordinator import (
     BridgeCoordinator,
     BridgeTransfer,
     BridgeDirection,
     BridgeTransferStatus,
     BridgeFeeCalculator
 )
-from stealthpay.bridge.relayers.mpc_node import MPCRelayerNode, TSSKeyGenerator, TSSKeyShare
+from sthrip.bridge.relayers.mpc_node import MPCRelayerNode, TSSKeyGenerator, TSSKeyShare
 
 
 class TestBridgeFeeCalculator:

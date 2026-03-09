@@ -3,9 +3,9 @@ Example: Anonymous escrow deal between two agents
 2-of-3 multisig: Buyer + Seller + Arbiter
 """
 
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
-print("🥷 StealthPay Escrow Example")
+print("🥷 Sthrip Escrow Example")
 print("=" * 50)
 
 # Three agents participate:
@@ -17,16 +17,16 @@ print("=" * 50)
 print("\n🤖 Initializing agents...")
 
 # Agent A - Buyer
-buyer = StealthPay(rpc_host="127.0.0.1", rpc_port=18082)
+buyer = Sthrip(rpc_host="127.0.0.1", rpc_port=18082)
 print(f"   Buyer: {buyer.address[:20]}...")
 print(f"   Balance: {buyer.balance:.4f} XMR")
 
 # Agent B - Seller
-seller = StealthPay(rpc_host="127.0.0.1", rpc_port=18083)  # Different wallet
+seller = Sthrip(rpc_host="127.0.0.1", rpc_port=18083)  # Different wallet
 print(f"   Seller: {seller.address[:20]}...")
 
 # Agent C - Arbiter (neutral)
-arbiter = StealthPay(rpc_host="127.0.0.1", rpc_port=18084)
+arbiter = Sthrip(rpc_host="127.0.0.1", rpc_port=18084)
 print(f"   Arbiter: {arbiter.address[:20]}...")
 
 print("\n📋 Step 1: Buyer creates escrow deal")

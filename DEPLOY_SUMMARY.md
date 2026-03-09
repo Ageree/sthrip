@@ -1,4 +1,4 @@
-# StealthPay Production Deployment — Summary
+# Sthrip Production Deployment — Summary
 
 ## ✅ Стек выбран
 
@@ -50,7 +50,7 @@ docker-compose.dev.yml    # PostgreSQL + Redis + API локально
 1. https://railway.app → Continue with GitHub
 2. https://console.hetzner.cloud → Регистрация
 3. https://dash.cloudflare.com → Регистрация
-4. Купить домен (например stealthpay.io)
+4. Купить домен (например sthrip.io)
 ```
 
 ### 2. Hetzner VPS (5 мин)
@@ -59,7 +59,7 @@ docker-compose.dev.yml    # PostgreSQL + Redis + API локально
 ssh root@YOUR_HETZNER_IP
 
 # Запустить установку Monero
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/stealthpay/hetzner/setup-monero.sh | bash
+curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/sthrip/hetzner/setup-monero.sh | bash
 
 # Сохранить выведенные credentials!
 ```
@@ -101,7 +101,7 @@ REDIS_URL=${{Redis.REDIS_URL}}
 # Monero (из Hetzner)
 MONERO_RPC_HOST=78.46.123.45        # IP с Hetzner
 MONERO_RPC_PORT=18082
-MONERO_RPC_USER=stealthpay
+MONERO_RPC_USER=sthrip
 MONERO_RPC_PASS=xxxxxxxxxxxxxxxxxxxx # Из setup-monero.sh
 
 # Security

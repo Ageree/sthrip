@@ -1,5 +1,5 @@
 """
-DEMO MODE - StealthPay without real Monero
+DEMO MODE - Sthrip without real Monero
 Use this to test and demonstrate functionality
 """
 
@@ -33,9 +33,9 @@ class MockWalletInfo:
     unlocked_balance: float
     height: int
 
-class MockStealthPay:
+class MockSthrip:
     """
-    Mock version of StealthPay for demonstration.
+    Mock version of Sthrip for demonstration.
     Simulates transactions without real blockchain.
     """
     
@@ -187,18 +187,18 @@ def run_full_demo():
     """Run complete demo scenario"""
     
     print("=" * 70)
-    print("🥷 STEALTHPAY DEMO - Full Agent Workflow")
+    print("🥷 STHRIP DEMO - Full Agent Workflow")
     print("=" * 70)
     print("\n⚠️  DEMO MODE: No real transactions, no real XMR")
-    print("   This simulates how StealthPay works\n")
+    print("   This simulates how Sthrip works\n")
     
     # Create two agents
     print("\n" + "─" * 70)
     print("STEP 1: Creating agents")
     print("─" * 70)
     
-    seller = MockStealthPay("Data-Seller-Agent")
-    buyer = MockStealthPay("Data-Buyer-Agent")
+    seller = MockSthrip("Data-Seller-Agent")
+    buyer = MockSthrip("Data-Buyer-Agent")
     
     print(f"\n✅ Created 2 agents")
     
@@ -242,7 +242,7 @@ def run_full_demo():
     print("STEP 5: Create escrow deal")
     print("─" * 70)
     
-    arbiter = MockStealthPay("Trusted-Arbiter-Agent")
+    arbiter = MockSthrip("Trusted-Arbiter-Agent")
     
     escrow = buyer.create_escrow(
         seller_address=seller.address,
@@ -277,7 +277,7 @@ def run_full_demo():
     print("  1. Install monero-wallet-rpc")
     print("  2. Create wallet: monero-wallet-cli --generate-new-wallet")
     print("  3. Start RPC: monero-wallet-rpc --wallet-file ...")
-    print("  4. Use real StealthPay instead of MockStealthPay")
+    print("  4. Use real Sthrip instead of MockSthrip")
     print("\nDocs: AGENT_INTEGRATION.md")
 
 
@@ -287,7 +287,7 @@ def interactive_demo():
     print("\n🎮 INTERACTIVE DEMO MODE")
     print("=" * 60)
     
-    agent = MockStealthPay("My-Agent")
+    agent = MockSthrip("My-Agent")
     
     while True:
         print(f"\n💰 Balance: {agent.balance_xmr:.4f} XMR")

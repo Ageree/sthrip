@@ -1,5 +1,5 @@
 """
-Example: LangChain agent with StealthPay capabilities
+Example: LangChain agent with Sthrip capabilities
 This agent can make payments autonomously
 """
 
@@ -9,8 +9,8 @@ import sys
 # Add parent to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stealthpay import StealthPay
-from stealthpay.integrations.langchain import get_stealthpay_tools
+from sthrip import Sthrip
+from sthrip.integrations.langchain import get_sthrip_tools
 
 # Try to import LangChain
 try:
@@ -37,11 +37,11 @@ def create_payment_agent():
     if not LANGCHAIN_AVAILABLE:
         return None
     
-    # Initialize StealthPay
-    stealthpay = StealthPay.from_env()
+    # Initialize Sthrip
+    sthrip = Sthrip.from_env()
     
     # Get tools
-    tools = get_stealthpay_tools(stealthpay)
+    tools = get_sthrip_tools(sthrip)
     
     # Initialize LLM
     llm = ChatOpenAI(temperature=0, model="gpt-4")
@@ -62,7 +62,7 @@ def demo_payment_task():
     """Demo: Agent pays for a service"""
     
     print("=" * 60)
-    print("🤖 LangChain Agent with StealthPay Demo")
+    print("🤖 LangChain Agent with Sthrip Demo")
     print("=" * 60)
     
     if not LANGCHAIN_AVAILABLE:
@@ -154,7 +154,7 @@ class AutonomousResearchAgent:
     """
     
     def __init__(self, budget_xmr: float = 1.0):
-        self.stealthpay = StealthPay.from_env()
+        self.sthrip = Sthrip.from_env()
         self.budget = budget_xmr
         self.spent = 0.0
         self.purchases = []
@@ -166,7 +166,7 @@ class AutonomousResearchAgent:
     
     def can_afford(self, amount: float) -> bool:
         """Check if agent can afford purchase"""
-        info = self.stealthpay.get_info()
+        info = self.sthrip.get_info()
         return info.balance >= amount and (self.spent + amount) <= self.budget
     
     def buy_data_if_needed(
@@ -184,14 +184,14 @@ class AutonomousResearchAgent:
         if not self.can_afford(max_price):
             return {
                 "error": "Insufficient funds",
-                "balance": self.stealthpay.get_info().balance,
+                "balance": self.sthrip.get_info().balance,
                 "budget_remaining": self.budget - self.spent
             }
         
         # Buy the data
         from examples.data_buying_agent import DataBuyingAgent
         buyer = DataBuyingAgent()
-        buyer.stealthpay = self.stealthpay
+        buyer.sthrip = self.sthrip
         
         result = buyer.buy_data(service_url, service_name)
         

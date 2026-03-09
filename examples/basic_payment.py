@@ -2,14 +2,14 @@
 Basic example: Agent sending anonymous payment to another agent
 """
 
-from stealthpay import StealthPay
+from sthrip import Sthrip
 
 # Initialize agent wallet
 # Make sure monero-wallet-rpc is running:
 # monero-wallet-rpc --wallet-file my_agent --password "" --rpc-bind-port 18082
 
-print("🥷 Initializing StealthPay agent...")
-agent = StealthPay(
+print("🥷 Initializing Sthrip agent...")
+agent = Sthrip(
     rpc_host="127.0.0.1",
     rpc_port=18082,
     # rpc_user="optional",

@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("StealthPayBridge", function () {
+describe("SthripBridge", function () {
   let bridge, insurance, oracle;
   let owner, alice, bob, feeCollector;
   let mpcNodes;
@@ -18,7 +18,7 @@ describe("StealthPayBridge", function () {
     await insurance.waitForDeployment();
     
     // Deploy Bridge
-    const Bridge = await ethers.getContractFactory("StealthPayBridge");
+    const Bridge = await ethers.getContractFactory("SthripBridge");
     const nodeAddresses = mpcNodes.slice(0, 5).map(n => n.address);
     bridge = await Bridge.deploy(
       nodeAddresses,

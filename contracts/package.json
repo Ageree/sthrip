@@ -1,7 +1,7 @@
 {
-  "name": "@stealthpay/contracts",
+  "name": "@sthrip/contracts",
   "version": "1.0.0",
-  "description": "StealthPay Bridge Smart Contracts",
+  "description": "Sthrip Bridge Smart Contracts",
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",

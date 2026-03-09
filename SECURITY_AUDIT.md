@@ -1,4 +1,4 @@
-# StealthPay Security Audit Report
+# Sthrip Security Audit Report
 
 **Date:** 2026-03-02  
 **Auditor:** Internal Review  
@@ -24,7 +24,7 @@
 ## 🔴 Critical Issues
 
 ### 1. TSS Implementation (CRITICAL)
-**Location:** `stealthpay/bridge/tss/`
+**Location:** `sthrip/bridge/tss/`
 
 **Issue:** Current TSS is educational implementation, not production-ready.
 
@@ -47,7 +47,7 @@
 ---
 
 ### 2. Smart Contract Security (CRITICAL)
-**Location:** `stealthpay/bridge/contracts/eth_bridge.py`
+**Location:** `sthrip/bridge/contracts/eth_bridge.py`
 
 **Issue:** Solidity code is reference implementation, not audited.
 
@@ -70,7 +70,7 @@
 ---
 
 ### 3. P2P Authentication (HIGH)
-**Location:** `stealthpay/bridge/p2p/node.py`
+**Location:** `sthrip/bridge/p2p/node.py`
 
 **Issue:** Nodes don't cryptographically authenticate each other.
 
@@ -92,7 +92,7 @@
 ## 🟡 High Priority Issues
 
 ### 4. Key Storage (HIGH)
-**Location:** `stealthpay/bridge/tss/dkg.py:SecureKeyStorage`
+**Location:** `sthrip/bridge/tss/dkg.py:SecureKeyStorage`
 
 **Issue:** Keys stored in memory with simple encryption.
 
@@ -113,7 +113,7 @@ self._storage[party_id] = encrypted
 ---
 
 ### 5. Price Oracle (HIGH)
-**Location:** `stealthpay/bridge/relayers/coordinator.py`
+**Location:** `sthrip/bridge/relayers/coordinator.py`
 
 **Issue:** Hardcoded price ratios.
 
@@ -306,8 +306,8 @@ bridge/relayers/ 50%       ⚠️  Needs more
 ## 📞 Audit Contact
 
 For questions about this audit:
-- GitHub Issues: [stealthpay/issues]
-- Email: security@stealthpay.io
+- GitHub Issues: [sthrip/issues]
+- Email: security@sthrip.io
 
 ---
 

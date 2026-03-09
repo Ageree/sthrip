@@ -1,4 +1,4 @@
-# StealthPay Railway Configuration
+# Sthrip Railway Configuration
 # This file configures automatic deployment to Railway
 
 [build]
@@ -6,14 +6,14 @@ builder = "DOCKERFILE"
 dockerfilePath = "railway/Dockerfile.railway"
 
 [deploy]
-startCommand = "uvicorn api.main_v2:app --host 0.0.0.0 --port $PORT"
-healthcheckPath = "/health"
+startCommand = "sh -c 'uvicorn api.main_v2:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-graceful-shutdown 30'"
+healthcheckPath = "/ready"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 
 [environments.production]
-numReplicas = 2
+numReplicas = 1
 
 [environments.staging]
 numReplicas = 1

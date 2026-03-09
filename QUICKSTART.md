@@ -1,6 +1,6 @@
-# StealthPay Quick Start
+# Sthrip Quick Start
 
-Быстрый старт с StealthPay - Atomic Swaps и Cross-Chain Bridge.
+Быстрый старт с Sthrip - Atomic Swaps и Cross-Chain Bridge.
 
 ## 🚀 Быстрый старт
 
@@ -8,8 +8,8 @@
 
 ```bash
 # Клонирование
-git clone https://github.com/yourusername/stealthpay.git
-cd stealthpay
+git clone https://github.com/yourusername/sthrip.git
+cd sthrip
 
 # Установка зависимостей
 pip install -r requirements.txt
@@ -33,21 +33,21 @@ docker-compose -f docker-compose.full.yml up -d
 **Как продавец XMR (Alice):**
 ```bash
 # Создать своп
-stealthpay swap create-seller \
+sthrip swap create-seller \
     --btc-amount 0.01 \
     --xmr-amount 1.0 \
     --receive-btc bc1q...
 
 # Настроить multisig
-stealthpay swap setup-multisig \
+sthrip swap setup-multisig \
     --swap-id <id> \
     --counterparty-info <bob_multisig_info>
 
 # Фандить XMR
-stealthpay swap fund-xmr --swap-id <id>
+sthrip swap fund-xmr --swap-id <id>
 
 # Забрать BTC (после того как Bob создал HTLC)
-stealthpay swap claim-btc \
+sthrip swap claim-btc \
     --swap-id <id> \
     --preimage <preimage>
 ```
@@ -55,23 +55,23 @@ stealthpay swap claim-btc \
 **Как покупатель XMR (Bob):**
 ```bash
 # Создать своп
-stealthpay swap create-buyer \
+sthrip swap create-buyer \
     --btc-amount 0.01 \
     --xmr-amount 1.0 \
     --receive-xmr 44...
 
 # Настроить multisig
-stealthpay swap setup-multisig \
+sthrip swap setup-multisig \
     --swap-id <id> \
     --counterparty-info <alice_multisig_info>
 
 # Создать BTC HTLC
-stealthpay swap create-btc-htlc \
+sthrip swap create-btc-htlc \
     --swap-id <id> \
     --counterparty-pubkey <alice_pubkey>
 
 # Забрать XMR (используя preimage из BTC claim)
-stealthpay swap claim-xmr \
+sthrip swap claim-xmr \
     --swap-id <id> \
     --preimage <preimage>
 ```
@@ -80,7 +80,7 @@ stealthpay swap claim-xmr \
 
 **Bridge ETH → XMR:**
 ```bash
-stealthpay bridge eth-to-xmr \
+sthrip bridge eth-to-xmr \
     --amount 0.1 \
     --xmr-address 44... \
     --network testnet
@@ -88,7 +88,7 @@ stealthpay bridge eth-to-xmr \
 
 **Bridge XMR → ETH:**
 ```bash
-stealthpay bridge xmr-to-eth \
+sthrip bridge xmr-to-eth \
     --amount 1.0 \
     --eth-address 0x... \
     --network stagenet
@@ -100,7 +100,7 @@ stealthpay bridge xmr-to-eth \
 python scripts/generate_mpc_keys.py --nodes 5 --threshold 3 --output ./keys/
 
 # Запустить ноду
-stealthpay bridge run-node \
+sthrip bridge run-node \
     --config config/node1.yaml \
     --node-id mpc_node_1
 ```
@@ -133,12 +133,12 @@ python examples/atomic_swap_demo.py
 
 ## 📚 Документация
 
-- [Atomic Swaps](stealthpay/swaps/README.md)
-- [Cross-Chain Bridge](stealthpay/bridge/README.md)
+- [Atomic Swaps](sthrip/swaps/README.md)
+- [Cross-Chain Bridge](sthrip/bridge/README.md)
 - [API Reference](docs/API.md)
 
 ## 🆘 Поддержка
 
 - Issues: GitHub Issues
 - Discord: [link]
-- Email: support@stealthpay.io
+- Email: support@sthrip.io

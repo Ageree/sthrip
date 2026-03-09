@@ -1,7 +1,7 @@
 """
 Demo: Atomic Swap BTC↔XMR
 
-Пример использования StealthPay для атомарного свопа.
+Пример использования Sthrip для атомарного свопа.
 Этот скрипт демонстрирует полный цикл свопа.
 
 ⚠️  WARNING: Это демо-скрипт. Для реального использования:
@@ -87,9 +87,9 @@ async def demo_with_mock():
     print("=" * 60)
     
     from unittest.mock import Mock
-    from stealthpay.swaps.coordinator import SwapCoordinator, SwapConfig, SwapFactory
-    from stealthpay.swaps.btc.rpc_client import create_regtest_client
-    from stealthpay.swaps.xmr.wallet import create_stagenet_wallet
+    from sthrip.swaps.coordinator import SwapCoordinator, SwapConfig, SwapFactory
+    from sthrip.swaps.btc.rpc_client import create_regtest_client
+    from sthrip.swaps.xmr.wallet import create_stagenet_wallet
     
     # Создаем мок-координаторы
     print("\nCreating coordinators...")
@@ -164,34 +164,34 @@ def demo_swap_cli():
     
     print("""
 # Создать своп как продавец XMR
-stealthpay swap create-seller \\
+sthrip swap create-seller \\
     --btc-amount 0.01 \\
     --xmr-amount 1.0 \\
     --receive-btc bc1q...
 
 # Создать своп как покупатель XMR  
-stealthpay swap create-buyer \\
+sthrip swap create-buyer \\
     --btc-amount 0.01 \\
     --xmr-amount 1.0 \\
     --receive-xmr 44...
 
 # Настроить мультисиг
-stealthpay swap setup-multisig --swap-id <id> --counterparty-info <info>
+sthrip swap setup-multisig --swap-id <id> --counterparty-info <info>
 
 # Профинансировать XMR (продавец)
-stealthpay swap fund-xmr --swap-id <id>
+sthrip swap fund-xmr --swap-id <id>
 
 # Создать BTC HTLC (покупатель)
-stealthpay swap create-btc-htlc --swap-id <id> --counterparty-pubkey <pubkey>
+sthrip swap create-btc-htlc --swap-id <id> --counterparty-pubkey <pubkey>
 
 # Забрать BTC (продавец, раскрывает preimage)
-stealthpay swap claim-btc --swap-id <id> --preimage <preimage>
+sthrip swap claim-btc --swap-id <id> --preimage <preimage>
 
 # Забрать XMR (покупатель, использует preimage)
-stealthpay swap claim-xmr --swap-id <id> --preimage <preimage>
+sthrip swap claim-xmr --swap-id <id> --preimage <preimage>
 
 # Статус свопа
-stealthpay swap status --swap-id <id>
+sthrip swap status --swap-id <id>
 """)
 
 

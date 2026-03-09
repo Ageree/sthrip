@@ -1,4 +1,4 @@
-# StealthPay Evolution Roadmap
+# Sthrip Evolution Roadmap
 
 From anonymous payment SDK to autonomous agent economy infrastructure.
 
@@ -88,7 +88,7 @@ From anonymous payment SDK to autonomous agent economy infrastructure.
 ### 4.1 Agent Discovery & Marketplace
 ```
 ┌────────────────────────────────────────────────┐
-│           StealthPay Marketplace               │
+│           Sthrip Marketplace               │
 ├────────────────────────────────────────────────┤
 │  🤖 AI Agents Catalog                           │
 │  • Weather Agent        [0.001 XMR/request]    │
@@ -141,7 +141,7 @@ From anonymous payment SDK to autonomous agent economy infrastructure.
 - [ ] API rate limiting & quotas
 
 ### 5.2 Infrastructure
-- [ ] Hosted solution (stealthpay.io)
+- [ ] Hosted solution (sthrip.io)
 - [ ] Dedicated nodes for enterprises
 - [ ] CDN for global low-latency
 - [ ] Auto-scaling payment processors
@@ -168,7 +168,7 @@ From anonymous payment SDK to autonomous agent economy infrastructure.
 └──────────────────────────────────────────────┘
 ```
 
-- [ ] StealthPay DAO
+- [ ] Sthrip DAO
 - [ ] Governance token (optional, privacy-focused)
 - [ ] Decentralized development fund
 - [ ] Community-driven roadmap
@@ -266,7 +266,7 @@ From anonymous payment SDK to autonomous agent economy infrastructure.
 ## Competitive Differentiation
 
 ### vs x402 (Coinbase)
-| Feature | StealthPay | x402 |
+| Feature | Sthrip | x402 |
 |---------|-----------|------|
 | Privacy | ✅ Full | ❌ Public |
 | Escrow | ✅ Built-in | ❌ No |
@@ -275,7 +275,7 @@ From anonymous payment SDK to autonomous agent economy infrastructure.
 | **Unique**: Anon + Escrow + Cross-chain |
 
 ### vs Traditional Crypto Payments
-| Feature | StealthPay | BitPay | Coinbase Commerce |
+| Feature | Sthrip | BitPay | Coinbase Commerce |
 |---------|-----------|--------|-------------------|
 | KYC | ❌ No | ✅ Yes | ✅ Yes |
 | Custody | ❌ Non-custodial | ✅ Custodial | ✅ Custodial |

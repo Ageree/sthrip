@@ -65,7 +65,7 @@
 #### Неделя 3-4: Bitcoin side
 **Компоненты:**
 ```
-stealthpay/swaps/
+sthrip/swaps/
 ├── btc/
 │   ├── rpc_client.py       # Подключение к bitcoind
 │   ├── htlc.py            # Создание HTLC транзакций
@@ -311,7 +311,7 @@ Week 4: Full launch (лимиты сняты)
 ## 🎯 Рекомендуемый подход
 
 ### Для быстрого запуска (2 месяца):
-1. **Atomic Swaps:** Использовать COMIT как базу, обернуть в StealthPay API
+1. **Atomic Swaps:** Использовать COMIT как базу, обернуть в Sthrip API
 2. **Cross-chain:** Партнерство с THORChain (уже есть XMR support)
 3. **Доход:** Affiliate fees (0.1-0.2% с каждого свапа)
 

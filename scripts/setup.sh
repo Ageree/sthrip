@@ -1,11 +1,11 @@
 #!/bin/bash
-# StealthPay Setup Script
+# Sthrip Setup Script
 # Usage: ./scripts/setup.sh [dev|prod]
 
 set -e
 
 MODE=${1:-dev}
-echo "Setting up StealthPay in $MODE mode..."
+echo "Setting up Sthrip in $MODE mode..."
 
 # Create necessary directories
 echo "Creating directories..."

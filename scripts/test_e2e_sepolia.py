@@ -23,7 +23,7 @@ except ImportError:
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from stealthpay.bridge.privacy import StealthAddressGenerator
+from sthrip.bridge.privacy import StealthAddressGenerator
 
 # Configuration
 SEPOLIA_RPC = os.getenv("SEPOLIA_RPC", "https://rpc.sepolia.org")
@@ -67,7 +67,7 @@ def print_warning(text):
 
 async def test_e2e():
     """Run E2E test"""
-    print_header("STEALTHPAY E2E TEST - SEPOLIA")
+    print_header("STHRIP E2E TEST - SEPOLIA")
     
     # Check environment
     private_key = os.getenv("TEST_PRIVATE_KEY")
