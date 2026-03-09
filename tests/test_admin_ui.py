@@ -353,6 +353,36 @@ class TestAdminSecureCookie:
         assert "samesite=strict" in cookie_header.lower()
 
 
+class TestAdminSessionStore:
+    """Admin session store interface tests."""
+
+    def test_admin_session_uses_redis_store_interface(self):
+        """Session store must expose get/set/delete, not be a plain dict."""
+        from api.admin_ui.views import _session_store
+        assert hasattr(_session_store, 'set_session')
+        assert hasattr(_session_store, 'get_session')
+        assert hasattr(_session_store, 'delete_session')
+
+    def test_session_store_set_and_get(self):
+        """set_session + get_session round-trip must work."""
+        from api.admin_ui.views import _session_store
+        _session_store.set_session("test-token-xyz", 3600)
+        assert _session_store.get_session("test-token-xyz") is True
+
+    def test_session_store_delete(self):
+        """delete_session must invalidate a session."""
+        from api.admin_ui.views import _session_store
+        _session_store.set_session("del-token", 3600)
+        _session_store.delete_session("del-token")
+        assert _session_store.get_session("del-token") is False
+
+    def test_session_store_expired(self):
+        """Expired sessions must return False."""
+        from api.admin_ui.views import _session_store
+        _session_store.set_session("exp-token", -1)  # already expired
+        assert _session_store.get_session("exp-token") is False
+
+
 class TestOverviewPage:
     """Admin overview page tests."""
 

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # Core
-    environment: Literal["dev", "staging", "production"] = "production"
+    environment: Literal["dev", "staging", "stagenet", "production"] = "production"
     log_level: str = "INFO"
     port: int = 8000
 

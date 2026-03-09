@@ -297,8 +297,8 @@ class TestCheckRateLimitRedis:
 
     def test_new_window(self):
         limiter, mock_conn = _make_redis_limiter()
-        pipe = mock_conn.pipeline.return_value
-        pipe.execute.return_value = [(None, None)]
+        reset_at = str(time.time() + 60)
+        mock_conn.eval.return_value = [1, reset_at]
 
         result = limiter.check_rate_limit("agent1", tier="standard")
         assert result["allowed"] is True
@@ -306,9 +306,8 @@ class TestCheckRateLimitRedis:
 
     def test_existing_window_under_limit(self):
         limiter, mock_conn = _make_redis_limiter()
-        pipe = mock_conn.pipeline.return_value
-        future_reset = str(time.time() + 30)
-        pipe.execute.return_value = [("5", future_reset)]
+        reset_at = str(time.time() + 30)
+        mock_conn.eval.return_value = [6, reset_at]
 
         result = limiter.check_rate_limit("agent1", tier="standard")
         assert result["allowed"] is True
@@ -316,9 +315,8 @@ class TestCheckRateLimitRedis:
 
     def test_existing_window_exceeds_limit(self):
         limiter, mock_conn = _make_redis_limiter()
-        pipe = mock_conn.pipeline.return_value
-        future_reset = str(time.time() + 30)
-        pipe.execute.return_value = [("100", future_reset)]
+        reset_at = str(time.time() + 30)
+        mock_conn.eval.return_value = [-1, reset_at]
 
         with pytest.raises(RateLimitExceeded) as exc_info:
             limiter.check_rate_limit("agent1", tier="standard")
@@ -326,13 +324,22 @@ class TestCheckRateLimitRedis:
 
     def test_expired_window_resets(self):
         limiter, mock_conn = _make_redis_limiter()
-        pipe = mock_conn.pipeline.return_value
-        past_reset = str(time.time() - 10)
-        pipe.execute.return_value = [("999", past_reset)]
+        reset_at = str(time.time() + 60)
+        mock_conn.eval.return_value = [1, reset_at]
 
         result = limiter.check_rate_limit("agent1", tier="standard")
         assert result["allowed"] is True
         assert result["remaining"] == 99
+
+    def test_uses_eval_not_hmset(self):
+        """Rate limiter must use eval (Lua) for atomic check+increment."""
+        limiter, mock_conn = _make_redis_limiter()
+        reset_at = str(time.time() + 60)
+        mock_conn.eval.return_value = [1, reset_at]
+
+        limiter.check_rate_limit("agent1", tier="standard")
+        assert mock_conn.eval.called, "Must use eval() for atomic Lua script"
+        assert not mock_conn.hmset.called, "hmset is deprecated and non-atomic"
 
 
 # ---------------------------------------------------------------------------
@@ -392,17 +399,17 @@ class TestCheckIpRateLimitRedis:
 
     def test_new_window_both_keys(self):
         limiter, mock_conn = _make_redis_limiter()
-        pipe = mock_conn.pipeline.return_value
-        pipe.execute.return_value = [(None, None), (None, None)]
+        reset_at = str(time.time() + 3600)
+        mock_conn.eval.return_value = [1, reset_at]
 
         result = limiter.check_ip_rate_limit("1.2.3.4")
         assert result["allowed"] is True
 
     def test_existing_window_ip_exceeds(self):
         limiter, mock_conn = _make_redis_limiter()
-        pipe = mock_conn.pipeline.return_value
-        future = str(time.time() + 60)
-        pipe.execute.return_value = [("5", future), ("1", future)]
+        reset_at = str(time.time() + 60)
+        # First eval (IP) returns -1 = exceeded
+        mock_conn.eval.return_value = [-1, reset_at]
 
         with pytest.raises(RateLimitExceeded) as exc_info:
             limiter.check_ip_rate_limit("1.2.3.4", per_ip_limit=5)
@@ -410,32 +417,28 @@ class TestCheckIpRateLimitRedis:
 
     def test_existing_window_global_exceeds(self):
         limiter, mock_conn = _make_redis_limiter()
-        pipe = mock_conn.pipeline.return_value
-        future = str(time.time() + 60)
-        pipe.execute.return_value = [("1", future), ("100", future)]
+        reset_at = str(time.time() + 60)
+        # First eval (IP) passes, second eval (global) returns -1
+        mock_conn.eval.side_effect = [
+            [1, reset_at],   # IP ok
+            [-1, reset_at],  # global exceeded
+        ]
 
         with pytest.raises(RateLimitExceeded) as exc_info:
             limiter.check_ip_rate_limit("1.2.3.4", per_ip_limit=100, global_limit=100)
         assert exc_info.value.limit == 100
 
-    def test_expired_ip_window_resets(self):
+    def test_both_windows_ok(self):
         limiter, mock_conn = _make_redis_limiter()
-        pipe = mock_conn.pipeline.return_value
-        past = str(time.time() - 10)
-        future = str(time.time() + 60)
-        pipe.execute.return_value = [("999", past), ("1", future)]
+        reset_at = str(time.time() + 60)
+        mock_conn.eval.side_effect = [
+            [1, reset_at],  # IP ok
+            [1, reset_at],  # global ok
+        ]
 
         result = limiter.check_ip_rate_limit("1.2.3.4", per_ip_limit=5)
         assert result["allowed"] is True
-
-    def test_expired_global_window_resets(self):
-        limiter, mock_conn = _make_redis_limiter()
-        pipe = mock_conn.pipeline.return_value
-        past = str(time.time() - 10)
-        pipe.execute.return_value = [("1", past), ("999", past)]
-
-        result = limiter.check_ip_rate_limit("1.2.3.4", per_ip_limit=5)
-        assert result["allowed"] is True
+        assert result["ip_remaining"] == 4
 
 
 # ---------------------------------------------------------------------------

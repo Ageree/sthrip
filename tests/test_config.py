@@ -54,6 +54,16 @@ class TestSettingsValidation:
         )
         assert s.hub_mode == "ledger"
 
+    def test_accepts_stagenet_environment(self):
+        from sthrip.config import Settings
+
+        s = Settings(
+            admin_api_key="sk_real_key_here_very_long_and_secure",
+            environment="stagenet",
+            hub_mode="ledger",
+        )
+        assert s.environment == "stagenet"
+
     def test_accepts_valid_production_config(self):
         from sthrip.config import Settings
 

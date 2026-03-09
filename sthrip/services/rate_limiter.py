@@ -44,6 +44,35 @@ DEFAULT_LIMITS: Dict[RateLimitTier, RateLimitConfig] = {
 }
 
 
+# Lua script for atomic rate limit check+increment
+_RATE_LIMIT_LUA = """
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local cost = tonumber(ARGV[3])
+local now = tonumber(ARGV[4])
+
+local data = redis.call('HMGET', key, 'count', 'reset_at')
+local count = tonumber(data[1])
+local reset_at = tonumber(data[2])
+
+if count == nil or reset_at == nil or reset_at < now then
+    count = cost
+    reset_at = now + window
+    redis.call('HSET', key, 'count', count, 'reset_at', reset_at)
+    redis.call('EXPIRE', key, window + 1)
+    return {count, tostring(reset_at)}
+end
+
+if count + cost > limit then
+    return {-1, tostring(reset_at)}
+end
+
+count = redis.call('HINCRBY', key, 'count', cost)
+return {count, tostring(reset_at)}
+"""
+
+
 class RateLimitExceeded(Exception):
     """Raised when rate limit is exceeded"""
     
@@ -146,43 +175,29 @@ class RateLimiter:
         config: RateLimitConfig,
         cost: int
     ) -> Dict:
-        """Check limit using Redis"""
+        """Check limit using atomic Lua script."""
         now = time.time()
         window = 60  # 1 minute window
-        
-        pipe = self.redis.pipeline()
-        
-        # Get current count and reset time
-        pipe.hmget(key, "count", "reset_at")
-        result = pipe.execute()
-        
-        count_str, reset_at_str = result[0]
-        
-        if count_str is None or reset_at_str is None or float(reset_at_str) < now:
-            # New window
-            count = cost
-            reset_at = now + window
-            self.redis.hmset(key, {"count": count, "reset_at": reset_at})
-            self.redis.expire(key, window + 1)
-        else:
-            count = int(count_str) + cost
-            reset_at = float(reset_at_str)
-            
-            if count > config.requests_per_minute:
-                raise RateLimitExceeded(
-                    limit=config.requests_per_minute,
-                    reset_at=reset_at
-                )
-            
-            self.redis.hincrby(key, "count", cost)
-        
+
+        result = self.redis.eval(
+            _RATE_LIMIT_LUA, 1, key,
+            config.requests_per_minute, window, cost, now
+        )
+        count = int(result[0])
+        reset_at = float(result[1])
+
+        if count == -1:
+            raise RateLimitExceeded(
+                limit=config.requests_per_minute,
+                reset_at=reset_at,
+            )
+
         remaining = max(0, config.requests_per_minute - count)
-        
         return {
             "allowed": True,
             "remaining": remaining,
             "reset_at": reset_at,
-            "limit": config.requests_per_minute
+            "limit": config.requests_per_minute,
         }
     
     def _check_local(
@@ -259,38 +274,28 @@ class RateLimiter:
             return self._check_ip_local(ip_key, global_key, per_ip_limit, global_limit, window_seconds, now)
 
     def _check_ip_redis(self, ip_key, global_key, per_ip_limit, global_limit, window, now):
-        pipe = self.redis.pipeline()
-        pipe.hmget(ip_key, "count", "reset_at")
-        pipe.hmget(global_key, "count", "reset_at")
-        ip_data, global_data = pipe.execute()
+        """Check IP + global limits using atomic Lua scripts."""
+        # Per-IP check
+        ip_result = self.redis.eval(
+            _RATE_LIMIT_LUA, 1, ip_key,
+            per_ip_limit, window, 1, now
+        )
+        ip_count = int(ip_result[0])
+        ip_reset = float(ip_result[1])
 
-        # Check per-IP
-        ip_count_str, ip_reset_str = ip_data
-        if ip_count_str is None or ip_reset_str is None or float(ip_reset_str) < now:
-            ip_count = 1
-            ip_reset = now + window
-            self.redis.hmset(ip_key, {"count": ip_count, "reset_at": ip_reset})
-            self.redis.expire(ip_key, window + 1)
-        else:
-            ip_count = int(ip_count_str) + 1
-            ip_reset = float(ip_reset_str)
-            if ip_count > per_ip_limit:
-                raise RateLimitExceeded(limit=per_ip_limit, reset_at=ip_reset)
-            self.redis.hincrby(ip_key, "count", 1)
+        if ip_count == -1:
+            raise RateLimitExceeded(limit=per_ip_limit, reset_at=ip_reset)
 
-        # Check global
-        g_count_str, g_reset_str = global_data
-        if g_count_str is None or g_reset_str is None or float(g_reset_str) < now:
-            g_count = 1
-            g_reset = now + window
-            self.redis.hmset(global_key, {"count": g_count, "reset_at": g_reset})
-            self.redis.expire(global_key, window + 1)
-        else:
-            g_count = int(g_count_str) + 1
-            g_reset = float(g_reset_str)
-            if g_count > global_limit:
-                raise RateLimitExceeded(limit=global_limit, reset_at=g_reset)
-            self.redis.hincrby(global_key, "count", 1)
+        # Global check
+        g_result = self.redis.eval(
+            _RATE_LIMIT_LUA, 1, global_key,
+            global_limit, window, 1, now
+        )
+        g_count = int(g_result[0])
+        g_reset = float(g_result[1])
+
+        if g_count == -1:
+            raise RateLimitExceeded(limit=global_limit, reset_at=g_reset)
 
         return {"allowed": True, "ip_remaining": per_ip_limit - ip_count, "global_remaining": global_limit - g_count}
 

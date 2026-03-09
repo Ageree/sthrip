@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 import time
@@ -22,10 +23,54 @@ templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
 router = APIRouter(prefix="/admin", tags=["admin-ui"])
 
-# Session store: token -> {"expires": timestamp}
-_sessions: dict = {}
-
 _SESSION_TTL = 8 * 3600  # 8 hours
+_session_logger = logging.getLogger("sthrip.admin_sessions")
+
+
+class _SessionStore:
+    """Admin session store — Redis-backed with in-memory fallback."""
+
+    def __init__(self):
+        self._local: dict = {}
+        self._redis = None
+        try:
+            import redis
+            redis_url = os.getenv("REDIS_URL", "")
+            if redis_url:
+                self._redis = redis.from_url(redis_url, decode_responses=True)
+                self._redis.ping()
+                _session_logger.info("Admin sessions using Redis")
+        except Exception as exc:
+            _session_logger.warning("Admin sessions using in-memory fallback: %s", exc)
+
+    def set_session(self, token: str, ttl: int) -> None:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        if self._redis:
+            self._redis.setex(f"admin_session:{token_hash}", ttl, "1")
+        else:
+            self._local[token_hash] = {"expires": time.time() + ttl}
+
+    def get_session(self, token: str) -> bool:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        if self._redis:
+            return bool(self._redis.get(f"admin_session:{token_hash}"))
+        entry = self._local.get(token_hash)
+        if not entry:
+            return False
+        if entry["expires"] < time.time():
+            self._local.pop(token_hash, None)
+            return False
+        return True
+
+    def delete_session(self, token: str) -> None:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        if self._redis:
+            self._redis.delete(f"admin_session:{token_hash}")
+        else:
+            self._local.pop(token_hash, None)
+
+
+_session_store = _SessionStore()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -50,13 +95,7 @@ def _is_authenticated(request: Request) -> bool:
     token = _get_session_token(request)
     if not token:
         return False
-    session = _sessions.get(token)
-    if not session:
-        return False
-    if session["expires"] < time.time():
-        _sessions.pop(token, None)
-        return False
-    return True
+    return _session_store.get_session(token)
 
 
 class _AuthRequired(Exception):
@@ -109,7 +148,7 @@ async def login_submit(request: Request, admin_key: str = Form(...)):
             status_code=401,
         )
     token = secrets.token_urlsafe(32)
-    _sessions[token] = {"expires": time.time() + _SESSION_TTL}
+    _session_store.set_session(token, _SESSION_TTL)
     is_secure = os.getenv("ENVIRONMENT", "production") != "dev"
     response = RedirectResponse(url="/admin/", status_code=303)
     response.set_cookie(
@@ -128,7 +167,7 @@ async def logout(request: Request):
     """Clear session and redirect to login."""
     token = _get_session_token(request)
     if token:
-        _sessions.pop(token, None)
+        _session_store.delete_session(token)
     response = RedirectResponse(url="/admin/login", status_code=303)
     response.delete_cookie("admin_session")
     return response
