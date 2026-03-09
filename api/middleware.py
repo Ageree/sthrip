@@ -39,12 +39,27 @@ def configure_middleware(app: FastAPI) -> None:
 
     @app.middleware("http")
     async def limit_request_body(request: Request, call_next):
+        # Fast path: check Content-Length header
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-            return JSONResponse(
-                status_code=413,
-                content={"detail": "Request body too large. Maximum size is 1 MB."},
-            )
+        if content_length:
+            try:
+                if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "Request body too large. Maximum size is 1 MB."},
+                    )
+            except ValueError:
+                pass
+
+        # For mutation requests without Content-Length, read and check actual body
+        if request.method in ("POST", "PUT", "PATCH") and not content_length:
+            body = await request.body()
+            if len(body) > MAX_REQUEST_BODY_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body too large. Maximum size is 1 MB."},
+                )
+
         return await call_next(request)
 
     app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -70,6 +85,14 @@ def configure_middleware(app: FastAPI) -> None:
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' https://cdn.tailwindcss.com; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'"
+        )
         return response
 
 

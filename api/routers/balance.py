@@ -72,7 +72,7 @@ async def deposit_balance(
         else:
             if req is None or req.amount is None:
                 raise HTTPException(status_code=422, detail="amount is required in ledger mode")
-            amount = Decimal(str(req.amount))
+            amount = req.amount
             with get_db() as db:
                 repo = BalanceRepository(db)
                 balance = repo.deposit(agent.id, amount)
@@ -118,7 +118,7 @@ async def withdraw_balance(
             return cached
 
     try:
-        amount = Decimal(str(req.amount))
+        amount = req.amount
 
         # Deduct balance atomically (deduct() uses row lock internally)
         with get_db() as db:

@@ -67,7 +67,7 @@ async def send_hub_routed_payment(
         if not recipient.xmr_address:
             raise HTTPException(status_code=400, detail="Recipient has no XMR address configured")
 
-        amount = Decimal(str(req.amount))
+        amount = req.amount
         fee_info = collector.calculate_hub_routing_fee(
             amount=amount,
             from_agent_tier=agent.tier.value,

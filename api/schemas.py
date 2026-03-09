@@ -2,6 +2,7 @@
 
 import os
 import re
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -69,7 +70,7 @@ class AgentProfileResponse(BaseModel):
 
 class PaymentRequest(BaseModel):
     to_address: str = Field(..., description="Recipient Monero address")
-    amount: float = Field(..., gt=0, description="Amount in XMR")
+    amount: Decimal = Field(..., gt=0, description="Amount in XMR")
     memo: Optional[str] = Field(None, max_length=1000)
     privacy_level: Optional[str] = Field(None, pattern=r"^(low|medium|high|paranoid)$")
     use_hub_routing: bool = Field(False, description="Use hub routing for instant confirmation")
@@ -77,7 +78,7 @@ class PaymentRequest(BaseModel):
 
 class HubPaymentRequest(BaseModel):
     to_agent_name: str = Field(..., min_length=1, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$', description="Recipient agent name")
-    amount: float = Field(..., gt=0, le=10000, description="Amount in XMR")
+    amount: Decimal = Field(..., gt=0, le=10000, description="Amount in XMR")
     memo: Optional[str] = Field(default=None, max_length=500)
     urgency: str = Field(default="normal", pattern=r"^(normal|urgent)$")
 
@@ -85,13 +86,13 @@ class HubPaymentRequest(BaseModel):
 class EscrowCreateRequest(BaseModel):
     seller_address: str
     arbiter_address: Optional[str] = None
-    amount: float = Field(..., gt=0)
+    amount: Decimal = Field(..., gt=0)
     description: str = Field(..., min_length=1, max_length=1000)
     timeout_hours: int = Field(default=48, ge=1, le=720)
 
 
 class DepositRequest(BaseModel):
-    amount: Optional[float] = Field(default=None, gt=0, le=10000, description="Amount to deposit (required in ledger mode)")
+    amount: Optional[Decimal] = Field(default=None, gt=0, le=10000, description="Amount to deposit (required in ledger mode)")
 
 
 class HealthResponse(BaseModel):
@@ -128,7 +129,7 @@ def validate_monero_address(address: str) -> str:
 
 
 class WithdrawRequest(BaseModel):
-    amount: float = Field(gt=0, le=10000, description="Amount to withdraw")
+    amount: Decimal = Field(gt=0, le=10000, description="Amount to withdraw")
     address: str = Field(min_length=10, max_length=200, description="XMR address to withdraw to")
 
     @field_validator("address")
