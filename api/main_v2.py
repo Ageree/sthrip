@@ -109,8 +109,8 @@ async def lifespan(app: FastAPI):
 
     # Validate ENVIRONMENT value
     env = os.getenv("ENVIRONMENT", "production")
-    if env not in ("dev", "staging", "production"):
-        logger.critical("ENVIRONMENT must be one of: dev, staging, production. Got: %s", env)
+    if env not in ("dev", "staging", "stagenet", "production"):
+        logger.critical("ENVIRONMENT must be one of: dev, staging, stagenet, production. Got: %s", env)
         raise SystemExit(1)
 
     # Validate Monero RPC password in onchain mode
