@@ -57,6 +57,8 @@ httptools==0.7.1
     # via uvicorn
 httpx==0.28.1
     # via -r requirements.txt
+jinja2==3.1.6
+    # via -r requirements.txt
 idna==3.11
     # via
     #   anyio
