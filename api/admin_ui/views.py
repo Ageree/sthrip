@@ -83,6 +83,25 @@ async def login_page(request: Request):
 @router.post("/login")
 async def login_submit(request: Request, admin_key: str = Form(...)):
     """Validate admin key and set session cookie."""
+    from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
+
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        limiter = get_rate_limiter()
+        limiter.check_ip_rate_limit(
+            ip_address=client_ip,
+            action="admin_login",
+            per_ip_limit=5,
+            global_limit=50,
+            window_seconds=300,
+        )
+    except RateLimitExceeded:
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": "Too many login attempts. Try again later."},
+            status_code=429,
+        )
+
     if not _verify_admin_key(admin_key):
         return templates.TemplateResponse(
             "login.html",
@@ -91,12 +110,14 @@ async def login_submit(request: Request, admin_key: str = Form(...)):
         )
     token = secrets.token_urlsafe(32)
     _sessions[token] = {"expires": time.time() + _SESSION_TTL}
+    is_secure = os.getenv("ENVIRONMENT", "production") != "dev"
     response = RedirectResponse(url="/admin/", status_code=303)
     response.set_cookie(
         key="admin_session",
         value=token,
         httponly=True,
-        samesite="lax",
+        secure=is_secure,
+        samesite="strict",
         max_age=_SESSION_TTL,
     )
     return response

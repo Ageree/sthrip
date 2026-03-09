@@ -91,10 +91,10 @@ class WalletService:
         Returns dict with tx_hash, fee (XMR), and amount (XMR).
         Raises WalletRPCError on failure.
         """
-        piconero_amount = xmr_to_piconero(amount)
+        # wallet.transfer() handles XMR->piconero conversion internally
         result = self.wallet.transfer(
             destination=to_address,
-            amount=piconero_amount,
+            amount=float(amount),
         )
         return {
             "tx_hash": result["tx_hash"],

@@ -245,10 +245,13 @@ class TestWalletServiceWithdrawal:
         assert "fee" in result
         assert "amount" in result
 
-    def test_send_withdrawal_converts_to_piconero(self, wallet_service, mock_wallet_rpc):
+    def test_send_withdrawal_passes_xmr_not_piconero(self, wallet_service, mock_wallet_rpc):
+        """transfer() handles XMR->piconero internally, so we must pass XMR."""
         wallet_service.send_withdrawal("5DestAddr", Decimal("2.5"))
         call_args = mock_wallet_rpc.transfer.call_args
-        assert call_args[1]["amount"] == 2_500_000_000_000
+        # Must receive XMR float (2.5), NOT piconero int (2500000000000)
+        amount_arg = call_args[1]["amount"]
+        assert amount_arg == 2.5, f"Expected XMR amount 2.5, got {amount_arg}"
 
     def test_send_withdrawal_fee_in_xmr(self, wallet_service):
         result = wallet_service.send_withdrawal("5DestAddr", Decimal("1"))

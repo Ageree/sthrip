@@ -282,6 +282,77 @@ class TestAdminAuth:
 # PAGE TESTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class TestAdminLoginRateLimiting:
+    """Admin login brute-force protection tests."""
+
+    def test_admin_login_rate_limited_after_5_attempts(self, admin_client):
+        """After 5 failed logins from same IP, return 429."""
+        # Use a real local rate limiter for this test
+        from sthrip.services.rate_limiter import RateLimiter
+        real_limiter = RateLimiter.__new__(RateLimiter)
+        real_limiter.default_tier = "standard"
+        real_limiter._local_cache = {}
+        real_limiter._cache_lock = __import__("threading").Lock()
+        real_limiter.use_redis = False
+        real_limiter.redis = None
+
+        with patch("sthrip.services.rate_limiter.get_rate_limiter", return_value=real_limiter):
+            for i in range(5):
+                resp = admin_client.post("/admin/login", data={"admin_key": f"wrong_{i}"})
+                assert resp.status_code in (401, 303, 200)
+
+            # 6th attempt should be rate limited
+            resp = admin_client.post("/admin/login", data={"admin_key": "wrong_6"})
+            assert resp.status_code == 429
+
+    def test_admin_login_blocks_correct_key_after_rate_limit(self, admin_client):
+        """Rate limit blocks even correct key after too many attempts."""
+        from sthrip.services.rate_limiter import RateLimiter
+        real_limiter = RateLimiter.__new__(RateLimiter)
+        real_limiter.default_tier = "standard"
+        real_limiter._local_cache = {}
+        real_limiter._cache_lock = __import__("threading").Lock()
+        real_limiter.use_redis = False
+        real_limiter.redis = None
+
+        with patch("sthrip.services.rate_limiter.get_rate_limiter", return_value=real_limiter):
+            for i in range(5):
+                admin_client.post("/admin/login", data={"admin_key": f"wrong_{i}"})
+
+            # Even correct key should be blocked
+            resp = admin_client.post(
+                "/admin/login", data={"admin_key": ADMIN_KEY}, follow_redirects=False
+            )
+            assert resp.status_code == 429
+
+
+class TestAdminSecureCookie:
+    """Admin session cookie security tests."""
+
+    def test_admin_login_sets_secure_cookie_in_production(self, admin_client):
+        """Cookie must have secure=True in non-dev environments."""
+        with patch.dict(os.environ, {"ENVIRONMENT": "production"}):
+            resp = admin_client.post(
+                "/admin/login",
+                data={"admin_key": ADMIN_KEY},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            cookie_header = resp.headers.get("set-cookie", "")
+            assert "secure" in cookie_header.lower()
+
+    def test_admin_login_sets_strict_samesite(self, admin_client):
+        """Cookie must use samesite=strict."""
+        resp = admin_client.post(
+            "/admin/login",
+            data={"admin_key": ADMIN_KEY},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        cookie_header = resp.headers.get("set-cookie", "")
+        assert "samesite=strict" in cookie_header.lower()
+
+
 class TestOverviewPage:
     """Admin overview page tests."""
 
