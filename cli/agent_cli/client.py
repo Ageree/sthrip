@@ -82,7 +82,7 @@ class StrhipClient:
         try:
             body = resp.json()
             return body.get("detail", body.get("error", resp.text))
-        except Exception:
+        except (ValueError, KeyError):
             return resp.text
 
     def get(

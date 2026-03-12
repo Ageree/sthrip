@@ -59,7 +59,8 @@ def test_register_api_error(tmp_path, monkeypatch):
     )
     result = runner.invoke(app, ["register", "bot1"])
     assert result.exit_code == 1
-    data = json.loads(result.stdout)
+    # Error output goes to stderr (mixed into result.output by CliRunner)
+    data = json.loads(result.output)
     assert data["ok"] is False
 
 

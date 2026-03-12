@@ -49,13 +49,13 @@ def make_client(require_auth: bool = True) -> StrhipClient:
 
 
 def run_command(fn):
-    """Decorator that catches CliError and prints JSON error to stdout.
+    """Decorator that catches CliError and prints JSON error to stderr.
     Uses functools.wraps to preserve function signature for Typer."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
         except CliError as e:
-            print(format_error(str(e), e.exit_code))
+            print(format_error(str(e), e.exit_code), file=sys.stderr)
             raise typer.Exit(code=e.exit_code)
     return wrapper
