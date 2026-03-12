@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+mcp = pytest.importorskip("mcp", reason="MCP SDK requires Python 3.10+")
 from mcp.server.fastmcp import FastMCP
 
 from integrations.sthrip_mcp.auth import AuthError

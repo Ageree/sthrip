@@ -1,18 +1,18 @@
 """Health, readiness, metrics, and root endpoints."""
 
-import os
+import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from sthrip.db.database import get_db
 from sthrip.services.monitoring import get_monitor
-from sthrip.services.agent_registry import get_registry
 from sthrip.services.metrics import get_metrics_response
-from api.deps import verify_admin_key
+from api.deps import get_admin_session
+from sthrip.config import get_settings
 from api.schemas import HealthResponse
 
 logger = logging.getLogger("sthrip")
@@ -22,14 +22,11 @@ router = APIRouter(tags=["health"])
 
 @router.get("/", response_model=dict)
 async def root():
-    """API info"""
-    registry = get_registry()
-    stats = registry.get_stats()
+    """API info (static — no DB query, no sensitive data)."""
     return {
         "name": "Sthrip API",
         "version": "2.0.0",
         "description": "Anonymous payments for AI Agents",
-        "agents_registered": stats["total_agents"],
         "endpoints": {
             "docs": "/docs",
             "health": "/health",
@@ -56,19 +53,23 @@ async def health_check():
 async def readiness():
     """Returns 200 only when DB and critical services are connected."""
     checks = {}
-    try:
+
+    def _check_db() -> None:
         with get_db() as db:
             db.execute(text("SELECT 1"))
+
+    try:
+        await asyncio.to_thread(_check_db)
         checks["database"] = "ok"
     except Exception:
         checks["database"] = "failed"
         return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
 
-    if os.getenv("HUB_MODE", "onchain") == "onchain":
+    if get_settings().hub_mode == "onchain":
         try:
             from api.helpers import get_wallet_service
             wallet_svc = get_wallet_service()
-            wallet_svc.wallet.get_height()
+            await asyncio.to_thread(wallet_svc.wallet.get_height)
             checks["wallet_rpc"] = "ok"
         except Exception:
             checks["wallet_rpc"] = "failed"
@@ -79,9 +80,8 @@ async def readiness():
 
 
 @router.get("/metrics")
-async def metrics_endpoint(admin_key: str = Header(None)):
+async def metrics_endpoint(_auth: bool = Depends(get_admin_session)):
     """Prometheus metrics (admin-key protected)"""
-    verify_admin_key(admin_key)
     result = get_metrics_response()
     if result is None:
         raise HTTPException(status_code=501, detail="prometheus-client not installed")

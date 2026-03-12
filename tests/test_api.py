@@ -1,123 +1,12 @@
 """Integration tests for the Sthrip API"""
 import os
 import pytest
-from decimal import Decimal
-from unittest.mock import patch, MagicMock, PropertyMock
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import StaticPool
-from contextlib import contextmanager
+from unittest.mock import patch, MagicMock
 
-from sthrip.db.models import (
-    Base, Agent, AgentReputation, AgentBalance, AgentTier,
-    RateLimitTier, PrivacyLevel, HubRoute, FeeCollection
-)
+# Uses shared client fixture from conftest.py (db_engine, db_session_factory, client).
 
-# Only create tables that work with SQLite
-_TEST_TABLES = [
-    Agent.__table__,
-    AgentReputation.__table__,
-    AgentBalance.__table__,
-    HubRoute.__table__,
-    FeeCollection.__table__,
-]
-
-
-@pytest.fixture
-def db_engine():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool
-    )
-    Base.metadata.create_all(engine, tables=_TEST_TABLES)
-    return engine
-
-
-@pytest.fixture
-def db_session_factory(db_engine):
-    return sessionmaker(bind=db_engine, expire_on_commit=False)
-
-
-@pytest.fixture
-def client(db_engine, db_session_factory):
-    """FastAPI test client with mocked dependencies"""
-
-    @contextmanager
-    def get_test_db():
-        session = db_session_factory()
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    # Mock rate limiter to always allow
-    mock_limiter = MagicMock()
-    mock_limiter.check_rate_limit.return_value = None
-    mock_limiter.get_limit_status.return_value = {"requests_remaining": 100}
-
-    # Mock monitor
-    mock_monitor = MagicMock()
-    mock_monitor.get_health_report.return_value = {
-        "status": "healthy",
-        "timestamp": "2026-03-03T00:00:00",
-        "checks": {}
-    }
-    mock_monitor.get_alerts.return_value = []
-
-    # Mock webhook
-    mock_webhook = MagicMock()
-    mock_webhook.get_delivery_stats.return_value = {"total": 0}
-
-    from contextlib import ExitStack
-    with ExitStack() as stack:
-        stack.enter_context(patch.dict(os.environ, {"HUB_MODE": "ledger"}))
-        # Patch get_db in all modules
-        for mod in [
-            "sthrip.db.database",
-            "sthrip.services.agent_registry",
-            "sthrip.services.fee_collector",
-            "sthrip.services.webhook_service",
-            "api.deps",
-            "api.routers.health",
-            "api.routers.agents",
-            "api.routers.payments",
-            "api.routers.balance",
-            "api.routers.webhooks",
-        ]:
-            stack.enter_context(patch(f"{mod}.get_db", side_effect=get_test_db))
-        stack.enter_context(patch("sthrip.db.database.create_tables"))
-        # Patch rate limiter
-        for mod in [
-            "sthrip.services.rate_limiter",
-            "api.deps",
-            "api.routers.agents",
-            "api.main_v2",
-        ]:
-            stack.enter_context(patch(f"{mod}.get_rate_limiter", return_value=mock_limiter))
-        # Patch monitoring & webhooks
-        stack.enter_context(patch("sthrip.services.monitoring.get_monitor", return_value=mock_monitor))
-        stack.enter_context(patch("sthrip.services.monitoring.setup_default_monitoring", return_value=mock_monitor))
-        stack.enter_context(patch("sthrip.services.webhook_service.get_webhook_service", return_value=mock_webhook))
-        stack.enter_context(patch("sthrip.services.webhook_service.queue_webhook"))
-        # Patch audit_log in all modules
-        for mod in [
-            "api.deps",
-            "api.routers.agents",
-            "api.routers.payments",
-            "api.routers.balance",
-            "api.routers.admin",
-            "api.main_v2",
-        ]:
-            stack.enter_context(patch(f"{mod}.audit_log"))
-
-        from api.main_v2 import app
-        yield TestClient(app, raise_server_exceptions=False)
+# Valid stagenet address for API tests (95 chars, starts with '5', base58 alphabet)
+_VALID_XMR_ADDR = "5" + "a" * 94
 
 
 @pytest.fixture
@@ -125,7 +14,7 @@ def registered_agent(client):
     """Register an agent and return (api_key, agent_name)"""
     r = client.post("/v2/agents/register", json={
         "agent_name": "test-sender",
-        "xmr_address": "test_xmr_address_12345"
+        "xmr_address": _VALID_XMR_ADDR
     })
     assert r.status_code == 201, f"Registration failed: {r.text}"
     return r.json()["api_key"], "test-sender"
@@ -136,14 +25,14 @@ def two_agents(client):
     """Register sender and recipient, return (sender_key, recipient_key)"""
     r1 = client.post("/v2/agents/register", json={
         "agent_name": "sender-agent",
-        "xmr_address": "sender_xmr_addr_1234"
+        "xmr_address": _VALID_XMR_ADDR
     })
     assert r1.status_code == 201
     sender_key = r1.json()["api_key"]
 
     r2 = client.post("/v2/agents/register", json={
         "agent_name": "receiver-agent",
-        "xmr_address": "receiver_xmr_addr_5678"
+        "xmr_address": _VALID_XMR_ADDR
     })
     assert r2.status_code == 201
     receiver_key = r2.json()["api_key"]
@@ -167,7 +56,7 @@ class TestRegistration:
     def test_register_agent(self, client):
         r = client.post("/v2/agents/register", json={
             "agent_name": "new-agent",
-            "xmr_address": "some_xmr_address"
+            "xmr_address": _VALID_XMR_ADDR
         })
         assert r.status_code == 201
         data = r.json()
@@ -211,7 +100,8 @@ class TestBalance:
         key, _ = registered_agent
         r = client.get("/v2/balance", headers={"Authorization": f"Bearer {key}"})
         assert r.status_code == 200
-        assert r.json()["available"] == 0
+        from decimal import Decimal
+        assert Decimal(r.json()["available"]) == 0
 
     def test_deposit(self, client, registered_agent):
         key, _ = registered_agent
@@ -219,7 +109,8 @@ class TestBalance:
                         json={"amount": 10.0},
                         headers={"Authorization": f"Bearer {key}"})
         assert r.status_code == 200
-        assert r.json()["new_balance"] == 10.0
+        from decimal import Decimal
+        assert Decimal(r.json()["new_balance"]) == 10
 
     def test_deposit_invalid_amount(self, client, registered_agent):
         key, _ = registered_agent
@@ -239,7 +130,8 @@ class TestBalance:
                         json={"amount": 3.0, "address": "5" + "a" * 94},
                         headers={"Authorization": f"Bearer {key}"})
         assert r.status_code == 200
-        assert r.json()["remaining_balance"] == 7.0
+        from decimal import Decimal
+        assert Decimal(r.json()["remaining_balance"]) == 7
 
     def test_withdraw_insufficient(self, client, registered_agent):
         key, _ = registered_agent
@@ -264,8 +156,9 @@ class TestHubRouting:
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "confirmed"
-        assert data["amount"] == 5.0
-        assert data["fee"] > 0
+        from decimal import Decimal
+        assert Decimal(data["amount"]) == 5
+        assert Decimal(data["fee"]) > 0
 
     def test_hub_payment_insufficient_balance(self, client, two_agents):
         sender_key, _ = two_agents
@@ -295,16 +188,17 @@ class TestHubRouting:
         r = client.post("/v2/payments/hub-routing",
                         json={"to_agent_name": "receiver-agent", "amount": 5.0},
                         headers={"Authorization": f"Bearer {sender_key}"})
-        fee = r.json()["fee"]
+        from decimal import Decimal
+        fee = Decimal(r.json()["fee"])
 
         # Check sender balance
         r = client.get("/v2/balance", headers={"Authorization": f"Bearer {sender_key}"})
-        sender_balance = r.json()["available"]
-        assert abs(sender_balance - (10.0 - 5.0 - fee)) < 0.0001
+        sender_balance = Decimal(r.json()["available"])
+        assert abs(sender_balance - (Decimal("10") - Decimal("5") - fee)) < Decimal("0.0001")
 
         # Check receiver balance
         r = client.get("/v2/balance", headers={"Authorization": f"Bearer {receiver_key}"})
-        assert r.json()["available"] == 5.0
+        assert Decimal(r.json()["available"]) == 5
 
 
 class TestDisabledEndpoints:
@@ -315,3 +209,66 @@ class TestDisabledEndpoints:
     def test_escrow_disabled(self, client):
         r = client.post("/v2/escrow/create", json={})
         assert r.status_code == 501
+
+
+class TestIdempotencyKeyMaxLength:
+    """HIGH-9: idempotency key headers must reject values >255 chars."""
+
+    def test_hub_routing_rejects_long_idempotency_key(self, client, registered_agent):
+        key, _ = registered_agent
+        long_key = "k" * 256
+        r = client.post(
+            "/v2/payments/hub-routing",
+            json={"to_agent_name": "nobody", "amount": 1.0},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "idempotency-key": long_key,
+            },
+        )
+        assert r.status_code == 422
+
+    def test_deposit_rejects_long_idempotency_key(self, client, registered_agent):
+        key, _ = registered_agent
+        long_key = "k" * 256
+        r = client.post(
+            "/v2/balance/deposit",
+            json={"amount": 1.0},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "idempotency-key": long_key,
+            },
+        )
+        assert r.status_code == 422
+
+    def test_withdraw_rejects_long_idempotency_key(self, client, registered_agent):
+        key, _ = registered_agent
+        long_key = "k" * 256
+        r = client.post(
+            "/v2/balance/withdraw",
+            json={"amount": 1.0, "address": "5" + "a" * 94},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "idempotency-key": long_key,
+            },
+        )
+        assert r.status_code == 422
+
+    def test_hub_routing_accepts_255_char_key(self, client, two_agents):
+        sender_key, _ = two_agents
+        # Deposit first
+        client.post(
+            "/v2/balance/deposit",
+            json={"amount": 100.0},
+            headers={"Authorization": f"Bearer {sender_key}"},
+        )
+        ok_key = "k" * 255
+        r = client.post(
+            "/v2/payments/hub-routing",
+            json={"to_agent_name": "receiver-agent", "amount": 1.0},
+            headers={
+                "Authorization": f"Bearer {sender_key}",
+                "idempotency-key": ok_key,
+            },
+        )
+        # Should not be 422 (may be 200 or other business error, but not validation error)
+        assert r.status_code != 422

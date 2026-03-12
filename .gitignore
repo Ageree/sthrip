@@ -48,3 +48,6 @@ htmlcov/
 
 # Logs
 *.log
+
+# Accidental pip redirects (e.g. pip install foo>=1.0 without quoting)
+=*

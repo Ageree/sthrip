@@ -2,10 +2,11 @@
 import pytest
 from decimal import Decimal
 from uuid import uuid4
-from sqlalchemy import create_engine, String, event
+from sqlalchemy import create_engine, String, event, inspect
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import IntegrityError
 from sthrip.db.models import (
-    Base, Agent, AgentReputation, AgentBalance,
+    Base, Agent, AgentReputation, AgentBalance, PendingWithdrawal,
     AgentTier, RateLimitTier, PrivacyLevel,
 )
 from sthrip.db.repository import BalanceRepository
@@ -15,6 +16,7 @@ _TEST_TABLES = [
     Agent.__table__,
     AgentReputation.__table__,
     AgentBalance.__table__,
+    PendingWithdrawal.__table__,
 ]
 
 
@@ -113,3 +115,98 @@ class TestBalanceRepository:
 
         assert repo.get_available(agent.id) == Decimal("4.995")
         assert repo.get_available(recipient.id) == Decimal("5.0")
+
+
+class TestAddPending:
+    """Tests for BalanceRepository.add_pending (HIGH-7)."""
+
+    def test_add_pending_creates_balance_if_needed(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        balance = repo.add_pending(agent.id, Decimal("2.5"))
+        assert balance.pending == Decimal("2.5")
+
+    def test_add_pending_accumulates(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        repo.add_pending(agent.id, Decimal("1.0"))
+        balance = repo.add_pending(agent.id, Decimal("3.0"))
+        assert balance.pending == Decimal("4.0")
+
+    def test_add_pending_does_not_affect_available(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        repo.deposit(agent.id, Decimal("10.0"))
+        repo.add_pending(agent.id, Decimal("5.0"))
+        assert repo.get_available(agent.id) == Decimal("10.0")
+
+    def test_add_pending_updates_timestamp(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        balance = repo.add_pending(agent.id, Decimal("1.0"))
+        assert balance.updated_at is not None
+
+
+class TestClearPendingOnConfirm:
+    """Tests for BalanceRepository.clear_pending_on_confirm (HIGH-7)."""
+
+    def test_clears_pending_amount(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        repo.add_pending(agent.id, Decimal("5.0"))
+        balance = repo.clear_pending_on_confirm(agent.id, Decimal("5.0"))
+        assert balance.pending == Decimal("0")
+
+    def test_partial_clear(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        repo.add_pending(agent.id, Decimal("10.0"))
+        balance = repo.clear_pending_on_confirm(agent.id, Decimal("3.0"))
+        assert balance.pending == Decimal("7.0")
+
+    def test_clear_more_than_pending_floors_to_zero(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        repo.add_pending(agent.id, Decimal("2.0"))
+        balance = repo.clear_pending_on_confirm(agent.id, Decimal("5.0"))
+        assert balance.pending == Decimal("0")
+
+    def test_clear_pending_updates_timestamp(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        repo.add_pending(agent.id, Decimal("1.0"))
+        balance = repo.clear_pending_on_confirm(agent.id, Decimal("1.0"))
+        assert balance.updated_at is not None
+
+
+class TestBalanceCheckConstraints:
+    """Task 4: CHECK constraints prevent negative balances at DB level."""
+
+    def test_negative_available_rejected(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        balance = repo.get_or_create(agent.id)
+        balance.available = Decimal("-1")
+        with pytest.raises(IntegrityError):
+            db_session.flush()
+        db_session.rollback()
+
+    def test_negative_pending_rejected(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        balance = repo.get_or_create(agent.id)
+        balance.pending = Decimal("-1")
+        with pytest.raises(IntegrityError):
+            db_session.flush()
+        db_session.rollback()
+
+    def test_zero_balances_allowed(self, db_session, agent):
+        repo = BalanceRepository(db_session)
+        balance = repo.get_or_create(agent.id)
+        balance.available = Decimal("0")
+        balance.pending = Decimal("0")
+        db_session.flush()  # Should not raise
+
+
+class TestPendingWithdrawalUUID:
+    """Task 5: PendingWithdrawal.id and .agent_id should use UUID, not String(36)."""
+
+    def test_id_column_is_uuid(self):
+        col = PendingWithdrawal.__table__.columns["id"]
+        col_type = type(col.type)
+        assert col_type is not String, "PendingWithdrawal.id should be UUID, not String"
+
+    def test_agent_id_column_is_uuid(self):
+        col = PendingWithdrawal.__table__.columns["agent_id"]
+        col_type = type(col.type)
+        assert col_type is not String, "PendingWithdrawal.agent_id should be UUID, not String"

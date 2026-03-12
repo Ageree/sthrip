@@ -4,6 +4,7 @@ Atomic reserve-then-store pattern: Redis SET NX (TTL 24h) with local dict fallba
 Keys are scoped by agent_id to prevent cross-agent collisions.
 """
 
+import hashlib
 import json
 import threading
 import time
@@ -11,6 +12,8 @@ import logging
 from typing import Optional, Dict, Any
 
 from fastapi import HTTPException
+
+from sthrip.config import get_settings
 
 logger = logging.getLogger("sthrip.idempotency")
 
@@ -20,10 +23,9 @@ try:
 except ImportError:
     REDIS_AVAILABLE = False
 
-import os
-
 _TTL_SECONDS = 86400  # 24 hours
 _PROCESSING_SENTINEL = "__processing__"
+_EVICTION_INTERVAL = 300  # 5 minutes
 
 # Atomic compare-and-delete: only removes the key if it still holds the sentinel
 _RELEASE_SCRIPT = """
@@ -40,10 +42,11 @@ class IdempotencyStore:
     def __init__(self):
         self._local_cache: Dict[str, Any] = {}
         self._lock = threading.Lock()
+        self._last_eviction: float = 0.0
         self.use_redis = False
 
         if REDIS_AVAILABLE:
-            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            redis_url = get_settings().redis_url
             try:
                 self.redis = redis.from_url(redis_url, decode_responses=True)
                 self.redis.ping()
@@ -54,7 +57,8 @@ class IdempotencyStore:
             self.redis = None
 
     def _key(self, agent_id: str, endpoint: str, idempotency_key: str) -> str:
-        return f"idempotency:{agent_id}:{endpoint}:{idempotency_key}"
+        hashed = hashlib.sha256(idempotency_key.encode()).hexdigest()
+        return f"idempotency:{agent_id}:{endpoint}:{hashed}"
 
     def try_reserve(
         self, agent_id: str, endpoint: str, key: str,
@@ -98,6 +102,10 @@ class IdempotencyStore:
         return None
 
     def _try_reserve_local(self, full_key: str) -> Optional[Dict[str, Any]]:
+        now = time.time()
+        if now - self._last_eviction > _EVICTION_INTERVAL:
+            self._evict_expired()
+            self._last_eviction = now
         with self._lock:
             entry = self._local_cache.get(full_key)
             if entry is not None:
@@ -132,6 +140,17 @@ class IdempotencyStore:
                     "response": response,
                     "expires_at": time.time() + _TTL_SECONDS,
                 }
+
+    def _evict_expired(self) -> None:
+        """Remove expired entries from local cache (I7: prevent unbounded growth)."""
+        now = time.time()
+        with self._lock:
+            expired = [
+                k for k, v in self._local_cache.items()
+                if isinstance(v, dict) and v.get("expires_at", 0) < now
+            ]
+            for k in expired:
+                del self._local_cache[k]
 
     def release(self, agent_id: str, endpoint: str, key: str) -> None:
         """Release a reserved key without storing a response (e.g. on error)."""
@@ -169,10 +188,13 @@ class IdempotencyStore:
 
 
 _store: Optional[IdempotencyStore] = None
+_store_lock = threading.Lock()
 
 
 def get_idempotency_store() -> IdempotencyStore:
     global _store
     if _store is None:
-        _store = IdempotencyStore()
+        with _store_lock:
+            if _store is None:
+                _store = IdempotencyStore()
     return _store

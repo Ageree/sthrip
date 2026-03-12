@@ -2,7 +2,6 @@
 Main Sthrip client for AI Agents
 """
 
-import os
 import random
 import time
 from typing import Optional, List, Dict, Callable
@@ -101,12 +100,14 @@ class Sthrip:
     
     @classmethod
     def from_env(cls) -> "Sthrip":
-        """Create client from environment variables"""
+        """Create client from centralized settings (reads environment variables via get_settings)."""
+        from sthrip.config import get_settings
+        settings = get_settings()
         return cls(
-            rpc_host=os.getenv("MONERO_RPC_HOST", "127.0.0.1"),
-            rpc_port=int(os.getenv("MONERO_RPC_PORT", "18082")),
-            rpc_user=os.getenv("MONERO_RPC_USER"),
-            rpc_pass=os.getenv("MONERO_RPC_PASS")
+            rpc_host=settings.monero_rpc_host,
+            rpc_port=settings.monero_rpc_port,
+            rpc_user=settings.monero_rpc_user or None,
+            rpc_pass=settings.monero_rpc_pass or None,
         )
     
     # === Wallet Info ===

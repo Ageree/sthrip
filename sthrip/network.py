@@ -3,7 +3,7 @@ Network privacy - multiple nodes, rotation, proxy support
 """
 
 import random
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 from dataclasses import dataclass
 from enum import Enum
 
@@ -129,9 +129,9 @@ class ConnectionPool:
     def __init__(self, node_manager: NodeManager, pool_size: int = 3):
         self.node_manager = node_manager
         self.pool_size = pool_size
-        self.connections: Dict[str, any] = {}
-    
-    def get_connection(self) -> any:
+        self.connections: Dict[str, Any] = {}
+
+    def get_connection(self) -> Any:
         """Get connection from pool, rotating nodes"""
         node = self.node_manager.get_node(NodePriority.RANDOM)
         # Would return actual RPC connection here

@@ -215,7 +215,7 @@ class TransactionScheduler:
             time_since_last = (now - self._last_tx_time).total_seconds()
             min_interval = self._min_interval_minutes * 60
             if time_since_last < min_interval:
-                delay = max(delay, min_interval - time_since_last)
+                delay = int(max(delay, min_interval - time_since_last))
         
         broadcast_time = now + timedelta(seconds=delay)
         
@@ -303,7 +303,7 @@ def calculate_privacy_score(
     score += min(mixin * 2, 30)
     
     # Timing variance (max 25)
-    score += min(timing_variance * 100, 25)
+    score += int(min(timing_variance * 100, 25))
     
     # No address reuse (20 points)
     if not address_reuse:

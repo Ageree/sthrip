@@ -4,6 +4,7 @@ import logging
 import pytest
 from unittest.mock import patch, MagicMock
 
+from sthrip.config import get_settings
 from sthrip.logging_config import (
     JSONFormatter,
     setup_logging,
@@ -95,6 +96,7 @@ class TestJSONFormatter:
 class TestSetupLogging:
     def test_json_format(self):
         with patch.dict("os.environ", {"LOG_FORMAT": "json", "LOG_LEVEL": "DEBUG"}):
+            get_settings.cache_clear()
             setup_logging()
 
         root = logging.getLogger()
@@ -107,6 +109,7 @@ class TestSetupLogging:
 
     def test_text_format(self):
         with patch.dict("os.environ", {"LOG_FORMAT": "text", "LOG_LEVEL": "WARNING"}):
+            get_settings.cache_clear()
             setup_logging()
 
         root = logging.getLogger()
@@ -118,7 +121,8 @@ class TestSetupLogging:
         assert len(json_handlers) == 0
 
     def test_default_format_is_text(self):
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {"ADMIN_API_KEY": "test", "ENVIRONMENT": "dev", "DATABASE_URL": "sqlite://"}, clear=True):
+            get_settings.cache_clear()
             setup_logging()
 
         root = logging.getLogger()
@@ -132,14 +136,16 @@ class TestSetupLogging:
         mock_handler = MagicMock()
         mock_logtail_cls = MagicMock(return_value=mock_handler)
 
-        with patch.dict("os.environ", {"BETTERSTACK_SOURCE_TOKEN": "test_token", "LOG_FORMAT": "text"}):
+        with patch.dict("os.environ", {"BETTERSTACK_TOKEN": "test_token", "LOG_FORMAT": "text"}):
+            get_settings.cache_clear()
             with patch.dict("sys.modules", {"logtail": MagicMock(LogtailHandler=mock_logtail_cls)}):
                 setup_logging()
 
         mock_logtail_cls.assert_called_once_with(source_token="test_token")
 
     def test_betterstack_import_error_handled(self):
-        with patch.dict("os.environ", {"BETTERSTACK_SOURCE_TOKEN": "test_token", "LOG_FORMAT": "text"}):
+        with patch.dict("os.environ", {"BETTERSTACK_TOKEN": "test_token", "LOG_FORMAT": "text"}):
+            get_settings.cache_clear()
             with patch("builtins.__import__", side_effect=_import_raiser("logtail")):
                 # Should not raise
                 setup_logging()

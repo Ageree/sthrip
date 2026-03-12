@@ -2,8 +2,6 @@
 
 import hmac
 import logging
-import os
-import time as _time
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
@@ -11,10 +9,13 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from sthrip.db.database import get_db
+from api.helpers import get_client_ip
 from sthrip.db.models import Agent
 from sthrip.db.repository import AgentRepository, BalanceRepository, TransactionRepository
 from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
+from sthrip.config import get_settings
 from sthrip.services.audit_logger import log_event as audit_log
+from api.session_store import AdminSessionStore
 
 logger = logging.getLogger("sthrip")
 
@@ -42,107 +43,121 @@ def get_transaction_repo(db: Session = Depends(get_db_session)) -> TransactionRe
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# APP.STATE DI PROVIDERS (I1 consolidation)
+#
+# These providers pull service instances from request.app.state, which is
+# populated once during the FastAPI lifespan (see api/main_v2.py).
+#
+# IMPORTANT: The module-level get_*() functions in each service module are
+# kept as-is for backward compatibility with background tasks and CLI code
+# that operates outside of a FastAPI request context.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_rate_limiter_dep(request: Request):
+    """Return the RateLimiter stored on app.state (populated during lifespan)."""
+    return request.app.state.rate_limiter
+
+
+def get_monitor_dep(request: Request):
+    """Return the HealthMonitor stored on app.state (populated during lifespan)."""
+    return request.app.state.monitor
+
+
+def get_webhook_service_dep(request: Request):
+    """Return the WebhookService stored on app.state (populated during lifespan)."""
+    return request.app.state.webhook_service
+
+
+def get_fee_collector_dep(request: Request):
+    """Return the FeeCollector stored on app.state, falling back to module-level singleton."""
+    try:
+        return request.app.state.fee_collector
+    except AttributeError:
+        from sthrip.services.fee_collector import get_fee_collector
+        return get_fee_collector()
+
+
+def get_agent_registry_dep(request: Request):
+    """Return the AgentRegistry stored on app.state, falling back to module-level singleton."""
+    try:
+        return request.app.state.agent_registry
+    except AttributeError:
+        from sthrip.services.agent_registry import get_registry
+        return get_registry()
+
+
+def get_idempotency_store_dep(request: Request):
+    """Return the IdempotencyStore stored on app.state, falling back to module-level singleton."""
+    try:
+        return request.app.state.idempotency_store
+    except AttributeError:
+        from sthrip.services.idempotency import get_idempotency_store
+        return get_idempotency_store()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # AUTHENTICATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_FAILED_AUTH_LIMIT = 20
-_FAILED_AUTH_WINDOW = 60  # seconds
 
 
 async def get_current_agent(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    request: Request = None
+    request: Request = None,
+    db: Session = Depends(get_db_session),
 ) -> Agent:
-    """Authenticate agent and check rate limits"""
-    client_ip = request.client.host if request and request.client else "unknown"
+    """Authenticate agent using the same DB session as the request handler."""
+    client_ip = get_client_ip(request)
     limiter = get_rate_limiter()
 
     # Check failed auth limit (read-only check, no increment)
-    _check_failed_auth_limit(limiter, client_ip)
+    try:
+        limiter.check_failed_auth(client_ip)
+    except RateLimitExceeded:
+        raise HTTPException(status_code=429, detail="Too many authentication attempts")
 
     if not credentials:
-        _record_failed_auth(limiter, client_ip)
+        limiter.record_failed_auth(client_ip)
         audit_log("auth.failed", ip_address=client_ip, details={"reason": "missing_api_key"}, success=False)
         raise HTTPException(status_code=401, detail="Missing API key")
 
     api_key = credentials.credentials
 
-    with get_db() as db:
-        repo = AgentRepository(db)
-        agent = repo.get_by_api_key(api_key)
+    repo = AgentRepository(db)
+    agent = repo.get_by_api_key(api_key)
 
-        if not agent:
-            _record_failed_auth(limiter, client_ip)
-            audit_log("auth.failed", ip_address=client_ip, details={"reason": "invalid_api_key"}, success=False)
-            raise HTTPException(status_code=401, detail="Invalid API key")
+    if not agent:
+        limiter.record_failed_auth(client_ip)
+        audit_log("auth.failed", ip_address=client_ip, details={"reason": "invalid_api_key"}, success=False)
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
-        if not agent.is_active:
-            raise HTTPException(status_code=403, detail="Agent account disabled")
+    if not agent.is_active:
+        raise HTTPException(status_code=403, detail="Agent account disabled")
 
-        # Update last seen
-        repo.update_last_seen(agent.id)
+    # Update last seen
+    repo.update_last_seen(agent.id)
 
-        # Check per-agent rate limit
-        try:
-            path = request.url.path if request else "/"
-            limiter.check_rate_limit(
-                agent_id=str(agent.id),
-                tier=agent.rate_limit_tier.value,
-                endpoint=path
-            )
-        except RateLimitExceeded as e:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "message": "Rate limit exceeded",
-                    "limit": e.limit,
-                    "reset_at": e.reset_at
-                }
-            )
-
-        return agent
-
-
-def _check_failed_auth_limit(limiter, ip: str) -> None:
-    """Check if IP has exceeded failed auth limit (read-only, no increment)."""
-    key = f"ratelimit:ip:failed_auth:{ip}"
-    now = _time.time()
-
-    if limiter.use_redis:
-        data = limiter.redis.hmget(key, "count", "reset_at")
-        count = int(data[0]) if data[0] else 0
-        reset_at = float(data[1]) if data[1] else now + _FAILED_AUTH_WINDOW
-        if reset_at < now:
-            count = 0
-    else:
-        with limiter._cache_lock:
-            entry = limiter._local_cache.get(key)
-        if entry and entry["reset_at"] >= now:
-            count = entry["count"]
-            reset_at = entry["reset_at"]
-        else:
-            count = 0
-            reset_at = now + _FAILED_AUTH_WINDOW
-
-    if count >= _FAILED_AUTH_LIMIT:
+    # Check per-agent rate limit
+    try:
+        path = request.url.path if request else "/"
+        limiter.check_rate_limit(
+            agent_id=str(agent.id),
+            tier=agent.rate_limit_tier.value,
+            endpoint=path
+        )
+    except RateLimitExceeded as e:
         raise HTTPException(
             status_code=429,
-            detail="Too many authentication attempts",
+            detail={
+                "message": "Rate limit exceeded",
+                "limit": e.limit,
+                "reset_at": e.reset_at
+            }
         )
 
+    return agent
 
-def _record_failed_auth(limiter, ip: str) -> None:
-    """Increment failed auth counter for this IP."""
-    try:
-        limiter.check_ip_rate_limit(
-            ip_address=ip,
-            action="failed_auth",
-            per_ip_limit=_FAILED_AUTH_LIMIT,
-            global_limit=10000,
-            window_seconds=_FAILED_AUTH_WINDOW,
-        )
-    except RateLimitExceeded:
-        pass  # Already exceeded, will block next request via _check_failed_auth_limit
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -151,8 +166,40 @@ def _record_failed_auth(limiter, ip: str) -> None:
 
 def verify_admin_key(admin_key: Optional[str]) -> None:
     """Verify admin key using constant-time comparison."""
-    expected_key = os.getenv("ADMIN_API_KEY")
+    expected_key = get_settings().admin_api_key
     if not expected_key or not admin_key:
         raise HTTPException(status_code=401, detail="Invalid admin key")
     if not hmac.compare_digest(admin_key.encode(), expected_key.encode()):
         raise HTTPException(status_code=401, detail="Invalid admin key")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADMIN SESSION-TOKEN AUTH (CRIT-4)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_ADMIN_SESSION_TTL = 8 * 3600  # 8 hours
+
+# API admin sessions use a distinct key prefix so they never collide with
+# dashboard cookie sessions (which live under "admin_session:").
+_admin_session_store = AdminSessionStore(key_prefix="admin_api_session:")
+
+
+def get_admin_session_store() -> AdminSessionStore:
+    """Return the API admin session store singleton."""
+    return _admin_session_store
+
+
+async def get_admin_session(request: Request) -> bool:
+    """Authenticate admin via bearer session token only.
+
+    Use POST /v2/admin/auth to obtain a session token, then pass it
+    as ``Authorization: Bearer <token>``.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        if _admin_session_store.validate_session(token):
+            return True
+        raise HTTPException(status_code=401, detail="Invalid or expired admin session token")
+
+    raise HTTPException(status_code=401, detail="Admin authentication required")

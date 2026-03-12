@@ -59,3 +59,64 @@ def test_responses_include_csp_header(client):
     """All responses must include Content-Security-Policy."""
     resp = client.get("/health")
     assert "content-security-policy" in resp.headers
+
+
+def test_chunked_body_size_limit(client):
+    """I3: Chunked POST without Content-Length must still enforce size limit."""
+    large_body = b"x" * (1024 * 1024 + 1)
+    resp = client.post(
+        "/v2/agents/register",
+        content=large_body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code in (413, 422)
+
+
+def test_chunked_body_at_exact_limit_accepted(client):
+    """I3: Chunked body exactly at limit (1MB) must not be rejected with 413."""
+    exact_body = b"x" * (1024 * 1024)
+    resp = client.post(
+        "/v2/agents/register",
+        content=exact_body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code != 413
+
+
+def test_chunked_body_size_limit_put(client):
+    """I3: Chunked PUT without Content-Length must enforce size limit."""
+    large_body = b"x" * (1024 * 1024 + 1)
+    resp = client.put(
+        "/v2/agents/register",
+        content=large_body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code in (404, 405, 413, 422)
+
+
+def test_chunked_body_size_limit_patch(client):
+    """I3: Chunked PATCH without Content-Length must enforce size limit."""
+    large_body = b"x" * (1024 * 1024 + 1)
+    resp = client.patch(
+        "/v2/agents/register",
+        content=large_body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code in (404, 405, 413, 422)
+
+
+def test_get_request_ignores_body_size_check(client):
+    """I3: GET requests are not checked for body size."""
+    resp = client.get("/health")
+    assert resp.status_code == 200
+
+
+def test_body_size_check_rejects_just_over_limit(client):
+    """I3: A body 1 byte over the limit must be rejected."""
+    one_over = b"x" * (1024 * 1024 + 1)
+    resp = client.post(
+        "/v2/agents/register",
+        content=one_over,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code in (413, 422)

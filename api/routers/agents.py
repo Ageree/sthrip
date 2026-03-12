@@ -1,21 +1,63 @@
 """Agent registry endpoints: registration, discovery, profiles."""
 
 import logging
+import time
 from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Depends, Request, Query
+from sqlalchemy.orm import Session
 
 from sthrip.db.database import get_db
 from sthrip.db.models import Agent
 from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 from sthrip.services.agent_registry import get_registry
 from sthrip.services.audit_logger import log_event as audit_log
-from api.deps import get_current_agent
+from api.deps import get_current_agent, get_db_session
+from api.helpers import get_client_ip
 from api.schemas import (
     AgentRegistration, AgentResponse, AgentProfileResponse, AgentSettingsUpdate,
 )
+from sthrip.db.repository import AgentRepository
 
 logger = logging.getLogger("sthrip")
+
+_ADDR_FIELDS = {"xmr_address", "base_address", "solana_address"}
+
+
+def _redact_addresses(d: dict) -> dict:
+    """Truncate wallet addresses in audit log details to avoid leaking full addresses."""
+    return {
+        k: (v[:8] + "..." if k in _ADDR_FIELDS and v else v)
+        for k, v in d.items()
+    }
+
+
+def _check_ip_rate_limit(
+    request: Request,
+    action: str,
+    per_ip_limit: int,
+    global_limit: int,
+    window_seconds: int,
+    detail: str = "Rate limit exceeded",
+) -> None:
+    """Check IP-based rate limit, raising 429 if exceeded."""
+    try:
+        limiter = get_rate_limiter()
+        client_ip = get_client_ip(request)
+        limiter.check_ip_rate_limit(
+            ip_address=client_ip,
+            action=action,
+            per_ip_limit=per_ip_limit,
+            global_limit=global_limit,
+            window_seconds=window_seconds,
+        )
+    except RateLimitExceeded as e:
+        raise HTTPException(
+            status_code=429,
+            detail=detail,
+            headers={"Retry-After": str(int(e.reset_at - time.time()))},
+        )
+
 
 router = APIRouter(tags=["agents"])
 
@@ -23,22 +65,10 @@ router = APIRouter(tags=["agents"])
 @router.post("/v2/agents/register", response_model=AgentResponse, status_code=201)
 async def register_agent(reg: AgentRegistration, request: Request):
     """Register new agent"""
-    try:
-        limiter = get_rate_limiter()
-        client_ip = request.client.host if request.client else "unknown"
-        limiter.check_ip_rate_limit(
-            ip_address=client_ip,
-            action="register",
-            per_ip_limit=5,
-            global_limit=100,
-            window_seconds=3600,
-        )
-    except RateLimitExceeded as e:
-        raise HTTPException(
-            status_code=429,
-            detail="Registration rate limit exceeded",
-            headers={"Retry-After": str(int(e.reset_at - __import__("time").time()))},
-        )
+    _check_ip_rate_limit(
+        request, "register", per_ip_limit=5, global_limit=100,
+        window_seconds=3600, detail="Registration rate limit exceeded",
+    )
 
     registry = get_registry()
     try:
@@ -51,7 +81,7 @@ async def register_agent(reg: AgentRegistration, request: Request):
             solana_address=reg.solana_address,
         )
 
-        client_ip = request.client.host if request.client else None
+        client_ip = get_client_ip(request)
         audit_log(
             "agent.registered",
             ip_address=client_ip,
@@ -65,6 +95,7 @@ async def register_agent(reg: AgentRegistration, request: Request):
             agent_name=result["agent_name"],
             tier=result["tier"],
             api_key=result["api_key"],
+            webhook_secret=result["webhook_secret"],
             created_at=result["created_at"],
         )
     except ValueError as e:
@@ -73,8 +104,10 @@ async def register_agent(reg: AgentRegistration, request: Request):
 
 
 @router.get("/v2/agents/{agent_name}", response_model=AgentProfileResponse)
-async def get_agent_profile(agent_name: str):
+async def get_agent_profile(agent_name: str, request: Request):
     """Get public agent profile"""
+    _check_ip_rate_limit(request, "discovery", per_ip_limit=60, global_limit=1000, window_seconds=60)
+
     registry = get_registry()
     profile = registry.get_profile(agent_name)
     if not profile:
@@ -91,8 +124,9 @@ async def get_agent_profile(agent_name: str):
     )
 
 
-@router.get("/v2/agents", response_model=List[AgentProfileResponse])
+@router.get("/v2/agents")
 async def discover_agents(
+    request: Request,
     min_trust_score: Optional[int] = None,
     tier: Optional[str] = None,
     verified_only: bool = False,
@@ -100,6 +134,8 @@ async def discover_agents(
     offset: int = Query(default=0, ge=0),
 ):
     """Discover agents with filters"""
+    _check_ip_rate_limit(request, "discovery", per_ip_limit=60, global_limit=1000, window_seconds=60)
+
     registry = get_registry()
     profiles = registry.discover_agents(
         min_trust_score=min_trust_score,
@@ -108,24 +144,39 @@ async def discover_agents(
         limit=limit,
         offset=offset,
     )
-    return [
-        AgentProfileResponse(
-            agent_name=p.agent_name,
-            did=p.did,
-            tier=p.tier,
-            trust_score=p.trust_score,
-            total_transactions=p.total_transactions,
-            xmr_address=p.xmr_address,
-            base_address=p.base_address,
-            verified_at=p.verified_at,
-        )
-        for p in profiles
-    ]
+    total = registry.count_agents(
+        min_trust_score=min_trust_score,
+        tier=tier,
+        verified_only=verified_only,
+    )
+    return {
+        "items": [
+            AgentProfileResponse(
+                agent_name=p.agent_name,
+                did=p.did,
+                tier=p.tier,
+                trust_score=p.trust_score,
+                total_transactions=p.total_transactions,
+                xmr_address=p.xmr_address,
+                base_address=p.base_address,
+                verified_at=p.verified_at,
+            )
+            for p in profiles
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/v2/leaderboard")
-async def get_leaderboard(limit: int = Query(default=100, ge=1, le=500)):
+async def get_leaderboard(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+):
     """Get top agents by trust score"""
+    _check_ip_rate_limit(request, "discovery", per_ip_limit=60, global_limit=1000, window_seconds=60)
+
     registry = get_registry()
     return registry.get_leaderboard(limit=limit)
 
@@ -152,66 +203,67 @@ async def update_agent_settings(
     settings: AgentSettingsUpdate,
     request: Request,
     agent: Agent = Depends(get_current_agent),
+    db: Session = Depends(get_db_session),
 ):
     """Update agent settings (webhook_url, privacy_level, wallet addresses)"""
-    with get_db() as db:
-        db_agent = db.query(Agent).filter(Agent.id == agent.id).first()
-        if not db_agent:
-            raise HTTPException(status_code=404, detail="Agent not found")
+    db_agent = db.query(Agent).filter(
+        Agent.id == agent.id, Agent.is_active == True
+    ).first()
+    if not db_agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
 
-        old_values = {}
-        new_values = {}
-        fields = {
-            "webhook_url": settings.webhook_url,
-            "privacy_level": settings.privacy_level,
-            "xmr_address": settings.xmr_address,
-            "base_address": settings.base_address,
-            "solana_address": settings.solana_address,
-        }
-        for field, value in fields.items():
-            if value is not None:
-                old_val = getattr(db_agent, field)
-                old_values[field] = str(old_val) if old_val else None
-                new_values[field] = value
-                setattr(db_agent, field, value)
+    old_values = {}
+    new_values = {}
+    fields = {
+        "webhook_url": settings.webhook_url,
+        "privacy_level": settings.privacy_level,
+        "xmr_address": settings.xmr_address,
+        "base_address": settings.base_address,
+        "solana_address": settings.solana_address,
+    }
+    for field, value in fields.items():
+        if value is not None:
+            old_val = getattr(db_agent, field)
+            old_values[field] = str(old_val) if old_val else None
+            new_values[field] = value
+            setattr(db_agent, field, value)
 
-        if not new_values:
-            raise HTTPException(status_code=400, detail="No fields to update")
+    if not new_values:
+        raise HTTPException(status_code=400, detail="No fields to update")
 
-        audit_log(
-            "agent.settings_updated",
-            agent_id=str(agent.id),
-            ip_address=request.client.host if request.client else None,
-            request_method="PATCH",
-            request_path="/v2/me/settings",
-            details={"old": old_values, "new": new_values},
-        )
+    audit_log(
+        "agent.settings_updated",
+        agent_id=str(agent.id),
+        ip_address=get_client_ip(request),
+        request_method="PATCH",
+        request_path="/v2/me/settings",
+        details={"old": _redact_addresses(old_values), "new": _redact_addresses(new_values)},
+    )
 
-        return {"updated": list(new_values.keys()), "message": "Settings updated"}
+    return {"updated": list(new_values.keys()), "message": "Settings updated"}
 
 
 @router.post("/v2/me/rotate-key")
 async def rotate_api_key(
     request: Request,
     agent: Agent = Depends(get_current_agent),
+    db: Session = Depends(get_db_session),
 ):
     """Rotate API key. Returns the new key once — store it securely."""
     import secrets as _secrets
-    import hashlib as _hashlib
 
     new_key = f"sk_{_secrets.token_hex(32)}"
-    new_hash = _hashlib.sha256(new_key.encode()).hexdigest()
+    new_hash = AgentRepository._hash_api_key(new_key)
 
-    with get_db() as db:
-        db_agent = db.query(Agent).filter(Agent.id == agent.id).first()
-        if not db_agent:
-            raise HTTPException(status_code=404, detail="Agent not found")
-        db_agent.api_key_hash = new_hash
+    db_agent = db.query(Agent).filter(Agent.id == agent.id).first()
+    if not db_agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    db_agent.api_key_hash = new_hash
 
     audit_log(
         "agent.key_rotated",
         agent_id=str(agent.id),
-        ip_address=request.client.host if request.client else None,
+        ip_address=get_client_ip(request),
         request_method="POST",
         request_path="/v2/me/rotate-key",
     )

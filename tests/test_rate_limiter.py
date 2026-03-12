@@ -16,19 +16,32 @@ import pytest
 # We also wire up sys.modules so that `patch.object` and attribute-based
 # patching works correctly.
 # ---------------------------------------------------------------------------
-_RL_PATH = "/Users/saveliy/Documents/Agent Payments/sthrip/sthrip/services/rate_limiter.py"
+_BASE = "/Users/saveliy/Documents/Agent Payments/sthrip"
+_RL_PATH = _BASE + "/sthrip/services/rate_limiter.py"
+
+# Add project root to sys.path so `from sthrip.config import ...` works
+if _BASE not in sys.path:
+    sys.path.insert(0, _BASE)
+
 _spec = importlib.util.spec_from_file_location(
     "sthrip.services.rate_limiter",
     _RL_PATH,
     submodule_search_locations=[],
 )
 
-# Ensure parent packages exist in sys.modules
-for _pkg in ("sthrip", "sthrip.services"):
-    if _pkg not in sys.modules:
-        _m = types.ModuleType(_pkg)
-        _m.__path__ = []
-        sys.modules[_pkg] = _m
+# Ensure parent packages exist in sys.modules with correct __path__
+# so that submodule imports (sthrip.config, etc.) resolve properly.
+if "sthrip" not in sys.modules:
+    _m = types.ModuleType("sthrip")
+    _m.__path__ = [_BASE + "/sthrip"]
+    sys.modules["sthrip"] = _m
+elif not getattr(sys.modules["sthrip"], "__path__", None):
+    sys.modules["sthrip"].__path__ = [_BASE + "/sthrip"]
+
+if "sthrip.services" not in sys.modules:
+    _m = types.ModuleType("sthrip.services")
+    _m.__path__ = [_BASE + "/sthrip/services"]
+    sys.modules["sthrip.services"] = _m
 
 rl_mod = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = rl_mod
@@ -124,8 +137,11 @@ class TestRateLimitExceeded:
 # ---------------------------------------------------------------------------
 
 def _make_local_limiter(default_tier=RateLimitTier.STANDARD):
-    """Create a RateLimiter that always uses the local-cache path."""
-    with patch(f"{_MOD}.REDIS_AVAILABLE", False):
+    """Create a RateLimiter that always uses the local-cache path (fail_open=True)."""
+    mock_settings = MagicMock()
+    mock_settings.rate_limit_fail_open = True
+    with patch(f"{_MOD}.REDIS_AVAILABLE", False), \
+         patch(f"{_MOD}.get_settings", return_value=mock_settings):
         limiter = RateLimiter(default_tier=default_tier)
     assert limiter.use_redis is False
     return limiter
@@ -133,12 +149,16 @@ def _make_local_limiter(default_tier=RateLimitTier.STANDARD):
 
 def _make_redis_limiter():
     """Create a RateLimiter connected to a mock Redis."""
+    mock_settings = MagicMock()
+    mock_settings.redis_url = "redis://fake:6379/0"
+    mock_settings.rate_limit_fail_open = False
     mock_redis_mod = MagicMock()
     mock_conn = MagicMock()
     mock_redis_mod.from_url.return_value = mock_conn
     mock_conn.ping.return_value = True
     with patch(f"{_MOD}.REDIS_AVAILABLE", True), \
-         patch(f"{_MOD}.redis", mock_redis_mod):
+         patch(f"{_MOD}.redis", mock_redis_mod), \
+         patch(f"{_MOD}.get_settings", return_value=mock_settings):
         limiter = RateLimiter(redis_url="redis://fake:6379/0")
     return limiter, mock_conn
 
@@ -156,6 +176,8 @@ class TestRateLimiterInit:
         assert limiter._local_cache == {}
 
     def test_init_redis_available_but_connection_fails(self):
+        mock_settings = MagicMock()
+        mock_settings.rate_limit_fail_open = True
         mock_redis_mod = MagicMock()
         # ConnectionError and ResponseError must be real exception classes
         # so that `except (redis.ConnectionError, redis.ResponseError)` works
@@ -163,7 +185,8 @@ class TestRateLimiterInit:
         mock_redis_mod.ResponseError = Exception
         mock_redis_mod.from_url.return_value.ping.side_effect = ConnectionError("refused")
         with patch(f"{_MOD}.REDIS_AVAILABLE", True), \
-             patch(f"{_MOD}.redis", mock_redis_mod):
+             patch(f"{_MOD}.redis", mock_redis_mod), \
+             patch(f"{_MOD}.get_settings", return_value=mock_settings):
             limiter = RateLimiter(redis_url="redis://fake:6379/0")
         assert limiter.use_redis is False
 
@@ -390,6 +413,43 @@ class TestCheckIpRateLimitLocal:
         result = limiter.check_ip_rate_limit("1.2.3.4", action="login", per_ip_limit=5)
         assert result["allowed"] is True
 
+    def test_exact_limit_boundary_ip(self):
+        """Request exactly at per_ip_limit must be allowed; limit+1 must be rejected."""
+        limiter = _make_local_limiter()
+        limit = 3
+        for i in range(limit):
+            result = limiter.check_ip_rate_limit("2.2.2.2", per_ip_limit=limit)
+            assert result["allowed"] is True, f"Request {i+1} of {limit} should be allowed"
+        with pytest.raises(RateLimitExceeded):
+            limiter.check_ip_rate_limit("2.2.2.2", per_ip_limit=limit)
+
+    def test_exact_limit_boundary_global(self):
+        """Request exactly at global_limit must be allowed; limit+1 must be rejected."""
+        limiter = _make_local_limiter()
+        limit = 3
+        for i in range(limit):
+            result = limiter.check_ip_rate_limit(
+                f"3.3.3.{i}", per_ip_limit=100, global_limit=limit
+            )
+            assert result["allowed"] is True, f"Request {i+1} of {limit} should be allowed"
+        with pytest.raises(RateLimitExceeded):
+            limiter.check_ip_rate_limit(
+                "3.3.3.99", per_ip_limit=100, global_limit=limit
+            )
+
+    def test_first_request_checked_against_limit(self):
+        """Even the first request in a new window must be checked against limit.
+
+        Ensures that a limit of 0 (or window-start race) rejects immediately.
+        """
+        limiter = _make_local_limiter()
+        # With ip_limit=1 and global_limit=1, first request should be allowed
+        result = limiter.check_ip_rate_limit("4.4.4.4", per_ip_limit=1, global_limit=1)
+        assert result["allowed"] is True
+        # Second request should be rejected
+        with pytest.raises(RateLimitExceeded):
+            limiter.check_ip_rate_limit("4.4.4.5", per_ip_limit=100, global_limit=1)
+
 
 # ---------------------------------------------------------------------------
 # check_ip_rate_limit — Redis path (_check_ip_redis)
@@ -516,11 +576,112 @@ class TestResetLimit:
 # Module-level convenience functions: get_rate_limiter, check_rate_limit
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# RATE_LIMIT_FAIL_OPEN behavior when Redis is unavailable
+# ---------------------------------------------------------------------------
+
+class TestFailOpenSetting:
+
+    def test_fail_closed_redis_unavailable_rejects_on_check(self):
+        """When RATE_LIMIT_FAIL_OPEN=false and Redis is down, init succeeds but check_rate_limit raises 503."""
+        from fastapi import HTTPException
+
+        mock_settings = MagicMock()
+        mock_settings.redis_url = "redis://fake:6379/0"
+        mock_settings.rate_limit_fail_open = False
+
+        mock_redis_mod = MagicMock()
+        mock_redis_mod.ConnectionError = ConnectionError
+        mock_redis_mod.ResponseError = Exception
+        mock_redis_mod.from_url.return_value.ping.side_effect = ConnectionError("refused")
+
+        with patch(f"{_MOD}.REDIS_AVAILABLE", True), \
+             patch(f"{_MOD}.redis", mock_redis_mod), \
+             patch(f"{_MOD}.get_settings", return_value=mock_settings):
+            limiter = RateLimiter(redis_url="redis://fake:6379/0")
+            assert not limiter.use_redis
+            with pytest.raises(HTTPException) as exc_info:
+                limiter.check_rate_limit("agent-1")
+            assert exc_info.value.status_code == 503
+            assert "unavailable" in exc_info.value.detail.lower()
+
+    def test_fail_closed_no_redis_module_rejects_on_check(self):
+        """When RATE_LIMIT_FAIL_OPEN=false and redis module not installed, init succeeds but check raises 503."""
+        from fastapi import HTTPException
+
+        mock_settings = MagicMock()
+        mock_settings.rate_limit_fail_open = False
+
+        with patch(f"{_MOD}.REDIS_AVAILABLE", False), \
+             patch(f"{_MOD}.get_settings", return_value=mock_settings):
+            limiter = RateLimiter()
+            with pytest.raises(HTTPException) as exc_info:
+                limiter.check_rate_limit("agent-1")
+            assert exc_info.value.status_code == 503
+
+    def test_fail_open_redis_unavailable_uses_local(self):
+        """When RATE_LIMIT_FAIL_OPEN=true and Redis is down, falls back to local dict."""
+        mock_settings = MagicMock()
+        mock_settings.redis_url = "redis://fake:6379/0"
+        mock_settings.rate_limit_fail_open = True
+
+        mock_redis_mod = MagicMock()
+        mock_redis_mod.ConnectionError = ConnectionError
+        mock_redis_mod.ResponseError = Exception
+        mock_redis_mod.from_url.return_value.ping.side_effect = ConnectionError("refused")
+
+        with patch(f"{_MOD}.REDIS_AVAILABLE", True), \
+             patch(f"{_MOD}.redis", mock_redis_mod), \
+             patch(f"{_MOD}.get_settings", return_value=mock_settings):
+            limiter = RateLimiter(redis_url="redis://fake:6379/0")
+        assert limiter.use_redis is False
+        result = limiter.check_rate_limit("agent1", tier="standard")
+        assert result["allowed"] is True
+
+    def test_fail_open_no_redis_module_uses_local(self):
+        """When RATE_LIMIT_FAIL_OPEN=true and redis not installed, falls back to local dict."""
+        mock_settings = MagicMock()
+        mock_settings.rate_limit_fail_open = True
+
+        with patch(f"{_MOD}.REDIS_AVAILABLE", False), \
+             patch(f"{_MOD}.get_settings", return_value=mock_settings):
+            limiter = RateLimiter()
+        assert limiter.use_redis is False
+        result = limiter.check_rate_limit("agent1", tier="standard")
+        assert result["allowed"] is True
+
+    def test_fail_closed_is_default(self):
+        """Default behavior (no setting) should be fail-closed — init succeeds, check raises 503."""
+        from fastapi import HTTPException
+
+        mock_settings = MagicMock()
+        mock_settings.rate_limit_fail_open = False
+
+        mock_redis_mod = MagicMock()
+        mock_redis_mod.ConnectionError = ConnectionError
+        mock_redis_mod.ResponseError = Exception
+        mock_redis_mod.from_url.return_value.ping.side_effect = ConnectionError("refused")
+
+        with patch(f"{_MOD}.REDIS_AVAILABLE", True), \
+             patch(f"{_MOD}.redis", mock_redis_mod), \
+             patch(f"{_MOD}.get_settings", return_value=mock_settings):
+            limiter = RateLimiter(redis_url="redis://fake:6379/0")
+            with pytest.raises(HTTPException) as exc_info:
+                limiter.check_rate_limit("agent-1")
+            assert exc_info.value.status_code == 503
+
+
 class TestModuleFunctions:
+
+    def _mock_settings_fail_open(self):
+        mock_settings = MagicMock()
+        mock_settings.rate_limit_fail_open = True
+        return mock_settings
 
     def test_get_rate_limiter_singleton(self):
         rl_mod._limiter = None
-        with patch(f"{_MOD}.REDIS_AVAILABLE", False):
+        with patch(f"{_MOD}.REDIS_AVAILABLE", False), \
+             patch(f"{_MOD}.get_settings", return_value=self._mock_settings_fail_open()):
             lim1 = rl_mod.get_rate_limiter()
             lim2 = rl_mod.get_rate_limiter()
         assert lim1 is lim2
@@ -528,14 +689,16 @@ class TestModuleFunctions:
 
     def test_check_rate_limit_convenience(self):
         rl_mod._limiter = None
-        with patch(f"{_MOD}.REDIS_AVAILABLE", False):
+        with patch(f"{_MOD}.REDIS_AVAILABLE", False), \
+             patch(f"{_MOD}.get_settings", return_value=self._mock_settings_fail_open()):
             result = rl_mod.check_rate_limit("agent1", tier="standard")
         assert result["allowed"] is True
         rl_mod._limiter = None
 
     def test_check_rate_limit_with_endpoint(self):
         rl_mod._limiter = None
-        with patch(f"{_MOD}.REDIS_AVAILABLE", False):
+        with patch(f"{_MOD}.REDIS_AVAILABLE", False), \
+             patch(f"{_MOD}.get_settings", return_value=self._mock_settings_fail_open()):
             result = rl_mod.check_rate_limit("agent1", tier="low", endpoint="/pay")
         assert result["allowed"] is True
         rl_mod._limiter = None
@@ -574,3 +737,76 @@ class TestThreadSafety:
         assert errors == []
         key = limiter._get_key("shared")
         assert limiter._local_cache[key]["count"] == 50  # 5 threads * 10
+
+
+# ---------------------------------------------------------------------------
+# TTL eviction: _evict_expired (I6)
+# ---------------------------------------------------------------------------
+
+class TestLocalCacheEviction:
+
+    def test_local_cache_evicts_expired_entries(self):
+        """I6: Expired entries must be cleaned up periodically."""
+        limiter = RateLimiter.__new__(RateLimiter)
+        limiter.use_redis = False
+        limiter.redis = None
+        limiter.default_tier = RateLimitTier.STANDARD
+        limiter._local_cache = {}
+        limiter._cache_lock = threading.Lock()
+        limiter._last_eviction = 0.0
+
+        limiter._local_cache["ratelimit:old:key"] = {
+            "count": 5, "reset_at": time.time() - 120
+        }
+        limiter._local_cache["ratelimit:new:key"] = {
+            "count": 3, "reset_at": time.time() + 60
+        }
+
+        limiter._evict_expired()
+
+        assert "ratelimit:old:key" not in limiter._local_cache
+        assert "ratelimit:new:key" in limiter._local_cache
+
+    def test_evict_expired_empty_cache(self):
+        """_evict_expired on an empty cache must not raise."""
+        limiter = RateLimiter.__new__(RateLimiter)
+        limiter._local_cache = {}
+        limiter._cache_lock = threading.Lock()
+        limiter._last_eviction = 0.0
+        limiter._evict_expired()  # should not raise
+
+    def test_evict_expired_all_entries_fresh(self):
+        """No entries removed when all reset_at is in the future."""
+        limiter = RateLimiter.__new__(RateLimiter)
+        limiter._local_cache = {
+            "k1": {"count": 1, "reset_at": time.time() + 60},
+            "k2": {"count": 2, "reset_at": time.time() + 120},
+        }
+        limiter._cache_lock = threading.Lock()
+        limiter._last_eviction = 0.0
+        limiter._evict_expired()
+        assert "k1" in limiter._local_cache
+        assert "k2" in limiter._local_cache
+
+    def test_eviction_triggered_from_check_local(self):
+        """_check_local calls _evict_expired when interval has elapsed."""
+        limiter = _make_local_limiter()
+        limiter._last_eviction = 0.0  # force eviction to be due
+
+        # Pre-seed a stale entry
+        limiter._local_cache["ratelimit:stale"] = {
+            "count": 5, "reset_at": time.time() - 200
+        }
+
+        # This call should trigger eviction internally
+        limiter.check_rate_limit("agent1", tier="standard")
+
+        assert "ratelimit:stale" not in limiter._local_cache
+
+    def test_last_eviction_updated_after_eviction(self):
+        """_last_eviction timestamp is updated when eviction runs."""
+        limiter = _make_local_limiter()
+        limiter._last_eviction = 0.0
+        before = time.time()
+        limiter.check_rate_limit("agent1", tier="standard")
+        assert limiter._last_eviction >= before

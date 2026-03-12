@@ -4,10 +4,11 @@ Used at registration time AND before each webhook send.
 """
 
 import ipaddress
-import os
 import socket
 from typing import Optional
 from urllib.parse import urlparse
+
+from sthrip.config import get_settings
 
 
 class SSRFBlockedError(Exception):
@@ -15,7 +16,7 @@ class SSRFBlockedError(Exception):
     pass
 
 
-def validate_url_target(url: str, *, enforce_https: Optional[bool] = None) -> str:
+def validate_url_target(url: str, *, enforce_https: Optional[bool] = None, block_on_dns_failure: bool = False) -> str:
     """
     Validate that a URL is safe to send HTTP requests to.
 
@@ -38,7 +39,7 @@ def validate_url_target(url: str, *, enforce_https: Optional[bool] = None) -> st
     parsed = urlparse(url)
 
     if enforce_https is None:
-        enforce_https = os.getenv("ENVIRONMENT", "production") != "dev"
+        enforce_https = get_settings().environment != "dev"
 
     allowed_schemes = ("https",) if enforce_https else ("http", "https")
     if parsed.scheme not in allowed_schemes:
@@ -48,11 +49,11 @@ def validate_url_target(url: str, *, enforce_https: Optional[bool] = None) -> st
     if not hostname:
         raise ValueError("URL must have a valid hostname")
 
-    _check_hostname_safe(hostname)
+    _check_hostname_safe(hostname, block_on_dns_failure=block_on_dns_failure)
     return url
 
 
-def _check_hostname_safe(hostname: str) -> None:
+def _check_hostname_safe(hostname: str, *, block_on_dns_failure: bool = False) -> None:
     """
     Resolve hostname and verify all IPs are public.
 
@@ -76,12 +77,43 @@ def _check_hostname_safe(hostname: str) -> None:
                     f"URL hostname '{hostname}' resolves to private/internal IP {sockaddr[0]}"
                 )
     except socket.gaierror:
-        # DNS resolution failure — allow at registration, block at send time
+        if block_on_dns_failure:
+            raise SSRFBlockedError(f"DNS resolution failed for hostname '{hostname}'")
+        # Allow at registration time; webhook sender should use block_on_dns_failure=True
+
+
+from typing import Tuple, Union
+
+
+def resolve_and_validate(url: str, *, enforce_https: Optional[bool] = None) -> Tuple[str, str]:
+    """Validate URL and return (validated_url, resolved_ip).
+
+    The caller should pin the connection to resolved_ip to prevent DNS rebinding.
+    """
+    validated = validate_url_target(url, enforce_https=enforce_https)
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+
+    # If IP literal, use directly
+    try:
+        addr = ipaddress.ip_address(hostname)
+        return validated, str(addr)
+    except ValueError:
         pass
 
+    # Resolve DNS and return first safe IP
+    results = socket.getaddrinfo(hostname, None)
+    for _, _, _, _, sockaddr in results:
+        addr = ipaddress.ip_address(sockaddr[0])
+        if not _is_dangerous_ip(addr):
+            return validated, sockaddr[0]
 
-from typing import Union
+    raise SSRFBlockedError(f"No safe IP found for hostname '{hostname}'")
+
 
 def _is_dangerous_ip(addr: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]) -> bool:
-    """Check if an IP address is private, loopback, reserved, or link-local."""
-    return addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local
+    """Check if an IP address is private, loopback, reserved, link-local, multicast, or unspecified."""
+    return (
+        addr.is_private or addr.is_loopback or addr.is_reserved
+        or addr.is_link_local or addr.is_multicast or addr.is_unspecified
+    )

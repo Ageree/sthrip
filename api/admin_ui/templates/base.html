@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>{% block title %}Admin{% endblock %} — Sthrip</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/admin/static/tailwind.css">
     <style>
         body { font-family: 'Inter', system-ui, sans-serif; }
     </style>
@@ -18,7 +18,10 @@
                 <a href="/admin/agents" class="hover:text-indigo-200">Agents</a>
                 <a href="/admin/transactions" class="hover:text-indigo-200">Transactions</a>
                 <a href="/admin/balances" class="hover:text-indigo-200">Balances</a>
-                <a href="/admin/logout" class="hover:text-red-300">Logout</a>
+                <form method="post" action="/admin/logout" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="hover:text-red-300 bg-transparent border-0 text-white cursor-pointer text-sm">Logout</button>
+                </form>
             </div>
         </div>
     </nav>

@@ -138,7 +138,7 @@ def agent_with_deposits(client, db_session_factory):
     """Register agent and create some deposit transactions."""
     r = client.post("/v2/agents/register", json={
         "agent_name": "deposit-viewer",
-        "xmr_address": "test_addr",
+        "xmr_address": "5" + "a" * 94,
     })
     key = r.json()["api_key"]
 
@@ -212,7 +212,7 @@ class TestDepositsEndpoint:
         # Register fresh agent with no deposits
         r = client.post("/v2/agents/register", json={
             "agent_name": "no-deposits-agent",
-            "xmr_address": "test_addr",
+            "xmr_address": "5" + "a" * 94,
         })
         key = r.json()["api_key"]
         r = client.get(

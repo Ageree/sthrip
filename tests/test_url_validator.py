@@ -10,6 +10,7 @@ from sthrip.services.url_validator import (
     SSRFBlockedError,
     _check_hostname_safe,
     _is_dangerous_ip,
+    resolve_and_validate,
     validate_url_target,
 )
 
@@ -45,6 +46,18 @@ class TestIsDangerousIp:
     def test_link_local_ipv6(self):
         assert _is_dangerous_ip(ipaddress.ip_address("fe80::1")) is True
 
+    def test_multicast_ipv4(self):
+        assert _is_dangerous_ip(ipaddress.ip_address("224.0.0.1")) is True
+
+    def test_multicast_ipv6(self):
+        assert _is_dangerous_ip(ipaddress.ip_address("ff02::1")) is True
+
+    def test_unspecified_ipv4(self):
+        assert _is_dangerous_ip(ipaddress.ip_address("0.0.0.0")) is True
+
+    def test_unspecified_ipv6(self):
+        assert _is_dangerous_ip(ipaddress.ip_address("::")) is True
+
 
 # ── validate_url_target — valid URLs ─────────────────────────────────────
 
@@ -54,7 +67,7 @@ class TestValidateUrlTargetValid:
     def test_https_url_accepted(self, mock_check):
         result = validate_url_target("https://example.com/hook", enforce_https=True)
         assert result == "https://example.com/hook"
-        mock_check.assert_called_once_with("example.com")
+        mock_check.assert_called_once_with("example.com", block_on_dns_failure=False)
 
     @patch("sthrip.services.url_validator._check_hostname_safe")
     def test_http_allowed_in_dev(self, mock_check):
@@ -68,8 +81,10 @@ class TestValidateUrlTargetValid:
         assert result == "http://example.com/hook"
 
     @patch("sthrip.services.url_validator._check_hostname_safe")
-    @patch.dict("os.environ", {"ENVIRONMENT": "production"})
+    @patch.dict("os.environ", {"ENVIRONMENT": "production", "MONERO_NETWORK": "mainnet", "MONERO_RPC_PASS": "secure-rpc-pass-123", "API_KEY_HMAC_SECRET": "test-hmac-secret-long-enough-32chars!!", "MONERO_RPC_HOST": "monero-rpc.internal"})
     def test_https_enforced_in_production(self, mock_check):
+        from sthrip.config import get_settings
+        get_settings.cache_clear()
         with pytest.raises(ValueError, match="must use https"):
             validate_url_target("http://example.com/hook")
 
@@ -162,3 +177,48 @@ class TestCheckHostnameSafeDNS:
         with patch("sthrip.services.url_validator.socket.getaddrinfo", return_value=fake_result):
             with pytest.raises(SSRFBlockedError):
                 _check_hostname_safe("ipv6evil.example.com")
+
+
+# ── resolve_and_validate (HIGH-8: DNS rebinding protection) ──────────────
+
+
+class TestResolveAndValidate:
+    """Tests for resolve_and_validate which returns (url, resolved_ip)."""
+
+    @patch("sthrip.services.url_validator._check_hostname_safe")
+    def test_ip_literal_returns_ip_directly(self, mock_check):
+        url, ip = resolve_and_validate("https://93.184.216.34/hook", enforce_https=True)
+        assert url == "https://93.184.216.34/hook"
+        assert ip == "93.184.216.34"
+
+    @patch("sthrip.services.url_validator._check_hostname_safe")
+    @patch("sthrip.services.url_validator.socket.getaddrinfo")
+    def test_hostname_resolves_to_safe_ip(self, mock_dns, mock_check):
+        mock_dns.return_value = [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))]
+        url, ip = resolve_and_validate("https://example.com/hook", enforce_https=True)
+        assert url == "https://example.com/hook"
+        assert ip == "93.184.216.34"
+
+    @patch("sthrip.services.url_validator._check_hostname_safe")
+    @patch("sthrip.services.url_validator.socket.getaddrinfo")
+    def test_skips_dangerous_ips_returns_safe_one(self, mock_dns, mock_check):
+        mock_dns.return_value = [
+            (socket.AF_INET, 0, 0, "", ("10.0.0.1", 0)),
+            (socket.AF_INET, 0, 0, "", ("93.184.216.34", 0)),
+        ]
+        url, ip = resolve_and_validate("https://example.com/hook", enforce_https=True)
+        assert ip == "93.184.216.34"
+
+    @patch("sthrip.services.url_validator._check_hostname_safe")
+    @patch("sthrip.services.url_validator.socket.getaddrinfo")
+    def test_all_dangerous_ips_raises(self, mock_dns, mock_check):
+        mock_dns.return_value = [
+            (socket.AF_INET, 0, 0, "", ("10.0.0.1", 0)),
+            (socket.AF_INET, 0, 0, "", ("192.168.1.1", 0)),
+        ]
+        with pytest.raises(SSRFBlockedError, match="No safe IP"):
+            resolve_and_validate("https://evil.example.com/hook", enforce_https=True)
+
+    def test_private_ip_literal_blocked_by_validate(self):
+        with pytest.raises(SSRFBlockedError):
+            resolve_and_validate("https://127.0.0.1/hook", enforce_https=True)

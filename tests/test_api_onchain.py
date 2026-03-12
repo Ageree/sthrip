@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 from sthrip.db.models import (
     Base, Agent, AgentReputation, AgentBalance, HubRoute,
-    FeeCollection, Transaction,
+    FeeCollection, Transaction, PendingWithdrawal,
     AgentTier, RateLimitTier, PrivacyLevel,
 )
 from sthrip.db.repository import BalanceRepository
@@ -24,6 +24,7 @@ _TEST_TABLES = [
     HubRoute.__table__,
     FeeCollection.__table__,
     Transaction.__table__,
+    PendingWithdrawal.__table__,
 ]
 
 
@@ -127,7 +128,7 @@ def onchain_client(db_engine, db_session_factory, mock_wallet_service):
 def registered_agent(onchain_client):
     r = onchain_client.post("/v2/agents/register", json={
         "agent_name": "onchain-agent",
-        "xmr_address": "test_xmr_address",
+        "xmr_address": "5" + "a" * 94,
     })
     assert r.status_code == 201, f"Registration failed: {r.text}"
     return r.json()["api_key"], "onchain-agent"
@@ -164,7 +165,8 @@ class TestDepositOnchain:
             "/v2/balance",
             headers={"Authorization": f"Bearer {key}"},
         )
-        assert r.json()["available"] == 0
+        from decimal import Decimal
+        assert Decimal(r.json()["available"]) == 0
 
     def test_deposit_message_included(self, onchain_client, registered_agent):
         key, _ = registered_agent
@@ -208,7 +210,8 @@ class TestWithdrawOnchain:
         data = r.json()
         assert data["status"] == "sent"
         assert data["tx_hash"] == "abc123withdrawal"
-        assert data["amount"] == 3.0
+        from decimal import Decimal
+        assert Decimal(data["amount"]) == 3
         assert "fee" in data
         assert data["token"] == "XMR"
 
@@ -222,9 +225,14 @@ class TestWithdrawOnchain:
         assert r.status_code == 400
         assert "Insufficient" in r.json()["detail"]
 
-    def test_withdraw_rpc_failure_rolls_back(
+    def test_withdraw_rpc_failure_marks_needs_review(
         self, onchain_client, registered_agent, mock_wallet_service, db_session_factory
     ):
+        """On RPC failure, balance stays deducted and withdrawal is marked needs_review.
+
+        The admin must verify on-chain state before crediting back to prevent
+        double-spend when the RPC actually submitted the tx but response was lost.
+        """
         key, _ = registered_agent
         self._fund_agent(onchain_client, key, db_session_factory)
 
@@ -237,12 +245,13 @@ class TestWithdrawOnchain:
         )
         assert r.status_code == 502
 
-        # Balance should be restored
+        # Balance should NOT be restored — stays deducted until admin review
         r = onchain_client.get(
             "/v2/balance",
             headers={"Authorization": f"Bearer {key}"},
         )
-        assert r.json()["available"] == 10.0
+        from decimal import Decimal
+        assert Decimal(r.json()["available"]) == 7
 
     def test_withdraw_updates_total_withdrawn(
         self, onchain_client, registered_agent, db_session_factory
@@ -259,7 +268,8 @@ class TestWithdrawOnchain:
             "/v2/balance",
             headers={"Authorization": f"Bearer {key}"},
         )
-        assert r.json()["total_withdrawn"] == 2.0
+        from decimal import Decimal
+        assert Decimal(r.json()["total_withdrawn"]) == 2
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -331,7 +341,7 @@ class TestLedgerModeBackwardCompat:
     def test_ledger_deposit_auto_credits(self, ledger_client):
         r = ledger_client.post("/v2/agents/register", json={
             "agent_name": "ledger-agent",
-            "xmr_address": "test_addr",
+            "xmr_address": "5" + "a" * 94,
         })
         key = r.json()["api_key"]
 
@@ -342,12 +352,13 @@ class TestLedgerModeBackwardCompat:
         )
         assert r.status_code == 200
         assert r.json()["status"] == "deposited"
-        assert r.json()["new_balance"] == 5.0
+        from decimal import Decimal
+        assert Decimal(r.json()["new_balance"]) == 5
 
     def test_ledger_withdraw_no_rpc(self, ledger_client):
         r = ledger_client.post("/v2/agents/register", json={
             "agent_name": "ledger-withdrawer",
-            "xmr_address": "test_addr",
+            "xmr_address": "5" + "a" * 94,
         })
         key = r.json()["api_key"]
 
@@ -363,4 +374,5 @@ class TestLedgerModeBackwardCompat:
         )
         assert r.status_code == 200
         assert r.json()["status"] == "withdrawn"
-        assert r.json()["remaining_balance"] == 7.0
+        from decimal import Decimal
+        assert Decimal(r.json()["remaining_balance"]) == 7

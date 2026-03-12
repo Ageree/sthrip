@@ -5,6 +5,7 @@ Retries with exponential backoff
 
 import json
 import hashlib
+import threading
 import hmac
 import asyncio
 import logging
@@ -16,10 +17,9 @@ from typing import Dict, Optional, List
 from dataclasses import dataclass
 
 from ..db.database import get_db
-from ..db.repository import WebhookRepository
-from ..db.models import WebhookEvent, Agent
-from .url_validator import validate_url_target, SSRFBlockedError
-
+from ..db.repository import WebhookRepository, AgentRepository
+from ..db.models import WebhookEvent, WebhookStatus
+from .url_validator import validate_url_target, resolve_and_validate, SSRFBlockedError
 
 @dataclass
 class WebhookResult:
@@ -74,21 +74,46 @@ class WebhookService:
         secret: Optional[str] = None,
         timeout: int = 30
     ) -> WebhookResult:
-        """Send single webhook request"""
-        # SSRF re-validation: check resolved IP right before sending
+        """Send single webhook request, pinning to resolved IP to prevent DNS rebinding."""
+        # SSRF validation + DNS resolution: pin to resolved IP
         try:
-            validate_url_target(url)
+            validated_url, resolved_ip = resolve_and_validate(url)
         except (SSRFBlockedError, ValueError) as e:
             return WebhookResult(
                 success=False,
                 error=f"SSRF blocked: {e}"
             )
 
+        # Build IP-pinned URL: replace hostname with resolved IP
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(validated_url)
+        original_hostname = parsed.hostname
+        # Reconstruct netloc with IP instead of hostname (preserve port if any)
+        # IPv6 addresses must be wrapped in brackets for valid URLs
+        if ":" in resolved_ip:  # IPv6
+            ip_part = f"[{resolved_ip}]"
+        else:
+            ip_part = resolved_ip
+
+        if parsed.port:
+            pinned_netloc = f"{ip_part}:{parsed.port}"
+        else:
+            pinned_netloc = ip_part
+        pinned_url = urlunparse((
+            parsed.scheme,
+            pinned_netloc,
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        ))
+
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "Sthrip-Webhook/1.0"
+            "User-Agent": "Sthrip-Webhook/1.0",
+            "Host": original_hostname,
         }
-        
+
         # Add timestamp and signature
         import time as _time
         timestamp = str(int(_time.time()))
@@ -96,14 +121,21 @@ class WebhookService:
         if secret:
             headers["X-Sthrip-Signature"] = self._sign_payload(payload, secret, timestamp)
         headers["X-Sthrip-Event-ID"] = payload.get("event_id", "unknown")
-        
+
         try:
+            import ssl as _ssl
+            ssl_ctx = None
+            if parsed.scheme == "https":
+                ssl_ctx = _ssl.create_default_context()
+
             session = await self._get_session()
             async with session.post(
-                url,
+                pinned_url,
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=timeout)
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                ssl=ssl_ctx,
+                server_hostname=original_hostname if ssl_ctx else None,
             ) as response:
                     body = await response.text()
                     
@@ -133,6 +165,22 @@ class WebhookService:
                 error=f"Unexpected error: {str(e)}"
             )
     
+    def _build_event_payload(
+        self,
+        agent_id: str,
+        event_type: str,
+        payload: Dict,
+    ) -> Dict:
+        """Build full webhook payload with unique event_id (uuid4-based)."""
+        import uuid as _uuid
+
+        return {
+            "event_id": f"evt_{_uuid.uuid4().hex}",
+            "event_type": event_type,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "payload": payload,
+        }
+
     def queue_event(
         self,
         agent_id: str,
@@ -141,86 +189,126 @@ class WebhookService:
     ) -> str:
         """
         Queue webhook event for delivery
-        
+
         Returns:
             Event ID
         """
-        # Add metadata
-        full_payload = {
-            "event_id": f"evt_{hashlib.sha256(f'{agent_id}:{event_type}:{datetime.now(timezone.utc).isoformat()}'.encode()).hexdigest()[:16]}",
-            "event_type": event_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "payload": payload
-        }
-        
+        full_payload = self._build_event_payload(agent_id, event_type, payload)
+
         with get_db() as db:
             repo = WebhookRepository(db)
             event = repo.create_event(agent_id, event_type, full_payload)
             return str(event.id)
     
     async def process_event(self, event_id: str) -> WebhookResult:
-        """Process single webhook event"""
+        """Process single webhook event.
+
+        Split into 3 phases so the DB session is NOT held during the HTTP call:
+        1. Read event + agent config with FOR UPDATE lock (short-lived session)
+        2. HTTP call (no DB session)
+        3. Write result, guarded by a status re-check (short-lived session)
+
+        The FOR UPDATE lock in Phase 1 prevents two concurrent workers from both
+        reading the same event as 'pending' and both attempting delivery (TOCTOU).
+        The Phase 3 status re-check is a secondary safety net: if the lock was
+        unavailable (e.g. SQLite in tests) and another worker slipped through,
+        we skip writing rather than double-marking delivered or overwriting a retry.
+        """
+        # Phase 1: Read event and agent config with exclusive row lock
         with get_db() as db:
-            event = db.query(WebhookEvent).filter(
-                WebhookEvent.id == event_id
-            ).first()
-            
+            webhook_repo = WebhookRepository(db)
+            agent_repo = AgentRepository(db)
+
+            event = webhook_repo.get_by_id_for_update(event_id)
+
             if not event:
                 return WebhookResult(success=False, error="Event not found")
-            
+
             # Get agent webhook config
-            agent = db.query(Agent).filter(Agent.id == event.agent_id).first()
-            
+            agent = agent_repo.get_by_id(event.agent_id)
+
             if not agent or not agent.webhook_url:
                 # No webhook configured, mark as delivered
-                repo = WebhookRepository(db)
-                repo.mark_delivered(event_id, 0, "No webhook URL configured")
+                webhook_repo.mark_delivered(event_id, 0, "No webhook URL configured")
                 return WebhookResult(success=True)
-            
-            # Send webhook
-            result = await self._send_webhook(
-                url=agent.webhook_url,
-                payload=event.payload,
-                secret=agent.webhook_secret
-            )
-            
-            # Update event status
-            repo = WebhookRepository(db)
-            
+
+            # Capture what we need before closing session
+            webhook_url = agent.webhook_url
+            decrypted_secret = agent_repo.get_webhook_secret(agent.id)
+            event_payload = event.payload
+
+        # Phase 2: Send webhook (no DB session held)
+        result = await self._send_webhook(
+            url=webhook_url,
+            payload=event_payload,
+            secret=decrypted_secret,
+        )
+
+        # Phase 3: Write result (short-lived session)
+        # Re-fetch event status to guard against a concurrent worker having already
+        # processed this event while our HTTP call was in-flight.
+        with get_db() as db:
+            webhook_repo = WebhookRepository(db)
+            current_event = webhook_repo.get_by_id(event_id)
+
+            if current_event is None:
+                # Row deleted between Phase 1 and Phase 3; nothing to update.
+                logger.warning(
+                    "process_event: event %s disappeared before Phase 3 write",
+                    event_id,
+                )
+                return result
+
+            active_statuses = {WebhookStatus.PENDING, WebhookStatus.RETRYING}
+            if current_event.status not in active_statuses:
+                # Another worker already moved this event to a terminal state.
+                logger.info(
+                    "process_event: skipping Phase 3 write for event %s "
+                    "(status is already '%s')",
+                    event_id,
+                    current_event.status,
+                )
+                return result
+
             if result.success:
-                repo.mark_delivered(
+                webhook_repo.mark_delivered(
                     event_id,
                     result.response_code or 200,
-                    result.response_body or ""
+                    result.response_body or "",
                 )
             else:
-                repo.schedule_retry(event_id, result.error or "Unknown error")
-            
-            return result
+                webhook_repo.schedule_retry(event_id, result.error or "Unknown error")
+
+        return result
     
+    _MAX_CONCURRENT_WEBHOOKS = 10
+
     async def process_pending_events(self, batch_size: int = 100) -> Dict:
-        """Process all pending webhook events"""
+        """Process pending webhook events concurrently (up to 10 at a time)."""
         with get_db() as db:
             repo = WebhookRepository(db)
             pending = repo.get_pending_events(limit=batch_size)
-        
-        processed = 0
-        successful = 0
-        failed = 0
-        
-        for event in pending:
-            result = await self.process_event(str(event.id))
-            processed += 1
-            
-            if result.success:
-                successful += 1
-            else:
-                failed += 1
-        
+
+        if not pending:
+            return {"processed": 0, "successful": 0, "failed": 0}
+
+        semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_WEBHOOKS)
+
+        async def _process_one(event_id: str) -> bool:
+            async with semaphore:
+                result = await self.process_event(event_id)
+                return result.success
+
+        tasks = [_process_one(str(event.id)) for event in pending]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        successful = sum(1 for r in results if r is True)
+        failed = len(results) - successful
+
         return {
-            "processed": processed,
+            "processed": len(results),
             "successful": successful,
-            "failed": failed
+            "failed": failed,
         }
     
     async def start_worker(self, interval_seconds: int = 10):
@@ -251,17 +339,17 @@ class WebhookService:
             ).count()
             
             delivered = db.query(WebhookEvent).filter(
-                WebhookEvent.status == "delivered",
+                WebhookEvent.status == WebhookStatus.DELIVERED,
                 WebhookEvent.created_at >= since
             ).count()
-            
+
             failed = db.query(WebhookEvent).filter(
-                WebhookEvent.status == "failed",
+                WebhookEvent.status == WebhookStatus.FAILED,
                 WebhookEvent.created_at >= since
             ).count()
-            
+
             pending = db.query(WebhookEvent).filter(
-                WebhookEvent.status.in_(["pending", "retrying"]),
+                WebhookEvent.status.in_([WebhookStatus.PENDING, WebhookStatus.RETRYING]),
                 WebhookEvent.created_at >= since
             ).count()
             
@@ -285,13 +373,16 @@ class WebhookService:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _service: Optional[WebhookService] = None
+_service_lock = threading.Lock()
 
 
 def get_webhook_service() -> WebhookService:
     """Get global webhook service"""
     global _service
     if _service is None:
-        _service = WebhookService()
+        with _service_lock:
+            if _service is None:
+                _service = WebhookService()
     return _service
 
 

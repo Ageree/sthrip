@@ -2,6 +2,7 @@
 import pytest
 from decimal import Decimal
 from sthrip.services.fee_collector import FeeCollector, FeeType, DEFAULT_FEES
+from sthrip.db.models import HubRouteStatus
 
 
 class TestFeeCalculation:
@@ -102,6 +103,48 @@ class TestEscrowFeeCalculation:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class TestConfirmHubRoute:
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_confirm_uses_for_update(self, mock_get_db):
+        """confirm_hub_route must use FOR UPDATE to prevent double fee collection."""
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_route = MagicMock()
+        mock_route.status = HubRouteStatus.PENDING
+        mock_route.fee_amount = Decimal("0.01")
+        mock_route.token = "XMR"
+        mock_route.confirmed_at = None
+
+        query_chain = mock_db.query.return_value.filter.return_value
+        query_chain.with_for_update.return_value.first.return_value = mock_route
+
+        collector = FeeCollector()
+        result = collector.confirm_hub_route("hp_test")
+
+        # Verify FOR UPDATE was called
+        query_chain.with_for_update.assert_called_once()
+        assert result["status"] == "confirmed"
+
+    @patch("sthrip.services.fee_collector.get_db")
+    def test_double_confirm_raises(self, mock_get_db):
+        """Second confirmation of same route must raise ValueError."""
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_route = MagicMock()
+        mock_route.status = HubRouteStatus.CONFIRMED
+
+        query_chain = mock_db.query.return_value.filter.return_value
+        query_chain.with_for_update.return_value.first.return_value = mock_route
+
+        collector = FeeCollector()
+        with pytest.raises(ValueError, match="already confirmed"):
+            collector.confirm_hub_route("hp_test")
+
+
 class TestSettleHubRoute:
     @patch("sthrip.services.fee_collector.get_db")
     def test_settle_existing_route(self, mock_get_db):
@@ -111,7 +154,8 @@ class TestSettleHubRoute:
 
         mock_route = MagicMock()
         mock_route.settled_at = None
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_route
+        mock_filter = mock_db.query.return_value.filter.return_value
+        mock_filter.first.return_value = mock_route
 
         collector = FeeCollector()
         result = collector.settle_hub_route("hp_abc", "tx_hash_123")
@@ -121,11 +165,32 @@ class TestSettleHubRoute:
         assert result["settlement_tx"] == "tx_hash_123"
 
     @patch("sthrip.services.fee_collector.get_db")
+    def test_settle_uses_for_update_and_orm_mutation(self, mock_get_db):
+        """settle_hub_route must use with_for_update() and set attributes on ORM object."""
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_route = MagicMock()
+        mock_route.status = HubRouteStatus.PENDING
+        mock_filter = mock_db.query.return_value.filter.return_value
+        mock_filter.with_for_update.return_value.first.return_value = mock_route
+
+        collector = FeeCollector()
+        collector.settle_hub_route("hp_abc", "tx_hash_123")
+
+        # Verify with_for_update was used
+        mock_filter.with_for_update.assert_called_once()
+        # Verify ORM attributes were set
+        assert mock_route.status == HubRouteStatus.SETTLED
+        assert mock_route.settlement_tx_hash == "tx_hash_123"
+
+    @patch("sthrip.services.fee_collector.get_db")
     def test_settle_nonexistent_route(self, mock_get_db):
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
-        mock_db.query.return_value.filter.return_value.first.return_value = None
+        mock_db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = None
 
         collector = FeeCollector()
         with pytest.raises(ValueError, match="Route not found"):
@@ -231,21 +296,19 @@ class TestGetPendingFees:
 class TestWithdrawFees:
     @patch("sthrip.services.fee_collector.get_db")
     def test_withdraw_pending_fees(self, mock_get_db):
-        from sthrip.db.models import FeeCollectionStatus
-
+        """Bulk withdraw should return count and total from bulk query."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
-        mock_fee_1 = MagicMock()
-        mock_fee_1.status = FeeCollectionStatus.PENDING
-        mock_fee_1.amount = Decimal("0.1")
-
-        mock_fee_2 = MagicMock()
-        mock_fee_2.status = FeeCollectionStatus.PENDING
-        mock_fee_2.amount = Decimal("0.1")
-
-        mock_db.query.return_value.filter.return_value.first.side_effect = [mock_fee_1, mock_fee_2]
+        mock_query = MagicMock()
+        mock_db.query.return_value = mock_query
+        mock_filter = MagicMock()
+        mock_query.filter.return_value = mock_filter
+        # First call: scalar() for total amount
+        mock_filter.scalar.return_value = Decimal("0.2")
+        # Second call: update() for bulk update count
+        mock_filter.update.return_value = 2
 
         collector = FeeCollector()
         result = collector.withdraw_fees(["fee_1", "fee_2"], "tx_abc")
@@ -256,33 +319,40 @@ class TestWithdrawFees:
 
     @patch("sthrip.services.fee_collector.get_db")
     def test_withdraw_skips_nonpending(self, mock_get_db):
-        from sthrip.db.models import FeeCollectionStatus
-
+        """Bulk withdraw with no pending fees should return 0 count and 0 total."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
-        mock_fee = MagicMock()
-        mock_fee.status = FeeCollectionStatus.WITHDRAWN  # Already withdrawn
-        mock_fee.amount = Decimal("0.1")
-
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_fee
+        mock_query = MagicMock()
+        mock_db.query.return_value = mock_query
+        mock_filter = MagicMock()
+        mock_query.filter.return_value = mock_filter
+        mock_filter.scalar.return_value = Decimal("0")
+        mock_filter.update.return_value = 0
 
         collector = FeeCollector()
         result = collector.withdraw_fees(["fee_1"], "tx_abc")
 
         assert result["total_amount"] == 0.0
+        assert result["withdrawn_fees"] == 0
 
     @patch("sthrip.services.fee_collector.get_db")
     def test_withdraw_missing_fee(self, mock_get_db):
+        """Bulk withdraw with nonexistent IDs should return 0 count."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
-        mock_db.query.return_value.filter.return_value.first.return_value = None
+        mock_query = MagicMock()
+        mock_db.query.return_value = mock_query
+        mock_filter = MagicMock()
+        mock_query.filter.return_value = mock_filter
+        mock_filter.scalar.return_value = Decimal("0")
+        mock_filter.update.return_value = 0
 
         collector = FeeCollector()
         result = collector.withdraw_fees(["nonexistent"], "tx_abc")
 
         assert result["total_amount"] == 0.0
-        assert result["withdrawn_fees"] == 1
+        assert result["withdrawn_fees"] == 0

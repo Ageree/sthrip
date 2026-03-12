@@ -25,12 +25,12 @@ try:
     hub_payments_total = Counter(
         "hub_payments_total",
         "Hub routing payments created",
-        ["status"],
+        ["status", "tier"],
     )
     balance_ops_total = Counter(
         "balance_operations_total",
         "Balance operations (deposit/withdraw)",
-        ["operation"],
+        ["operation", "token"],
     )
 
     PROMETHEUS_AVAILABLE = True
@@ -47,10 +47,10 @@ except ImportError:
         def observe(self, *a, **kw):
             pass
 
-    http_requests_total = _Noop()
-    http_request_duration = _Noop()
-    hub_payments_total = _Noop()
-    balance_ops_total = _Noop()
+    http_requests_total = _Noop()  # type: ignore[assignment]
+    http_request_duration = _Noop()  # type: ignore[assignment]
+    hub_payments_total = _Noop()  # type: ignore[assignment]
+    balance_ops_total = _Noop()  # type: ignore[assignment]
 
 
 def get_metrics_response() -> Optional[tuple]:

@@ -195,6 +195,38 @@ class TestOpenAPISchema:
             assert has_example, "Registration endpoint should have request examples"
 
 
+class TestDocsCSP:
+    """M2: /docs pages must have relaxed CSP to allow Swagger/Redoc inline scripts."""
+
+    def test_docs_pages_have_relaxed_csp(self, docs_client):
+        """M2: /docs and /docs/playground need script-src unsafe-inline for Swagger/Redoc."""
+        resp = docs_client.get("/docs")
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "'unsafe-inline'" in csp, f"CSP missing unsafe-inline for docs: {csp}"
+
+    def test_docs_playground_has_relaxed_csp(self, docs_client):
+        """M2: /docs/playground also needs script-src unsafe-inline."""
+        resp = docs_client.get("/docs/playground")
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "'unsafe-inline'" in csp, f"CSP missing unsafe-inline for docs/playground: {csp}"
+
+    def test_docs_csp_allows_cdn(self, docs_client):
+        """M2: /docs CSP must allow CDN resources used by Redoc/Swagger."""
+        resp = docs_client.get("/docs")
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "cdn.jsdelivr.net" in csp, f"CSP missing CDN allowlist: {csp}"
+
+    def test_non_docs_path_has_strict_csp(self, docs_client):
+        """M2: Non-docs paths must retain the strict CSP (no unsafe-inline in script-src)."""
+        resp = docs_client.get("/health")
+        csp = resp.headers.get("Content-Security-Policy", "")
+        # The strict CSP does NOT allow unsafe-inline in script-src
+        assert "script-src 'self'" in csp or "script-src" not in csp, \
+            f"Non-docs path has unexpectedly relaxed CSP: {csp}"
+        # Confirm the default strict policy is in place
+        assert "default-src 'self'" in csp, f"Non-docs path missing strict CSP: {csp}"
+
+
 class TestDocsAvailableInAllEnvironments:
     """Docs should be available in all environments (not just dev)."""
 
@@ -220,7 +252,10 @@ class TestDocsAvailableInAllEnvironments:
                 "HUB_MODE": "ledger",
                 "DATABASE_URL": "sqlite:///:memory:",
                 "ENVIRONMENT": "production",
+                "MONERO_NETWORK": "mainnet",
                 "ADMIN_API_KEY": "real-prod-key-not-placeholder-xyz",
+                "API_KEY_HMAC_SECRET": "test-hmac-secret-for-production-32chars!",
+                "MONERO_RPC_HOST": "monero-rpc.internal",
             }))
             stack.enter_context(patch("sthrip.services.monitoring.get_monitor", return_value=mock_monitor))
             stack.enter_context(patch("sthrip.services.monitoring.setup_default_monitoring", return_value=mock_monitor))

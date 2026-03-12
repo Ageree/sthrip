@@ -26,14 +26,14 @@
             </tr>
         </thead>
         <tbody>
-        {% for tx in transactions %}
+        {% for item in transactions %}
             <tr class="border-t hover:bg-gray-50">
-                <td class="px-4 py-3 text-gray-500">{{ tx.created_at.strftime('%Y-%m-%d %H:%M') if tx.created_at else "" }}</td>
-                <td class="px-4 py-3">{{ tx.from_agent.agent_name if tx.from_agent else tx.from_agent_id }}</td>
-                <td class="px-4 py-3">{{ tx.to_agent.agent_name if tx.to_agent else tx.to_agent_id }}</td>
-                <td class="px-4 py-3 text-right font-mono">{{ tx.amount }}</td>
-                <td class="px-4 py-3 text-right font-mono text-gray-500">{{ tx.fee_amount }}</td>
-                <td class="px-4 py-3 capitalize">{{ tx.status.value if tx.status else "" }}</td>
+                <td class="px-4 py-3 text-gray-500">{{ item.tx.created_at.strftime('%Y-%m-%d %H:%M') if item.tx.created_at else "" }}</td>
+                <td class="px-4 py-3">{{ item.from_agent.agent_name if item.from_agent else item.tx.from_agent_id }}</td>
+                <td class="px-4 py-3">{{ item.to_agent.agent_name if item.to_agent else item.tx.to_agent_id }}</td>
+                <td class="px-4 py-3 text-right font-mono">{{ item.tx.amount }}</td>
+                <td class="px-4 py-3 text-right font-mono text-gray-500">{{ item.tx.fee_amount }}</td>
+                <td class="px-4 py-3 capitalize">{{ item.tx.status.value if item.tx.status else "" }}</td>
             </tr>
         {% endfor %}
         {% if not transactions %}

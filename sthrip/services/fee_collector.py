@@ -5,6 +5,7 @@ Supports multiple fee models and revenue tracking
 
 import hashlib
 import secrets
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, Dict, List
@@ -12,10 +13,11 @@ from uuid import UUID
 from dataclasses import dataclass
 from enum import Enum
 
+from sqlalchemy import func
+
 from ..db.database import get_db
 from ..db.models import HubRoute, HubRouteStatus, FeeCollection, FeeCollectionStatus
 from ..db.repository import AgentRepository
-
 
 class FeeType(Enum):
     """Types of fees we collect"""
@@ -256,7 +258,7 @@ class FeeCollector:
         def _execute(db):
             route = db.query(HubRoute).filter(
                 HubRoute.payment_id == payment_id
-            ).first()
+            ).with_for_update().first()
             
             if not route:
                 raise ValueError(f"Route not found: {payment_id}")
@@ -297,22 +299,26 @@ class FeeCollector:
 
     def settle_hub_route(self, payment_id: str, settlement_tx_hash: str) -> Dict:
         """
-        Final settlement of hub route on-chain
-        
-        Called when funds are actually moved on blockchain
+        Final settlement of hub route on-chain.
+
+        Uses with_for_update() to prevent double settlement from
+        concurrent calls.
         """
         with get_db() as db:
             route = db.query(HubRoute).filter(
                 HubRoute.payment_id == payment_id
-            ).first()
-            
+            ).with_for_update().first()
+
             if not route:
                 raise ValueError(f"Route not found: {payment_id}")
-            
+
+            if route.status == HubRouteStatus.SETTLED:
+                raise ValueError(f"Route already settled: {payment_id}")
+
             route.status = HubRouteStatus.SETTLED
             route.settled_at = datetime.now(timezone.utc)
             route.settlement_tx_hash = settlement_tx_hash
-            
+
             return {
                 "payment_id": payment_id,
                 "status": "settled",
@@ -353,11 +359,11 @@ class FeeCollector:
             
             return {
                 "period_days": days,
-                "hub_routing_revenue_xmr": float(hub_revenue),
-                "escrow_revenue_xmr": float(escrow_revenue),
-                "api_calls_revenue_usd": float(api_revenue),
+                "hub_routing_revenue_xmr": str(hub_revenue),
+                "escrow_revenue_xmr": str(escrow_revenue),
+                "api_calls_revenue_usd": str(api_revenue),
                 "total_routes": total_routes,
-                "average_fee_per_route": float(hub_revenue / total_routes) if total_routes > 0 else 0
+                "average_fee_per_route": str(hub_revenue / total_routes) if total_routes > 0 else 0
             }
     
     def get_pending_fees(self, token: str = "XMR") -> List[Dict]:
@@ -380,35 +386,40 @@ class FeeCollector:
             ]
     
     def withdraw_fees(self, fee_ids: List[str], tx_hash: str) -> Dict:
-        """Mark fees as withdrawn"""
-        total = Decimal('0')
-        
+        """Mark fees as withdrawn using bulk query."""
         with get_db() as db:
-            for fee_id in fee_ids:
-                fee = db.query(FeeCollection).filter(
-                    FeeCollection.id == fee_id
-                ).first()
-                
-                if fee and fee.status == FeeCollectionStatus.PENDING:
-                    fee.status = FeeCollectionStatus.WITHDRAWN
-                    fee.collection_tx_hash = tx_hash
-                    fee.withdrawn_at = datetime.now(timezone.utc)
-                    total += fee.amount
-            
+            now = datetime.now(timezone.utc)
+            # Get total amount of pending fees first
+            total = db.query(func.coalesce(func.sum(FeeCollection.amount), 0)).filter(
+                FeeCollection.id.in_(fee_ids),
+                FeeCollection.status == FeeCollectionStatus.PENDING,
+            ).scalar()
+            # Bulk update all matching pending fees
+            count = db.query(FeeCollection).filter(
+                FeeCollection.id.in_(fee_ids),
+                FeeCollection.status == FeeCollectionStatus.PENDING,
+            ).update({
+                "status": FeeCollectionStatus.WITHDRAWN,
+                "collection_tx_hash": tx_hash,
+                "withdrawn_at": now,
+            }, synchronize_session="fetch")
             return {
-                "withdrawn_fees": len(fee_ids),
+                "withdrawn_fees": count,
                 "total_amount": float(total),
-                "tx_hash": tx_hash
+                "tx_hash": tx_hash,
             }
 
 
 # Global instance
 _collector: Optional[FeeCollector] = None
+_collector_lock = threading.Lock()
 
 
 def get_fee_collector() -> FeeCollector:
     """Get global fee collector"""
     global _collector
     if _collector is None:
-        _collector = FeeCollector()
+        with _collector_lock:
+            if _collector is None:
+                _collector = FeeCollector()
     return _collector

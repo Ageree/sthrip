@@ -16,6 +16,7 @@ from contextlib import contextmanager
 
 from sthrip.db.models import (
     Base, Agent, AgentReputation, AgentBalance, HubRoute, FeeCollection,
+    PendingWithdrawal,
 )
 
 _TEST_TABLES = [
@@ -24,6 +25,7 @@ _TEST_TABLES = [
     AgentBalance.__table__,
     HubRoute.__table__,
     FeeCollection.__table__,
+    PendingWithdrawal.__table__,
 ]
 
 _VALID_STAGENET_ADDR = "5" + "a" * 94
@@ -168,7 +170,7 @@ class TestIdempotencyE2E:
     def test_deposit_idempotency_returns_same_response(self, client):
         """Same idempotency key returns cached response on second call."""
         key, _ = _register_and_fund(client, "idem-deposit-agent", amount=0)
-        h = {"Authorization": f"Bearer {key}", "Idempotency-Key": "dep-001"}
+        h = {"Authorization": f"Bearer {key}", "Idempotency-Key": "dep-00001"}
 
         r1 = client.post("/v2/balance/deposit", json={"amount": 5.0}, headers=h)
         assert r1.status_code == 200
@@ -179,11 +181,12 @@ class TestIdempotencyE2E:
 
         # Balance should only be credited once
         r = client.get("/v2/balance", headers={"Authorization": f"Bearer {key}"})
-        assert r.json()["available"] == 5.0
+        from decimal import Decimal
+        assert Decimal(r.json()["available"]) == 5
 
     def test_withdraw_idempotency_returns_same_response(self, client):
         key, _ = _register_and_fund(client, "idem-withdraw-agent", amount=20.0)
-        h = {"Authorization": f"Bearer {key}", "Idempotency-Key": "wd-001"}
+        h = {"Authorization": f"Bearer {key}", "Idempotency-Key": "wd-000001"}
 
         r1 = client.post("/v2/balance/withdraw",
                          json={"amount": 3.0, "address": _VALID_STAGENET_ADDR}, headers=h)
@@ -196,7 +199,8 @@ class TestIdempotencyE2E:
 
         # Balance should only be deducted once
         r = client.get("/v2/balance", headers={"Authorization": f"Bearer {key}"})
-        assert r.json()["available"] == 17.0
+        from decimal import Decimal
+        assert Decimal(r.json()["available"]) == 17
 
     def test_hub_payment_idempotency(self, client):
         sender_key, _ = _register_and_fund(client, "idem-sender", amount=50.0)
@@ -205,7 +209,7 @@ class TestIdempotencyE2E:
             "xmr_address": _VALID_STAGENET_ADDR,
         })
 
-        h = {"Authorization": f"Bearer {sender_key}", "Idempotency-Key": "hub-001"}
+        h = {"Authorization": f"Bearer {sender_key}", "Idempotency-Key": "hub-00001"}
 
         r1 = client.post("/v2/payments/hub-routing",
                          json={"to_agent_name": "idem-receiver", "amount": 10.0}, headers=h)
@@ -218,8 +222,8 @@ class TestIdempotencyE2E:
 
     def test_different_idempotency_keys_process_independently(self, client):
         key, _ = _register_and_fund(client, "idem-multi-agent", amount=20.0)
-        h1 = {"Authorization": f"Bearer {key}", "Idempotency-Key": "dep-A"}
-        h2 = {"Authorization": f"Bearer {key}", "Idempotency-Key": "dep-B"}
+        h1 = {"Authorization": f"Bearer {key}", "Idempotency-Key": "dep-AAAA"}
+        h2 = {"Authorization": f"Bearer {key}", "Idempotency-Key": "dep-BBBB"}
 
         r1 = client.post("/v2/balance/deposit", json={"amount": 5.0}, headers=h1)
         r2 = client.post("/v2/balance/deposit", json={"amount": 5.0}, headers=h2)
@@ -227,7 +231,8 @@ class TestIdempotencyE2E:
         assert r2.status_code == 200
 
         r = client.get("/v2/balance", headers={"Authorization": f"Bearer {key}"})
-        assert r.json()["available"] == 30.0  # 20 + 5 + 5
+        from decimal import Decimal
+        assert Decimal(r.json()["available"]) == 30  # 20 + 5 + 5
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -335,12 +340,13 @@ class TestFullPaymentLifecycle:
         bob_h = {"Authorization": f"Bearer {bob_key}"}
 
         # Hub payment with idempotency
-        pay_h = {**alice_h, "Idempotency-Key": "lifecycle-pay-001"}
+        pay_h = {**alice_h, "Idempotency-Key": "lifecycle-pay-00001"}
         r = client.post("/v2/payments/hub-routing",
                         json={"to_agent_name": "lifecycle-bob", "amount": 30.0},
                         headers=pay_h)
         assert r.status_code == 200
-        fee = r.json()["fee"]
+        from decimal import Decimal
+        fee = Decimal(r.json()["fee"])
 
         # Idempotent replay returns same result
         r2 = client.post("/v2/payments/hub-routing",
@@ -350,10 +356,10 @@ class TestFullPaymentLifecycle:
 
         # Bob got 30
         r = client.get("/v2/balance", headers=bob_h)
-        assert r.json()["available"] == 30.0
+        assert Decimal(r.json()["available"]) == 30
 
         # Alice withdraws 20
-        wd_h = {**alice_h, "Idempotency-Key": "lifecycle-wd-001"}
+        wd_h = {**alice_h, "Idempotency-Key": "lifecycle-wd-00001"}
         r = client.post("/v2/balance/withdraw",
                         json={"amount": 20.0, "address": _VALID_STAGENET_ADDR},
                         headers=wd_h)
@@ -361,9 +367,9 @@ class TestFullPaymentLifecycle:
 
         # Verify Alice: 100 - 30 - fee - 20
         r = client.get("/v2/balance", headers=alice_h)
-        alice_bal = r.json()["available"]
-        expected = 100.0 - 30.0 - fee - 20.0
-        assert abs(alice_bal - expected) < 0.001, f"Alice: {alice_bal} != {expected}"
+        alice_bal = Decimal(r.json()["available"])
+        expected = Decimal("100") - Decimal("30") - fee - Decimal("20")
+        assert abs(alice_bal - expected) < Decimal("0.001"), f"Alice: {alice_bal} != {expected}"
 
         # Readiness still healthy
         r = client.get("/ready")

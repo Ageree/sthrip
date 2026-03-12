@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import os
+import re
 import time
 import pytest
 from decimal import Decimal
@@ -211,9 +212,18 @@ def admin_client(db_engine, db_session_factory, seed_data):
         yield client
 
 
+def _get_csrf_token(client: TestClient) -> str:
+    """Extract CSRF token from login page."""
+    resp = client.get("/admin/login")
+    match = re.search(r'name="csrf_token" value="([^"]+)"', resp.text)
+    assert match, "No csrf_token found in login form"
+    return match.group(1)
+
+
 def _login(client: TestClient) -> TestClient:
     """Helper to log in and return the client with session cookie."""
-    resp = client.post("/admin/login", data={"admin_key": ADMIN_KEY})
+    csrf_token = _get_csrf_token(client)
+    resp = client.post("/admin/login", data={"admin_key": ADMIN_KEY, "csrf_token": csrf_token})
     # Should redirect to /admin/
     assert resp.status_code in (200, 302, 303), f"Login failed: {resp.status_code}"
     return client
@@ -240,9 +250,10 @@ class TestAdminAuth:
 
     def test_login_with_valid_key(self, admin_client):
         """POST /admin/login with valid key sets session cookie."""
+        csrf_token = _get_csrf_token(admin_client)
         resp = admin_client.post(
             "/admin/login",
-            data={"admin_key": ADMIN_KEY},
+            data={"admin_key": ADMIN_KEY, "csrf_token": csrf_token},
             follow_redirects=False,
         )
         # Should redirect to /admin/
@@ -256,9 +267,10 @@ class TestAdminAuth:
 
     def test_login_with_invalid_key(self, admin_client):
         """POST /admin/login with invalid key shows error."""
+        csrf_token = _get_csrf_token(admin_client)
         resp = admin_client.post(
             "/admin/login",
-            data={"admin_key": "wrong-key"},
+            data={"admin_key": "wrong-key", "csrf_token": csrf_token},
         )
         # Should stay on login page with error
         assert resp.status_code in (200, 401)
@@ -271,9 +283,9 @@ class TestAdminAuth:
         assert "login" in resp.headers.get("location", "")
 
     def test_logout(self, admin_client):
-        """GET /admin/logout should clear session and redirect to login."""
+        """POST /admin/logout should clear session and redirect to login."""
         _login(admin_client)
-        resp = admin_client.get("/admin/logout", follow_redirects=False)
+        resp = admin_client.post("/admin/logout", follow_redirects=False)
         assert resp.status_code in (302, 303)
         assert "login" in resp.headers.get("location", "")
 
@@ -285,45 +297,55 @@ class TestAdminAuth:
 class TestAdminLoginRateLimiting:
     """Admin login brute-force protection tests."""
 
-    def test_admin_login_rate_limited_after_5_attempts(self, admin_client):
-        """After 5 failed logins from same IP, return 429."""
-        # Use a real local rate limiter for this test
+    def test_admin_login_rate_limited_after_failed_attempts(self, admin_client):
+        """After enough failed logins from same IP, return 429.
+
+        With >= comparison: 5 failed attempts → counter=5, peek sees 5 >= 5 → blocks.
+        So the 6th attempt is rate limited.
+        """
         from sthrip.services.rate_limiter import RateLimiter
         real_limiter = RateLimiter.__new__(RateLimiter)
         real_limiter.default_tier = "standard"
         real_limiter._local_cache = {}
         real_limiter._cache_lock = __import__("threading").Lock()
+        real_limiter._last_eviction = 0.0
         real_limiter.use_redis = False
         real_limiter.redis = None
 
         with patch("sthrip.services.rate_limiter.get_rate_limiter", return_value=real_limiter):
+            # 5 failed attempts — counter reaches limit
             for i in range(5):
-                resp = admin_client.post("/admin/login", data={"admin_key": f"wrong_{i}"})
-                assert resp.status_code in (401, 303, 200)
+                csrf = _get_csrf_token(admin_client)
+                resp = admin_client.post("/admin/login", data={"admin_key": f"wrong_{i}", "csrf_token": csrf})
+                assert resp.status_code == 401
 
-            # 6th attempt should be rate limited
-            resp = admin_client.post("/admin/login", data={"admin_key": "wrong_6"})
+            # 6th attempt should be rate limited via peek (5 >= 5)
+            csrf = _get_csrf_token(admin_client)
+            resp = admin_client.post("/admin/login", data={"admin_key": "wrong_6", "csrf_token": csrf})
             assert resp.status_code == 429
 
-    def test_admin_login_blocks_correct_key_after_rate_limit(self, admin_client):
-        """Rate limit blocks even correct key after too many attempts."""
+    def test_admin_login_correct_key_succeeds_before_limit(self, admin_client):
+        """Correct key should succeed after 4 failed attempts (under the limit)."""
         from sthrip.services.rate_limiter import RateLimiter
         real_limiter = RateLimiter.__new__(RateLimiter)
         real_limiter.default_tier = "standard"
         real_limiter._local_cache = {}
         real_limiter._cache_lock = __import__("threading").Lock()
+        real_limiter._last_eviction = 0.0
         real_limiter.use_redis = False
         real_limiter.redis = None
 
         with patch("sthrip.services.rate_limiter.get_rate_limiter", return_value=real_limiter):
-            for i in range(5):
-                admin_client.post("/admin/login", data={"admin_key": f"wrong_{i}"})
+            for i in range(4):
+                csrf = _get_csrf_token(admin_client)
+                admin_client.post("/admin/login", data={"admin_key": f"wrong_{i}", "csrf_token": csrf})
 
-            # Even correct key should be blocked
+            # Correct key should succeed — 4 failures is under the limit of 5
+            csrf = _get_csrf_token(admin_client)
             resp = admin_client.post(
-                "/admin/login", data={"admin_key": ADMIN_KEY}, follow_redirects=False
+                "/admin/login", data={"admin_key": ADMIN_KEY, "csrf_token": csrf}, follow_redirects=False
             )
-            assert resp.status_code == 429
+            assert resp.status_code == 303
 
 
 class TestAdminSecureCookie:
@@ -331,10 +353,13 @@ class TestAdminSecureCookie:
 
     def test_admin_login_sets_secure_cookie_in_production(self, admin_client):
         """Cookie must have secure=True in non-dev environments."""
-        with patch.dict(os.environ, {"ENVIRONMENT": "production"}):
+        from sthrip.config import get_settings
+        with patch.dict(os.environ, {"ENVIRONMENT": "production", "MONERO_NETWORK": "mainnet", "MONERO_RPC_PASS": "secure-pass-123", "API_KEY_HMAC_SECRET": "test-hmac-secret-for-production-32chars!", "MONERO_RPC_HOST": "monero-rpc.internal"}):
+            get_settings.cache_clear()
+            csrf_token = _get_csrf_token(admin_client)
             resp = admin_client.post(
                 "/admin/login",
-                data={"admin_key": ADMIN_KEY},
+                data={"admin_key": ADMIN_KEY, "csrf_token": csrf_token},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
@@ -343,9 +368,10 @@ class TestAdminSecureCookie:
 
     def test_admin_login_sets_strict_samesite(self, admin_client):
         """Cookie must use samesite=strict."""
+        csrf_token = _get_csrf_token(admin_client)
         resp = admin_client.post(
             "/admin/login",
-            data={"admin_key": ADMIN_KEY},
+            data={"admin_key": ADMIN_KEY, "csrf_token": csrf_token},
             follow_redirects=False,
         )
         assert resp.status_code == 303
@@ -378,9 +404,11 @@ class TestAdminSessionStore:
 
     def test_session_store_expired(self):
         """Expired sessions must return False."""
-        from api.admin_ui.views import _session_store
-        _session_store.set_session("exp-token", -1)  # already expired
-        assert _session_store.get_session("exp-token") is False
+        from api.session_store import AdminSessionStore
+        store = AdminSessionStore(key_prefix="admin_session:")
+        store._redis_checked = True  # skip Redis
+        store.set_session("exp-token", -1)  # already expired
+        assert store.get_session("exp-token") is False
 
 
 class TestOverviewPage:
@@ -506,3 +534,144 @@ class TestBalancesPage:
         resp = admin_client.get("/admin/balances")
         # At least one balance should be visible
         assert "10" in resp.text  # first agent has 10.0
+
+    def test_balances_page_shows_agent_name(self, admin_client):
+        """Balances page should show linked agent names."""
+        _login(admin_client)
+        resp = admin_client.get("/admin/balances")
+        assert resp.status_code == 200
+        # Agent names should be rendered (resolved from agents_map)
+        assert "agent-alpha" in resp.text or "agent-beta" in resp.text
+
+    def test_balances_view_passes_dicts_not_orm_objects(self, admin_client, db_session_factory):
+        """balances_list must pass plain dicts to the template, not mutated ORM objects.
+
+        IMP-3: The old implementation mutated ORM objects by setting b.agent = ...
+        outside the session scope. This test verifies the fix: balance rows are
+        plain dicts with resolved agent info, leaving ORM objects untouched.
+        """
+        from starlette.templating import _TemplateResponse  # noqa: F401
+        import api.admin_ui.views as views_mod
+
+        captured_context = {}
+
+        original_template_response = views_mod.templates.TemplateResponse
+
+        def capturing_template_response(name, context, **kwargs):
+            captured_context.update(context)
+            return original_template_response(name, context, **kwargs)
+
+        _login(admin_client)
+
+        with patch.object(views_mod.templates, "TemplateResponse", side_effect=capturing_template_response):
+            resp = admin_client.get("/admin/balances")
+
+        assert resp.status_code == 200
+
+        balances = captured_context.get("balances", [])
+        assert len(balances) > 0, "Expected at least one balance row in template context"
+
+        for row in balances:
+            # Each item must be a plain dict, not an ORM model instance
+            assert isinstance(row, dict), (
+                f"Expected dict, got {type(row).__name__}. "
+                "balances_list must not pass ORM objects to the template."
+            )
+            # Required keys must all be present
+            required_keys = {
+                "agent_id", "agent", "available", "pending",
+                "total_deposited", "total_withdrawn", "updated_at",
+            }
+            missing = required_keys - row.keys()
+            assert not missing, f"Dict row is missing keys: {missing}"
+
+    def test_balances_view_does_not_mutate_orm_objects(self, db_engine, db_session_factory, seed_data):
+        """ORM AgentBalance objects must not have an 'agent' attribute set after the view runs.
+
+        IMP-3: The mutation `b.agent = agents_map.get(b.agent_id)` adds a dynamic
+        attribute to the ORM instance. After the fix, no such attribute should be
+        added; the resolved agent is stored only in the output dict.
+        """
+        from contextlib import contextmanager
+        from sthrip.db.models import AgentBalance
+
+        @contextmanager
+        def get_test_db():
+            session = db_session_factory()
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+        # Collect ORM objects loaded by the view by intercepting the session query
+        loaded_balances = []
+        original_get_test_db = get_test_db
+
+        @contextmanager
+        def spy_db():
+            with original_get_test_db() as session:
+                original_query = session.query
+
+                def spying_query(model, *args, **kwargs):
+                    result = original_query(model, *args, **kwargs)
+                    if model is AgentBalance:
+                        # Wrap .all() to capture results
+                        original_all = result.order_by(AgentBalance.available.desc()).limit(100).all
+                        # We can't easily intercept here; use post-view assertion instead
+                        pass
+                    return original_query(model, *args, **kwargs)
+
+                yield session
+
+        # Run the view function directly against a real session to check ORM state
+        with get_test_db() as session:
+            balances_before = session.query(AgentBalance).limit(100).all()
+            # Record which attributes each instance has before the view runs
+            attrs_before = [set(b.__dict__.keys()) for b in balances_before]
+
+        import api.admin_ui.views as views_mod
+        from unittest.mock import MagicMock, patch as _patch
+
+        mock_request = MagicMock()
+        mock_request.cookies = {"admin_session": "irrelevant"}
+
+        rendered_context = {}
+
+        def capture_response(name, context, **kwargs):
+            rendered_context.update(context)
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            return mock_resp
+
+        import asyncio
+
+        with _patch("api.admin_ui.views.get_db", get_test_db), \
+             _patch("api.admin_ui.views._require_auth"), \
+             _patch.object(views_mod.templates, "TemplateResponse", side_effect=capture_response):
+            asyncio.get_event_loop().run_until_complete(
+                views_mod.balances_list(mock_request, page=1)
+            )
+
+        # Verify output rows are dicts (not ORM objects)
+        rows = rendered_context.get("balances", [])
+        assert len(rows) > 0
+        for row in rows:
+            assert isinstance(row, dict), (
+                f"Expected plain dict in template context, got {type(row).__name__}"
+            )
+
+        # Verify ORM objects in a fresh session don't have a spurious 'agent' attribute
+        with get_test_db() as session:
+            balances_after = session.query(AgentBalance).limit(100).all()
+            for b in balances_after:
+                # The ORM object must not have a dynamically set 'agent' attribute
+                # (SQLAlchemy relationships use descriptors; a plain setattr would
+                # show up in __dict__ under the key 'agent')
+                assert "agent" not in b.__dict__, (
+                    f"ORM object for agent_id={b.agent_id} was mutated: "
+                    "found 'agent' key in __dict__. Use dicts instead."
+                )

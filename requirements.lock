@@ -21,8 +21,6 @@ async-timeout==5.0.1
     #   redis
 attrs==25.4.0
     # via aiohttp
-bcrypt==5.0.0
-    # via -r requirements.txt
 certifi==2026.2.25
     # via
     #   httpcore
@@ -95,7 +93,9 @@ pydantic==2.12.5
     #   fastapi
 pydantic-core==2.41.5
     # via pydantic
-pyjwt==2.11.0
+pydantic-settings==2.11.0
+    # via -r requirements.txt
+pycryptodome==3.23.0
     # via -r requirements.txt
 python-dotenv==1.2.1
     # via
@@ -147,6 +147,8 @@ urllib3==2.6.3
     #   requests
     #   sentry-sdk
 uvicorn==0.39.0
+    # via -r requirements.txt
+gunicorn==23.0.0
     # via -r requirements.txt
 uvloop==0.22.1
     # via uvicorn

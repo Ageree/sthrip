@@ -432,6 +432,82 @@ class TestHeightPersistence:
         assert saved is not None
         assert int(saved) == 42_000
 
+    def test_height_not_advanced_on_commit_failure(
+        self, deposit_monitor, mock_wallet_service, agent, db_session
+    ):
+        """If db.commit() fails, _last_height must stay at old value so transfers are retried."""
+        deposit_monitor._last_height = 100
+
+        mock_wallet_service.get_incoming_transfers.return_value = [
+            {
+                "txid": "tx_rollback_test",
+                "amount": Decimal("1.0"),
+                "confirmations": 15,
+                "height": 200,
+                "subaddr_index": {"major": 0, "minor": 1},
+                "address": "5AgentSubaddress001",
+            },
+        ]
+
+        # Patch db.commit to raise after _process_transfers
+        from sthrip.services.deposit_monitor import DepositMonitor
+        original_do_poll = DepositMonitor._do_poll_with_session
+
+        def _failing_poll(self_inner, db_inner):
+            """Simulate commit failure."""
+            db_inner.commit = MagicMock(side_effect=Exception("DB commit failed"))
+            try:
+                original_do_poll(self_inner, db_inner)
+            except Exception:
+                pass
+
+        with patch.object(DepositMonitor, "_do_poll_with_session", _failing_poll):
+            deposit_monitor.poll_once()
+
+        # Height must NOT have advanced
+        assert deposit_monitor._last_height == 100
+
+    def test_transfers_retried_after_rollback(
+        self, deposit_monitor, mock_wallet_service, agent, db_session
+    ):
+        """After a failed commit, the same transfers should be re-fetched on next poll."""
+        deposit_monitor._last_height = 100
+
+        transfer = {
+            "txid": "tx_retry_after_rollback",
+            "amount": Decimal("1.0"),
+            "confirmations": 15,
+            "height": 200,
+            "subaddr_index": {"major": 0, "minor": 1},
+            "address": "5AgentSubaddress001",
+        }
+        mock_wallet_service.get_incoming_transfers.return_value = [transfer]
+
+        # First poll: simulate commit failure
+        from sthrip.services.deposit_monitor import DepositMonitor
+        original_do_poll = DepositMonitor._do_poll_with_session
+
+        call_count = [0]
+
+        def _failing_then_ok(self_inner, db_inner):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                db_inner.commit = MagicMock(side_effect=Exception("DB commit failed"))
+                try:
+                    original_do_poll(self_inner, db_inner)
+                except Exception:
+                    pass
+            else:
+                original_do_poll(self_inner, db_inner)
+
+        with patch.object(DepositMonitor, "_do_poll_with_session", _failing_then_ok):
+            deposit_monitor.poll_once()  # fails
+            deposit_monitor.poll_once()  # retries
+
+        # Second poll should have used min_height=100 (not 200)
+        calls = mock_wallet_service.get_incoming_transfers.call_args_list
+        assert calls[1][1].get("min_height", 0) == 100
+
     def test_loads_height_on_init(self, mock_wallet_service, db_session_factory):
         """DepositMonitor should load persisted height from SystemState."""
         # Pre-set height in DB

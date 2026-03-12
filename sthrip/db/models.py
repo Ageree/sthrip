@@ -3,103 +3,39 @@ SQLAlchemy models for Sthrip database
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
-from enum import Enum as PyEnum
 
 from sqlalchemy import (
     create_engine, Column, String, Integer, BigInteger, Boolean,
     DateTime, ForeignKey, Numeric, Text, JSON, Enum as SQLEnum,
-    Index, UniqueConstraint
+    Index, UniqueConstraint, CheckConstraint
 )
-from sqlalchemy.dialects.postgresql import UUID, INET
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 from sqlalchemy.sql import func
+
+# Enum definitions live in sthrip.db.enums.  Import them here so that all
+# existing code that does `from sthrip.db.models import <EnumName>` continues
+# to work without any changes (backward-compatible re-export).
+from sthrip.db.enums import (  # noqa: F401  (re-exported for backward compat)
+    PrivacyLevel,
+    AgentTier,
+    RateLimitTier,
+    TransactionStatus,
+    PaymentType,
+    EscrowStatus,
+    ChannelStatus,
+    WebhookStatus,
+    HubRouteStatus,
+    FeeCollectionStatus,
+    WithdrawalStatus,
+)
 
 
 class Base(DeclarativeBase):
     pass
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ENUMS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class PrivacyLevel(str, PyEnum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    PARANOID = "paranoid"
-
-
-class AgentTier(str, PyEnum):
-    FREE = "free"
-    VERIFIED = "verified"
-    PREMIUM = "premium"
-    ENTERPRISE = "enterprise"
-
-
-class RateLimitTier(str, PyEnum):
-    LOW = "low"
-    STANDARD = "standard"
-    HIGH = "high"
-    UNLIMITED = "unlimited"
-
-
-class TransactionStatus(str, PyEnum):
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
-    FAILED = "failed"
-    ORPHANED = "orphaned"
-
-
-class PaymentType(str, PyEnum):
-    P2P = "p2p"
-    HUB_ROUTING = "hub_routing"
-    ESCROW_DEPOSIT = "escrow_deposit"
-    ESCROW_RELEASE = "escrow_release"
-    CHANNEL_OPEN = "channel_open"
-    CHANNEL_CLOSE = "channel_close"
-    FEE_COLLECTION = "fee_collection"
-
-
-class EscrowStatus(str, PyEnum):
-    PENDING = "pending"
-    FUNDED = "funded"
-    DELIVERED = "delivered"
-    COMPLETED = "completed"
-    DISPUTED = "disputed"
-    REFUNDED = "refunded"
-    EXPIRED = "expired"
-
-
-class ChannelStatus(str, PyEnum):
-    PENDING = "pending"
-    OPEN = "open"
-    CLOSING = "closing"
-    CLOSED = "closed"
-    DISPUTED = "disputed"
-
-
-class WebhookStatus(str, PyEnum):
-    PENDING = "pending"
-    DELIVERED = "delivered"
-    FAILED = "failed"
-    RETRYING = "retrying"
-
-
-class HubRouteStatus(str, PyEnum):
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
-    SETTLED = "settled"
-    FAILED = "failed"
-
-
-class FeeCollectionStatus(str, PyEnum):
-    PENDING = "pending"
-    COLLECTED = "collected"
-    WITHDRAWN = "withdrawn"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -129,7 +65,7 @@ class Agent(Base):
     
     # Tier & Verification
     tier = Column(SQLEnum(AgentTier), default=AgentTier.FREE)
-    verified_at = Column(DateTime, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
     verified_by = Column(String(255), nullable=True)
     
     # Staking
@@ -138,14 +74,14 @@ class Agent(Base):
     
     # Status
     is_active = Column(Boolean, default=True)
-    last_seen_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
     
     # Rate limiting
     rate_limit_tier = Column(SQLEnum(RateLimitTier), default=RateLimitTier.STANDARD)
     
     # Timestamps
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
     
     # Relationships
     reputation = relationship("AgentReputation", back_populates="agent", uselist=False)
@@ -183,7 +119,7 @@ class AgentReputation(Base):
     # Raw data
     raw_data = Column(JSON, default=dict)
     
-    calculated_at = Column(DateTime, default=func.now())
+    calculated_at = Column(DateTime(timezone=True), default=func.now())
     
     # Relationships
     agent = relationship("Agent", back_populates="reputation")
@@ -199,8 +135,8 @@ class Transaction(Base):
     network = Column(String(50), nullable=False)
     token = Column(String(20), default='XMR')
     
-    from_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
-    to_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
+    from_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True)
+    to_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True)
     
     amount = Column(Numeric(20, 12), nullable=False)
     fee = Column(Numeric(20, 12), default=Decimal('0'))
@@ -214,12 +150,18 @@ class Transaction(Base):
     memo = Column(Text, nullable=True)
     tx_metadata = Column("metadata", JSON, default=dict)
 
-    confirmed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=func.now())
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
 
     # Relationships
     from_agent = relationship("Agent", foreign_keys=[from_agent_id], back_populates="sent_transactions")
     to_agent = relationship("Agent", foreign_keys=[to_agent_id], back_populates="received_transactions")
+
+    __table_args__ = (
+        Index("ix_transactions_status", "status"),
+        Index("ix_transactions_from_agent_created", "from_agent_id", "created_at"),
+        Index("ix_transactions_to_agent_created", "to_agent_id", "created_at"),
+    )
 
 
 class EscrowDeal(Base):
@@ -229,9 +171,9 @@ class EscrowDeal(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     deal_hash = Column(String(64), unique=True, nullable=False)
     
-    buyer_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
-    seller_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
-    arbiter_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
+    buyer_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    arbiter_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True)
     
     amount = Column(Numeric(20, 12), nullable=False)
     token = Column(String(20), default='XMR')
@@ -252,18 +194,18 @@ class EscrowDeal(Base):
     multisig_address = Column(String(255), nullable=True)
     
     # Dispute
-    disputed_at = Column(DateTime, nullable=True)
-    disputed_by = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
+    disputed_at = Column(DateTime(timezone=True), nullable=True)
+    disputed_by = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True)
     dispute_reason = Column(Text, nullable=True)
     arbiter_decision = Column(String(20), nullable=True)
     arbiter_signature = Column(Text, nullable=True)
 
     deal_metadata = Column("metadata", JSON, default=dict)
 
-    created_at = Column(DateTime, default=func.now())
-    funded_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
-    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    funded_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     
     # Relationships
     buyer = relationship("Agent", foreign_keys=[buyer_id], back_populates="escrow_deals_as_buyer")
@@ -277,8 +219,8 @@ class PaymentChannel(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     channel_hash = Column(String(64), unique=True, nullable=False)
     
-    agent_a_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
-    agent_b_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    agent_a_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    agent_b_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
     
     capacity = Column(Numeric(20, 12), nullable=False)
     status = Column(SQLEnum(ChannelStatus), default=ChannelStatus.PENDING)
@@ -289,10 +231,10 @@ class PaymentChannel(Base):
     
     current_state = Column(JSON, nullable=True)
     
-    created_at = Column(DateTime, default=func.now())
-    funded_at = Column(DateTime, nullable=True)
-    closed_at = Column(DateTime, nullable=True)
-    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    funded_at = Column(DateTime(timezone=True), nullable=True)
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     
     # Relationships
     agent_a = relationship("Agent", foreign_keys=[agent_a_id], back_populates="channels_as_a")
@@ -316,7 +258,7 @@ class ChannelState(Base):
     
     state_hash = Column(String(64), nullable=False)
     
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime(timezone=True), default=func.now())
     
     # Unique constraint
     __table_args__ = (UniqueConstraint('channel_id', 'sequence_number'),)
@@ -341,16 +283,20 @@ class HubRoute(Base):
     fee_percent = Column(Numeric(5, 4), default=Decimal('0.001'))
     fee_amount = Column(Numeric(20, 12), nullable=False)
     fee_collected = Column(Boolean, default=False)
-    fee_collected_at = Column(DateTime, nullable=True)
+    fee_collected_at = Column(DateTime(timezone=True), nullable=True)
 
     instant_confirmation = Column(Boolean, default=True)
     status = Column(SQLEnum(HubRouteStatus), default=HubRouteStatus.PENDING)
 
     settlement_tx_hash = Column(String(255), ForeignKey("transactions.tx_hash"), nullable=True)
 
-    created_at = Column(DateTime, default=func.now())
-    confirmed_at = Column(DateTime, nullable=True)
-    settled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    settled_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_hub_routes_status", "status"),
+    )
 
 
 class WebhookEvent(Base):
@@ -371,33 +317,14 @@ class WebhookEvent(Base):
     last_response_body = Column(Text, nullable=True)
     last_error = Column(Text, nullable=True)
 
-    next_attempt_at = Column(DateTime, nullable=True)
-    delivered_at = Column(DateTime, nullable=True)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
 
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime(timezone=True), default=func.now())
 
     __table_args__ = (
         Index("ix_webhook_events_pending", "status", "next_attempt_at"),
     )
-
-
-class ApiSession(Base):
-    """API sessions for authentication"""
-    __tablename__ = "api_sessions"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
-    
-    session_token_hash = Column(String(255), nullable=False)
-    
-    ip_address = Column(INET, nullable=True)
-    user_agent = Column(Text, nullable=True)
-    
-    is_active = Column(Boolean, default=True)
-    
-    expires_at = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=func.now())
-    last_used_at = Column(DateTime, nullable=True)
 
 
 class AuditLog(Base):
@@ -411,7 +338,7 @@ class AuditLog(Base):
     resource_type = Column(String(50), nullable=True)
     resource_id = Column(UUID(as_uuid=True), nullable=True)
     
-    ip_address = Column(INET, nullable=True)
+    ip_address = Column(String(45), nullable=True)  # IPv4/IPv6 as string (portable)
     request_method = Column(String(10), nullable=True)
     request_path = Column(Text, nullable=True)
     request_body = Column(JSON, nullable=True)
@@ -422,7 +349,7 @@ class AuditLog(Base):
     success = Column(Boolean, nullable=True)
     error_message = Column(Text, nullable=True)
     
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime(timezone=True), default=func.now())
 
 
 class FeeCollection(Base):
@@ -441,9 +368,9 @@ class FeeCollection(Base):
     status = Column(SQLEnum(FeeCollectionStatus), default=FeeCollectionStatus.PENDING)
 
     collection_tx_hash = Column(String(255), nullable=True)
-    withdrawn_at = Column(DateTime, nullable=True)
+    withdrawn_at = Column(DateTime(timezone=True), nullable=True)
 
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime(timezone=True), default=func.now())
 
 
 class SystemState(Base):
@@ -452,23 +379,44 @@ class SystemState(Base):
 
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class PendingWithdrawal(Base):
+    """Saga journal for withdrawal operations."""
+    __tablename__ = "pending_withdrawals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    amount = Column(Numeric(precision=18, scale=12), nullable=False)
+    address = Column(String(256), nullable=False)
+    status = Column(SQLEnum(WithdrawalStatus), nullable=False, default=WithdrawalStatus.PENDING)
+    tx_hash = Column(String(128), nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_pending_withdrawals_status_created", "status", "created_at"),
+    )
 
 
 class AgentBalance(Base):
     __tablename__ = "agent_balances"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
     token = Column(String(10), nullable=False, default="XMR")
     available = Column(Numeric(20, 12), nullable=False, default=0)
     pending = Column(Numeric(20, 12), nullable=False, default=0)
     total_deposited = Column(Numeric(20, 12), nullable=False, default=0)
     total_withdrawn = Column(Numeric(20, 12), nullable=False, default=0)
     deposit_address = Column(String(200), index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         UniqueConstraint("agent_id", "token", name="uq_agent_balance"),
+        CheckConstraint("available >= 0", name="ck_balance_available_non_negative"),
+        CheckConstraint("pending >= 0", name="ck_balance_pending_non_negative"),
     )

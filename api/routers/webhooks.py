@@ -1,5 +1,8 @@
 """Webhook event endpoints."""
 
+from datetime import datetime, timezone
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException, Depends, Query
 
 from sthrip.db.database import get_db
@@ -39,7 +42,7 @@ async def list_webhook_events(
 
 @router.post("/events/{event_id}/retry")
 async def retry_webhook_event(
-    event_id: str,
+    event_id: UUID,
     agent: Agent = Depends(get_current_agent),
 ):
     """Manually retry a failed webhook event"""
@@ -60,6 +63,6 @@ async def retry_webhook_event(
 
         event.status = WebhookStatus.PENDING
         event.attempt_count = max((event.attempt_count or 0) - 1, 0)
-        event.next_attempt_at = None
+        event.next_attempt_at = datetime.now(timezone.utc)
 
-    return {"message": "Event queued for retry", "event_id": event_id}
+    return {"message": "Event queued for retry", "event_id": str(event_id)}

@@ -5,6 +5,7 @@ Handles deposit address generation, withdrawals, incoming transfer
 retrieval, and wallet info for health checks.
 """
 
+import time
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 from uuid import UUID
@@ -52,6 +53,9 @@ class WalletService:
         self.wallet = wallet_rpc
         self._db_session_factory = db_session_factory
         self._account_index = account_index
+        self._hub_addr_cache = None
+        self._hub_addr_cache_time = 0.0
+        self._hub_addr_cache_ttl = 300  # 5 minutes
 
     @classmethod
     def from_env(cls, db_session_factory: Callable) -> "WalletService":
@@ -82,25 +86,53 @@ class WalletService:
             )
             address = result["address"]
             repo.set_deposit_address(agent_id, address)
-            db.commit()
             return address
 
     def send_withdrawal(self, to_address: str, amount: Decimal) -> Dict:
         """Send XMR from hub wallet to external address.
 
         Returns dict with tx_hash, fee (XMR), and amount (XMR).
-        Raises WalletRPCError on failure.
+        Raises ValueError if to_address is the hub wallet's own address.
+        Raises WalletRPCError on RPC failure.
         """
+        # Reject self-sends to prevent accounting discrepancies
+        hub_addresses = self._get_hub_addresses()
+        if to_address in hub_addresses:
+            raise ValueError(
+                "Cannot withdraw to hub wallet's own address — "
+                "self-send would create an accounting discrepancy"
+            )
+
         # wallet.transfer() handles XMR->piconero conversion internally
         result = self.wallet.transfer(
             destination=to_address,
-            amount=float(amount),
+            amount=amount,
         )
         return {
             "tx_hash": result["tx_hash"],
             "fee": piconero_to_xmr(result.get("fee", 0)),
             "amount": amount,
         }
+
+    def _get_hub_addresses(self) -> frozenset:
+        """Return all known hub wallet addresses (primary + subaddresses).
+
+        Results are cached for _hub_addr_cache_ttl seconds to avoid
+        an RPC call on every withdrawal.
+        """
+        now = time.monotonic()
+        if self._hub_addr_cache is not None and (now - self._hub_addr_cache_time) < self._hub_addr_cache_ttl:
+            return self._hub_addr_cache
+
+        addr_data = self.wallet.get_address(self._account_index)
+        addresses = {addr_data["address"]}
+        for entry in addr_data.get("addresses", []):
+            addresses.add(entry["address"])
+        result = frozenset(addresses)
+
+        self._hub_addr_cache = result
+        self._hub_addr_cache_time = now
+        return result
 
     def get_incoming_transfers(self, min_height: int = 0) -> List[Dict]:
         """Get incoming transfers from wallet RPC.
@@ -157,6 +189,51 @@ class WalletService:
             addr["address_index"]: addr["address"]
             for addr in addr_data.get("addresses", [])
         }
+
+    def get_outgoing_transfers(self, min_height: Optional[int] = None) -> List[Dict]:
+        """Get outgoing transfers from wallet RPC.
+
+        Used by withdrawal recovery to match pending withdrawals
+        against on-chain transactions.
+
+        Returns list of dicts with: tx_hash, amount (XMR), fee (XMR),
+        address, timestamp, height.
+        """
+        raw = self.wallet.get_transfers(
+            incoming=False,
+            outgoing=True,
+            pending=True,
+            min_height=min_height,
+        )
+
+        result = []
+        for tx in raw.get("out", []):
+            from datetime import datetime, timezone
+            timestamp = tx.get("timestamp")
+            result.append({
+                "tx_hash": tx.get("txid", tx.get("tx_hash", "")),
+                "amount": piconero_to_xmr(tx.get("amount", 0)),
+                "fee": piconero_to_xmr(tx.get("fee", 0)),
+                "address": tx.get("address", ""),
+                "timestamp": (
+                    datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                    if timestamp
+                    else None
+                ),
+                "height": tx.get("height", 0),
+            })
+
+        for tx in raw.get("pending", []):
+            result.append({
+                "tx_hash": tx.get("txid", tx.get("tx_hash", "")),
+                "amount": piconero_to_xmr(tx.get("amount", 0)),
+                "fee": piconero_to_xmr(tx.get("fee", 0)),
+                "address": tx.get("address", ""),
+                "timestamp": None,
+                "height": 0,
+            })
+
+        return result
 
     def get_wallet_info(self) -> Dict:
         """Get wallet balance and address info for health check / admin."""

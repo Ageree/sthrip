@@ -84,8 +84,10 @@ class TestInit:
 
 class TestKeyGeneration:
     def test_key_format(self):
+        import hashlib
         store = _make_local_store()
-        assert store._key("agent1", "/pay", "k1") == "idempotency:agent1:/pay:k1"
+        expected_hash = hashlib.sha256("k1".encode()).hexdigest()
+        assert store._key("agent1", "/pay", "k1") == f"idempotency:agent1:/pay:{expected_hash}"
 
     def test_different_agents_dont_collide(self):
         store = _make_local_store()
@@ -96,14 +98,20 @@ class TestKeyGeneration:
         assert store._key("a", "/pay", "k") != store._key("a", "/refund", "k")
 
     def test_empty_strings(self):
+        import hashlib
         store = _make_local_store()
-        assert store._key("", "", "") == "idempotency:::"
+        expected_hash = hashlib.sha256("".encode()).hexdigest()
+        assert store._key("", "", "") == f"idempotency:::{expected_hash}"
 
     def test_long_key(self):
+        import hashlib
         store = _make_local_store()
         long = "x" * 500
         key = store._key(long, long, long)
-        assert long in key
+        expected_hash = hashlib.sha256(long.encode()).hexdigest()
+        assert expected_hash in key
+        # Agent ID and endpoint are NOT hashed, only the idempotency key
+        assert key.startswith(f"idempotency:{long}:{long}:{expected_hash}")
 
 
 # ── Local mode: try_reserve / store_response / release ────────────────────

@@ -12,7 +12,6 @@ from .models import (
     ChannelState,
     HubRoute,
     WebhookEvent,
-    ApiSession,
     AuditLog,
     FeeCollection,
 )
@@ -25,7 +24,7 @@ from .repository import (
     WebhookRepository,
 )
 
-from .database import Database, get_db
+from .database import get_db
 
 __all__ = [
     "Agent",
@@ -36,7 +35,6 @@ __all__ = [
     "ChannelState",
     "HubRoute",
     "WebhookEvent",
-    "ApiSession",
     "AuditLog",
     "FeeCollection",
     "AgentRepository",
@@ -44,6 +42,5 @@ __all__ = [
     "EscrowRepository",
     "ChannelRepository",
     "WebhookRepository",
-    "Database",
     "get_db",
 ]

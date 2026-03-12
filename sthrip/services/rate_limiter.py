@@ -4,12 +4,14 @@ Supports tiered limits per agent
 """
 
 import logging
-import os
 import threading
 import time
 from enum import Enum
 from typing import Optional, Dict
 from dataclasses import dataclass
+
+from fastapi import HTTPException
+from sthrip.config import get_settings
 
 logger = logging.getLogger("sthrip.rate_limiter")
 
@@ -18,7 +20,6 @@ try:
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
-
 
 class RateLimitTier(Enum):
     """Rate limit tiers"""
@@ -82,16 +83,19 @@ class RateLimitExceeded(Exception):
         super().__init__(f"Rate limit exceeded. Limit: {limit}/min. Reset at: {reset_at}")
 
 
+_EVICTION_INTERVAL = 300  # seconds between local-cache sweeps (5 minutes)
+
+
 class RateLimiter:
     """
     Token bucket rate limiter using Redis
-    
+
     Supports:
     - Per-agent rate limiting by tier
     - Per-endpoint limiting
     - Sliding window for IP-based limits
     """
-    
+
     def __init__(
         self,
         redis_url: Optional[str] = None,
@@ -100,26 +104,39 @@ class RateLimiter:
         self.default_tier = default_tier
         self._local_cache: Dict[str, Dict] = {}  # Fallback if no Redis
         self._cache_lock = threading.Lock()
+        self._last_eviction: float = 0.0
+        self._reject_requests = False
+
+        settings = get_settings()
+        fail_open = settings.rate_limit_fail_open
 
         if REDIS_AVAILABLE:
-            redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            redis_url = redis_url or settings.redis_url
             try:
                 self.redis = redis.from_url(redis_url, decode_responses=True)
                 self.redis.ping()
                 self.use_redis = True
             except (redis.ConnectionError, redis.ResponseError):
-                self.use_redis = False
-                logger.critical(
-                    "Rate limiter falling back to in-process dict"
-                    " — multi-replica rate limiting is DISABLED"
-                )
+                self._handle_redis_unavailable(fail_open)
         else:
-            self.use_redis = False
             self.redis = None
+            self._handle_redis_unavailable(fail_open)
+
+    def _handle_redis_unavailable(self, fail_open: bool) -> None:
+        """Handle Redis being unavailable based on fail_open setting."""
+        self.use_redis = False
+        self._reject_requests = not fail_open
+        if fail_open:
             logger.critical(
-                "Redis not available — rate limiter using in-process dict"
+                "Redis unavailable — rate limiter falling back to in-process dict"
+                " (RATE_LIMIT_FAIL_OPEN=true). Multi-replica rate limiting is DISABLED."
             )
-    
+        else:
+            logger.critical(
+                "Redis unavailable — rate limiting will reject authenticated requests"
+                " (RATE_LIMIT_FAIL_OPEN=false). Health checks remain available."
+            )
+
     def _get_key(self, agent_id: str, endpoint: Optional[str] = None) -> str:
         """Generate Redis key for agent"""
         if endpoint:
@@ -163,7 +180,13 @@ class RateLimiter:
         """
         config = self._get_limit_config(tier)
         key = self._get_key(agent_id, endpoint)
-        
+
+        if getattr(self, "_reject_requests", False):
+            raise HTTPException(
+                status_code=503,
+                detail="Rate limiting service unavailable: Redis is not reachable"
+            )
+
         if self.use_redis:
             return self._check_redis(key, config, cost)
         else:
@@ -200,6 +223,17 @@ class RateLimiter:
             "limit": config.requests_per_minute,
         }
     
+    def _evict_expired(self) -> None:
+        """Remove expired entries from local cache (I6: prevent unbounded growth)."""
+        now = time.time()
+        with self._cache_lock:
+            expired = [
+                k for k, v in self._local_cache.items()
+                if v.get("reset_at", 0) < now
+            ]
+            for k in expired:
+                del self._local_cache[k]
+
     def _check_local(
         self,
         key: str,
@@ -209,6 +243,10 @@ class RateLimiter:
         """Check limit using local cache (fallback)"""
         now = time.time()
         window = 60
+
+        if now - self._last_eviction > _EVICTION_INTERVAL:
+            self._evict_expired()
+            self._last_eviction = now
 
         with self._cache_lock:
             entry = self._local_cache.get(key)
@@ -221,18 +259,17 @@ class RateLimiter:
                 }
                 self._local_cache[key] = entry
             else:
-                new_count = entry["count"] + cost
-                entry = {
-                    "count": new_count,
-                    "reset_at": entry["reset_at"]
-                }
-                self._local_cache[key] = entry
-
-                if new_count > config.requests_per_minute:
+                # Check BEFORE incrementing (consistent with Redis Lua script)
+                if entry["count"] + cost > config.requests_per_minute:
                     raise RateLimitExceeded(
                         limit=config.requests_per_minute,
                         reset_at=entry["reset_at"]
                     )
+                entry = {
+                    "count": entry["count"] + cost,
+                    "reset_at": entry["reset_at"]
+                }
+                self._local_cache[key] = entry
 
             remaining = max(0, config.requests_per_minute - entry["count"])
 
@@ -249,7 +286,8 @@ class RateLimiter:
         action: str = "register",
         per_ip_limit: int = 5,
         global_limit: int = 100,
-        window_seconds: int = 3600
+        window_seconds: int = 3600,
+        check_only: bool = False,
     ) -> Dict:
         """
         Check IP-based rate limit for unauthenticated endpoints.
@@ -260,6 +298,10 @@ class RateLimiter:
             per_ip_limit: Max requests per IP per window
             global_limit: Max total requests per window
             window_seconds: Window duration in seconds
+            check_only: If True, only check whether the limit is exceeded
+                        without incrementing the counter. Useful for separating
+                        the check from the increment (e.g. increment only on
+                        authentication failure).
 
         Raises:
             RateLimitExceeded: If either limit exceeded
@@ -268,10 +310,64 @@ class RateLimiter:
         global_key = f"ratelimit:global:{action}"
         now = time.time()
 
+        if check_only:
+            return self._peek_ip_limit(ip_key, global_key, per_ip_limit, global_limit, now)
+
         if self.use_redis:
             return self._check_ip_redis(ip_key, global_key, per_ip_limit, global_limit, window_seconds, now)
         else:
             return self._check_ip_local(ip_key, global_key, per_ip_limit, global_limit, window_seconds, now)
+
+    def _peek_ip_limit(self, ip_key, global_key, per_ip_limit, global_limit, now):
+        """Check if IP or global limit is already exceeded without incrementing.
+
+        Uses strict > comparison. After N failed attempts (counter=N), peek allows
+        one more attempt. If that attempt also fails, the increment path pushes
+        counter to N+1 which exceeds the limit on the next peek.
+        """
+        if self.use_redis:
+            ip_data = self.redis.hmget(ip_key, "count", "reset_at")
+            ip_count = int(ip_data[0]) if ip_data[0] else 0
+            ip_reset = float(ip_data[1]) if ip_data[1] else now
+
+            if ip_reset < now:
+                ip_count = 0
+
+            if ip_count >= per_ip_limit:
+                raise RateLimitExceeded(limit=per_ip_limit, reset_at=ip_reset)
+
+            g_data = self.redis.hmget(global_key, "count", "reset_at")
+            g_count = int(g_data[0]) if g_data[0] else 0
+            g_reset = float(g_data[1]) if g_data[1] else now
+
+            if g_reset < now:
+                g_count = 0
+
+            if g_count >= global_limit:
+                raise RateLimitExceeded(limit=global_limit, reset_at=g_reset)
+
+            return {"allowed": True, "ip_remaining": per_ip_limit - ip_count, "global_remaining": global_limit - g_count}
+        else:
+            with self._cache_lock:
+                ip_entry = self._local_cache.get(ip_key)
+                ip_count = 0
+                ip_reset = now
+                if ip_entry and ip_entry["reset_at"] >= now:
+                    ip_count = ip_entry["count"]
+                    ip_reset = ip_entry["reset_at"]
+
+                if ip_count >= per_ip_limit:
+                    raise RateLimitExceeded(limit=per_ip_limit, reset_at=ip_reset)
+
+                g_entry = self._local_cache.get(global_key)
+                g_count = 0
+                if g_entry and g_entry["reset_at"] >= now:
+                    g_count = g_entry["count"]
+                    g_reset = g_entry["reset_at"]
+                    if g_count >= global_limit:
+                        raise RateLimitExceeded(limit=global_limit, reset_at=g_reset)
+
+            return {"allowed": True, "ip_remaining": per_ip_limit - ip_count, "global_remaining": global_limit - g_count}
 
     def _check_ip_redis(self, ip_key, global_key, per_ip_limit, global_limit, window, now):
         """Check IP + global limits using atomic Lua scripts."""
@@ -301,27 +397,25 @@ class RateLimiter:
 
     def _check_ip_local(self, ip_key, global_key, per_ip_limit, global_limit, window, now):
         with self._cache_lock:
-            # Per-IP check
+            # Per-IP check: increment then check (consistent with Redis Lua script)
             ip_entry = self._local_cache.get(ip_key)
             if ip_entry is None or ip_entry["reset_at"] < now:
                 ip_entry = {"count": 1, "reset_at": now + window}
-                self._local_cache[ip_key] = ip_entry
             else:
                 ip_entry = {"count": ip_entry["count"] + 1, "reset_at": ip_entry["reset_at"]}
-                self._local_cache[ip_key] = ip_entry
-                if ip_entry["count"] > per_ip_limit:
-                    raise RateLimitExceeded(limit=per_ip_limit, reset_at=ip_entry["reset_at"])
+            self._local_cache[ip_key] = ip_entry
+            if ip_entry["count"] > per_ip_limit:
+                raise RateLimitExceeded(limit=per_ip_limit, reset_at=ip_entry["reset_at"])
 
-            # Global check
+            # Global check: same pattern
             g_entry = self._local_cache.get(global_key)
             if g_entry is None or g_entry["reset_at"] < now:
                 g_entry = {"count": 1, "reset_at": now + window}
-                self._local_cache[global_key] = g_entry
             else:
                 g_entry = {"count": g_entry["count"] + 1, "reset_at": g_entry["reset_at"]}
-                self._local_cache[global_key] = g_entry
-                if g_entry["count"] > global_limit:
-                    raise RateLimitExceeded(limit=global_limit, reset_at=g_entry["reset_at"])
+            self._local_cache[global_key] = g_entry
+            if g_entry["count"] > global_limit:
+                raise RateLimitExceeded(limit=global_limit, reset_at=g_entry["reset_at"])
 
         return {"allowed": True, "ip_remaining": per_ip_limit - ip_entry["count"], "global_remaining": global_limit - g_entry["count"]}
 
@@ -357,23 +451,73 @@ class RateLimiter:
     def reset_limit(self, agent_id: str, endpoint: Optional[str] = None):
         """Reset rate limit for agent (admin only)"""
         key = self._get_key(agent_id, endpoint)
-        
+
         if self.use_redis:
             self.redis.delete(key)
         else:
             with self._cache_lock:
                 self._local_cache.pop(key, None)
 
+    # ─── Failed auth rate limiting ────────────────────────────────────────
+
+    def check_failed_auth(self, ip: str, limit: int = 5, window: int = 60) -> None:
+        """Raise RateLimitExceeded if IP has exceeded failed auth limit."""
+        key = f"ratelimit:ip:failed_auth:{ip}"
+        now = time.time()
+
+        if self.use_redis:
+            data = self.redis.hmget(key, "count", "reset_at")
+            count = int(data[0]) if data[0] else 0
+            reset_at = float(data[1]) if data[1] else now + window
+            if reset_at < now:
+                count = 0
+            if count >= limit:
+                raise RateLimitExceeded(limit=limit, reset_at=reset_at)
+        else:
+            with self._cache_lock:
+                entry = self._local_cache.get(key)
+            if entry and entry.get("reset_at", 0) >= now:
+                if entry.get("count", 0) >= limit:
+                    raise RateLimitExceeded(limit=limit, reset_at=entry["reset_at"])
+
+    def record_failed_auth(self, ip: str, window: int = 60) -> None:
+        """Increment failed auth counter for IP."""
+        key = f"ratelimit:ip:failed_auth:{ip}"
+        now = time.time()
+
+        if self.use_redis:
+            pipe = self.redis.pipeline()
+            pipe.hincrby(key, "count", 1)
+            pipe.hsetnx(key, "reset_at", str(now + window))
+            pipe.expire(key, window + 60)
+            pipe.execute()
+        else:
+            with self._cache_lock:
+                entry = self._local_cache.get(key)
+                if entry and entry.get("reset_at", 0) >= now:
+                    self._local_cache[key] = {
+                        "count": entry.get("count", 0) + 1,
+                        "reset_at": entry["reset_at"],
+                    }
+                else:
+                    self._local_cache[key] = {
+                        "count": 1,
+                        "reset_at": now + window,
+                    }
+
 
 # Global rate limiter instance
 _limiter: Optional[RateLimiter] = None
+_limiter_lock = threading.Lock()
 
 
 def get_rate_limiter() -> RateLimiter:
-    """Get global rate limiter instance"""
+    """Get global rate limiter instance (thread-safe)."""
     global _limiter
     if _limiter is None:
-        _limiter = RateLimiter()
+        with _limiter_lock:
+            if _limiter is None:
+                _limiter = RateLimiter()
     return _limiter
 
 

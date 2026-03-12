@@ -1,9 +1,11 @@
 """Tests for health monitoring and alerting service"""
 import time
+import threading
 import pytest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
 
+from sthrip.config import get_settings
 from sthrip.services.monitoring import (
     HealthCheck,
     Alert,
@@ -293,7 +295,7 @@ class TestCheckIntervalLogic:
         # The _monitor_loop logic checks interval — simulate it
         for check in m.checks.values():
             if check.last_check is None or \
-               (datetime.now(timezone.utc) - check.last_check).seconds >= check.interval_seconds:
+               (datetime.now(timezone.utc) - check.last_check).total_seconds() >= check.interval_seconds:
                 m._run_check(check)
 
         fn.assert_not_called()
@@ -307,7 +309,7 @@ class TestCheckIntervalLogic:
 
         for check in m.checks.values():
             if check.last_check is None or \
-               (datetime.now(timezone.utc) - check.last_check).seconds >= check.interval_seconds:
+               (datetime.now(timezone.utc) - check.last_check).total_seconds() >= check.interval_seconds:
                 m._run_check(check)
 
         fn.assert_called_once()
@@ -320,7 +322,7 @@ class TestCheckIntervalLogic:
 
         for check in m.checks.values():
             if check.last_check is None or \
-               (datetime.now(timezone.utc) - check.last_check).seconds >= check.interval_seconds:
+               (datetime.now(timezone.utc) - check.last_check).total_seconds() >= check.interval_seconds:
                 m._run_check(check)
 
         fn.assert_called_once()
@@ -355,6 +357,68 @@ class TestStartStopMonitoring:
         m.start_monitoring()  # should not create a second thread
         assert m._thread is thread1
         m.stop_monitoring()
+
+
+class TestThreadSafety:
+    """Thread safety: concurrent _run_check + get_health_report must not corrupt state."""
+
+    def test_concurrent_run_check_and_get_health_report(self):
+        m = HealthMonitor()
+        call_count = 0
+
+        def toggling_check():
+            nonlocal call_count
+            call_count += 1
+            return {"healthy": call_count % 2 == 0}
+
+        hc = HealthCheck(name="toggle", check_fn=toggling_check, max_failures=1)
+        m.register_check(hc)
+
+        errors = []
+        stop_event = threading.Event()
+        iterations = 200
+
+        def writer():
+            """Background thread running _run_check in a loop."""
+            for _ in range(iterations):
+                try:
+                    m._run_check(hc)
+                except Exception as exc:
+                    errors.append(exc)
+                if stop_event.is_set():
+                    break
+
+        def reader():
+            """Main-like thread calling get_health_report concurrently."""
+            for _ in range(iterations):
+                try:
+                    report = m.get_health_report()
+                    # Validate report structure is not corrupted
+                    assert "status" in report
+                    assert "checks_total" in report
+                    assert isinstance(report["checks_total"], int)
+                    assert report["checks_total"] >= 0
+                    assert isinstance(report.get("unacknowledged_alerts", 0), int)
+                except Exception as exc:
+                    errors.append(exc)
+                if stop_event.is_set():
+                    break
+
+        writer_thread = threading.Thread(target=writer)
+        reader_thread = threading.Thread(target=reader)
+
+        writer_thread.start()
+        reader_thread.start()
+
+        writer_thread.join(timeout=10)
+        reader_thread.join(timeout=10)
+        stop_event.set()
+
+        assert errors == [], f"Thread safety errors: {errors}"
+        # Verify state is consistent after concurrent access
+        report = m.get_health_report()
+        assert report["checks_total"] == 1
+        assert report["status"] in ("healthy", "degraded", "unhealthy")
 
 
 class TestAlertManager:
@@ -574,12 +638,34 @@ class TestCreateWalletHealthCheck:
         """Wallet check returns unhealthy on exception."""
         from sthrip.services.monitoring import create_wallet_health_check
 
-        with patch("sthrip.wallet.MoneroWalletRPC.from_env", side_effect=ConnectionError("rpc down")):
+        mock_wallet = MagicMock()
+        mock_wallet.get_height.side_effect = ConnectionError("rpc down")
+
+        with patch("sthrip.wallet.MoneroWalletRPC.from_env", return_value=mock_wallet):
             hc = create_wallet_health_check()
             result = hc.check_fn()
 
         assert result["healthy"] is False
         assert "rpc down" in result["error"]
+
+    def test_wallet_client_created_once_reused_across_invocations(self):
+        """from_env must be called exactly once at factory time, not on every check."""
+        from sthrip.services.monitoring import create_wallet_health_check
+
+        mock_wallet = MagicMock()
+        mock_wallet.get_height.return_value = 1234567
+
+        with patch("sthrip.wallet.MoneroWalletRPC.from_env", return_value=mock_wallet) as mock_from_env:
+            hc = create_wallet_health_check()
+            # Invoke the check function multiple times to simulate repeated polling
+            hc.check_fn()
+            hc.check_fn()
+            hc.check_fn()
+
+        # from_env must have been called exactly once (at factory creation time)
+        mock_from_env.assert_called_once()
+        # get_height must have been called once per check invocation
+        assert mock_wallet.get_height.call_count == 3
 
 
 class TestCreateSystemHealthCheck:
@@ -671,16 +757,20 @@ class TestDispatchAlertWebhook:
         """dispatch_alert_webhook is a no-op when ALERT_WEBHOOK_URL not set."""
         import sthrip.services.monitoring as mod
         mod._last_dispatch.clear()
+        mod._validated_webhook_url = None
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {"ADMIN_API_KEY": "test-key", "ENVIRONMENT": "dev", "DATABASE_URL": "sqlite:///:memory:"}, clear=True):
+            get_settings.cache_clear()
             # Should not raise
             dispatch_alert_webhook(self._make_alert())
 
     @patch.dict("os.environ", {"ALERT_WEBHOOK_URL": "https://discord.com/api/webhooks/123"})
     def test_discord_webhook_dispatch(self):
         """dispatch_alert_webhook sends Discord embed when URL is not Telegram."""
+        get_settings.cache_clear()
         import sthrip.services.monitoring as mod
         mod._last_dispatch.clear()
+        mod._validated_webhook_url = None
 
         mock_requests = MagicMock()
         with patch.dict("sys.modules", {"requests": mock_requests}):
@@ -695,8 +785,10 @@ class TestDispatchAlertWebhook:
     @patch.dict("os.environ", {"ALERT_WEBHOOK_URL": "https://api.telegram.org/bot123/sendMessage?chat_id=456"})
     def test_telegram_webhook_dispatch(self):
         """dispatch_alert_webhook sends Telegram text when URL contains api.telegram.org."""
+        get_settings.cache_clear()
         import sthrip.services.monitoring as mod
         mod._last_dispatch.clear()
+        mod._validated_webhook_url = None
 
         mock_requests = MagicMock()
         with patch.dict("sys.modules", {"requests": mock_requests}):
@@ -712,8 +804,10 @@ class TestDispatchAlertWebhook:
     @patch.dict("os.environ", {"ALERT_WEBHOOK_URL": "https://discord.com/api/webhooks/123"})
     def test_debounce_prevents_duplicate(self):
         """dispatch_alert_webhook debounces repeated alerts from same source."""
+        get_settings.cache_clear()
         import sthrip.services.monitoring as mod
         mod._last_dispatch.clear()
+        mod._validated_webhook_url = None
 
         mock_requests = MagicMock()
         with patch.dict("sys.modules", {"requests": mock_requests}):
@@ -730,6 +824,7 @@ class TestDispatchAlertWebhook:
         """dispatch_alert_webhook logs but doesn't raise on request failure."""
         import sthrip.services.monitoring as mod
         mod._last_dispatch.clear()
+        mod._validated_webhook_url = None
 
         mock_requests = MagicMock()
         mock_requests.post.side_effect = RuntimeError("network error")
@@ -737,3 +832,18 @@ class TestDispatchAlertWebhook:
             alert = self._make_alert(source="error_test_src")
             # Should not raise
             dispatch_alert_webhook(alert)
+
+    @patch.dict("os.environ", {"ALERT_WEBHOOK_URL": "http://169.254.169.254/latest/meta-data/"})
+    def test_ssrf_blocked_url_rejected(self):
+        """dispatch_alert_webhook must reject SSRF-unsafe URLs."""
+        get_settings.cache_clear()
+        import sthrip.services.monitoring as mod
+        mod._last_dispatch.clear()
+        mod._validated_webhook_url = None
+
+        mock_requests = MagicMock()
+        with patch.dict("sys.modules", {"requests": mock_requests}):
+            alert = self._make_alert(source="ssrf_test_src")
+            dispatch_alert_webhook(alert)
+        # Should NOT have posted — URL blocked by SSRF validation
+        mock_requests.post.assert_not_called()

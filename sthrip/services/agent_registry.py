@@ -4,17 +4,21 @@ Public API for agent discovery
 """
 
 import hashlib
+import threading
+import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import desc, func, and_
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import joinedload
 
 from ..db.database import get_db
 from ..db.models import Agent, AgentReputation, AgentTier
 from ..db.repository import AgentRepository, ReputationRepository
-
+from ..utils import escape_ilike
 
 @dataclass
 class AgentProfile:
@@ -73,43 +77,41 @@ class AgentRegistry:
             Registration result with API key (shown once)
         """
         with get_db() as db:
-            # Check if name exists
-            existing = db.query(Agent).filter(
-                Agent.agent_name == agent_name
-            ).first()
-            
-            if existing:
-                raise ValueError(f"Agent name '{agent_name}' already taken")
-            
-            # Create agent
+            # Rely solely on IntegrityError for uniqueness enforcement.
+            # A pre-check query would create a timing oracle that lets
+            # attackers enumerate existing agent names by measuring
+            # response latency (DB query vs immediate duplicate check).
             repo = AgentRepository(db)
-            agent = repo.create_agent(
-                agent_name=agent_name,
-                webhook_url=webhook_url,
-                privacy_level=privacy_level
-            )
-            
-            # Update wallet addresses
-            if xmr_address or base_address or solana_address:
-                repo.update_wallet_addresses(
-                    agent.id,
-                    xmr_address=xmr_address,
-                    base_address=base_address,
-                    solana_address=solana_address
+            try:
+                agent, credentials = repo.create_agent(
+                    agent_name=agent_name,
+                    webhook_url=webhook_url,
+                    privacy_level=privacy_level
                 )
-            
-            db.commit()
-            
+
+                if xmr_address or base_address or solana_address:
+                    repo.update_wallet_addresses(
+                        agent.id,
+                        xmr_address=xmr_address,
+                        base_address=base_address,
+                        solana_address=solana_address
+                    )
+
+                db.flush()
+            except IntegrityError:
+                db.rollback()
+                raise ValueError("Registration failed")
+
             return {
                 "agent_id": str(agent.id),
                 "agent_name": agent_name,
-                "api_key": agent._plain_api_key,  # Shown only once!
-                "webhook_secret": agent.webhook_secret,  # Shown only once!
+                "api_key": credentials["api_key"],
+                "webhook_secret": credentials["webhook_secret"],
                 "tier": agent.tier,
                 "created_at": agent.created_at.isoformat(),
                 "message": "Store API key and webhook secret securely - they cannot be retrieved again"
             }
-    
+
     def get_profile(self, agent_name: str) -> Optional[AgentProfile]:
         """Get public agent profile"""
         with get_db() as db:
@@ -126,23 +128,8 @@ class AgentRegistry:
             if agent.reputation:
                 rep = agent.reputation
             
-            return AgentProfile(
-                id=str(agent.id),
-                agent_name=agent.agent_name,
-                did=agent.did,
-                tier=agent.tier.value,
-                xmr_address=agent.xmr_address,
-                base_address=agent.base_address,
-                solana_address=agent.solana_address,
-                trust_score=rep.trust_score if rep else 0,
-                total_transactions=rep.total_transactions if rep else 0,
-                average_rating=float(rep.average_rating) if rep else 0.0,
-                services=[],
-                verified_at=agent.verified_at.isoformat() if agent.verified_at else None,
-                last_seen_at=agent.last_seen_at.isoformat() if agent.last_seen_at else None,
-                created_at=agent.created_at.isoformat()
-            )
-    
+            return self._agent_to_profile(agent)
+
     def get_profile_by_address(
         self,
         address: str,
@@ -183,19 +170,21 @@ class AgentRegistry:
             offset: Pagination offset
         """
         with get_db() as db:
-            query = db.query(Agent).filter(Agent.is_active == True)
-            
+            query = db.query(Agent).options(
+                joinedload(Agent.reputation)
+            ).filter(Agent.is_active == True)
+
             if tier:
                 query = query.filter(Agent.tier == tier)
-            
+
             if verified_only:
                 query = query.filter(Agent.verified_at.isnot(None))
-            
+
             if min_trust_score:
                 query = query.join(AgentReputation).filter(
                     AgentReputation.trust_score >= min_trust_score
                 )
-            
+
             agents = query.order_by(desc(Agent.created_at)).offset(offset).limit(limit).all()
             
             profiles = []
@@ -206,6 +195,25 @@ class AgentRegistry:
             
             return profiles
     
+    def count_agents(
+        self,
+        min_trust_score: Optional[int] = None,
+        tier: Optional[str] = None,
+        verified_only: bool = False,
+    ) -> int:
+        """Count agents matching the given filters."""
+        with get_db() as db:
+            query = db.query(func.count(Agent.id)).filter(Agent.is_active == True)
+            if tier:
+                query = query.filter(Agent.tier == tier)
+            if verified_only:
+                query = query.filter(Agent.verified_at.isnot(None))
+            if min_trust_score:
+                query = query.join(AgentReputation).filter(
+                    AgentReputation.trust_score >= min_trust_score
+                )
+            return query.scalar() or 0
+
     def search_agents(
         self,
         query_str: str,
@@ -213,8 +221,10 @@ class AgentRegistry:
     ) -> List[AgentProfile]:
         """Search agents by name"""
         with get_db() as db:
-            agents = db.query(Agent).filter(
-                Agent.agent_name.ilike(f"%{query_str}%"),
+            agents = db.query(Agent).options(
+                joinedload(Agent.reputation)
+            ).filter(
+                Agent.agent_name.ilike(f"%{escape_ilike(query_str)}%"),
                 Agent.is_active == True
             ).limit(limit).all()
             
@@ -254,17 +264,28 @@ class AgentRegistry:
             tier: New tier (verified, premium, enterprise)
         """
         with get_db() as db:
-            agent = db.query(Agent).filter(Agent.id == agent_id).first()
-            
+            # Coerce string to UUID object so the filter works correctly
+            # across both PostgreSQL (native UUID) and SQLite (test backend).
+            try:
+                agent_uuid = _uuid.UUID(agent_id) if isinstance(agent_id, str) else agent_id
+            except ValueError:
+                raise ValueError("Agent not found")
+
+            agent = db.query(Agent).filter(Agent.id == agent_uuid).first()
+
             if not agent:
                 raise ValueError("Agent not found")
-            
+
             agent.tier = tier
             agent.verified_at = datetime.now(timezone.utc)
             agent.verified_by = verified_by
-            
-            db.commit()
-            
+
+            # flush() sends SQL to the DB within the current transaction without
+            # committing. The single authoritative commit is performed by the
+            # get_db() context manager on successful exit. An explicit commit()
+            # here would create a double-commit, breaking rollback guarantees.
+            db.flush()
+
             return {
                 "agent_id": agent_id,
                 "agent_name": agent.agent_name,
@@ -285,21 +306,37 @@ class AgentRegistry:
             "updated": True
         }
     
+    _PRIVATE_PRIVACY_LEVELS = frozenset({"high", "paranoid"})
+
     def _agent_to_profile(self, agent: Agent) -> Optional[AgentProfile]:
-        """Convert agent model to profile"""
+        """Convert agent model to profile.
+
+        Redacts xmr_address for agents with high or paranoid privacy.
+        """
         if not agent:
             return None
-        
+
         rep = agent.reputation
-        
+
+        # Redact ALL wallet addresses for high/paranoid privacy levels
+        privacy = (
+            agent.privacy_level.value
+            if hasattr(agent.privacy_level, "value")
+            else str(agent.privacy_level)
+        )
+        is_private = privacy in self._PRIVATE_PRIVACY_LEVELS
+        xmr_address = None if is_private else agent.xmr_address
+        base_address = None if is_private else agent.base_address
+        solana_address = None if is_private else agent.solana_address
+
         return AgentProfile(
             id=str(agent.id),
             agent_name=agent.agent_name,
             did=agent.did,
             tier=agent.tier.value,
-            xmr_address=agent.xmr_address,
-            base_address=agent.base_address,
-            solana_address=agent.solana_address,
+            xmr_address=xmr_address,
+            base_address=base_address,
+            solana_address=solana_address,
             trust_score=rep.trust_score if rep else 0,
             total_transactions=rep.total_transactions if rep else 0,
             average_rating=float(rep.average_rating) if rep else 0.0,
@@ -310,44 +347,44 @@ class AgentRegistry:
         )
     
     def get_stats(self) -> Dict:
-        """Get registry statistics"""
+        """Get registry statistics (optimized: 3 queries instead of 6)."""
         with get_db() as db:
-            total_agents = db.query(Agent).filter(Agent.is_active == True).count()
-            
-            by_tier = {}
-            for tier in AgentTier:
-                count = db.query(Agent).filter(
-                    Agent.tier == tier,
-                    Agent.is_active == True
-                ).count()
-                by_tier[tier.value] = count
-            
-            verified_count = db.query(Agent).filter(
-                Agent.verified_at.isnot(None),
-                Agent.is_active == True
-            ).count()
-            
+            # Single query: count + group by tier
+            rows = db.query(
+                Agent.tier, func.count(Agent.id)
+            ).filter(Agent.is_active == True).group_by(Agent.tier).all()
+
+            by_tier = {row[0].value: row[1] for row in rows}
+            total = sum(by_tier.values())
+
+            verified_count = db.query(func.count(Agent.id)).filter(
+                Agent.is_active == True, Agent.verified_at.isnot(None)
+            ).scalar()
+
             # Active in last 24h
             day_ago = datetime.now(timezone.utc) - timedelta(hours=24)
-            active_recent = db.query(Agent).filter(
+            active_recent = db.query(func.count(Agent.id)).filter(
                 Agent.last_seen_at >= day_ago
-            ).count()
-            
+            ).scalar()
+
             return {
-                "total_agents": total_agents,
+                "total_agents": total,
                 "by_tier": by_tier,
                 "verified_count": verified_count,
-                "active_last_24h": active_recent
+                "active_last_24h": active_recent,
             }
 
 
 # Global registry
 _registry: Optional[AgentRegistry] = None
+_registry_lock = threading.Lock()
 
 
 def get_registry() -> AgentRegistry:
     """Get global agent registry"""
     global _registry
     if _registry is None:
-        _registry = AgentRegistry()
+        with _registry_lock:
+            if _registry is None:
+                _registry = AgentRegistry()
     return _registry

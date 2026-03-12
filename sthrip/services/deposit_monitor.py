@@ -5,7 +5,6 @@ for incoming transfers and credits agent balances after confirmation.
 
 import asyncio
 import logging
-import os
 import uuid as _uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -16,6 +15,7 @@ from sqlalchemy import text
 
 from ..db.models import AgentBalance, TransactionStatus
 from ..db.repository import BalanceRepository, TransactionRepository, SystemStateRepository
+from sthrip.config import get_settings
 from .wallet_service import WalletService
 
 try:
@@ -61,7 +61,7 @@ class DepositMonitor:
         self._redis = None
 
         if _REDIS_AVAILABLE:
-            redis_url = os.getenv("REDIS_URL")
+            redis_url = get_settings().redis_url or None
             if redis_url:
                 try:
                     self._redis = _redis_lib.from_url(redis_url, decode_responses=True)
@@ -70,7 +70,7 @@ class DepositMonitor:
                     logger.warning("Redis unavailable for deposit lock, using PG advisory lock")
                     self._redis = None
 
-        resolved_network = network or os.getenv("MONERO_NETWORK", "stagenet")
+        resolved_network = network or get_settings().monero_network
         if resolved_network not in _VALID_NETWORKS:
             raise ValueError(
                 f"Invalid MONERO_NETWORK: {resolved_network!r}. "
@@ -198,26 +198,12 @@ return 0
 
     def _do_poll(self) -> None:
         """Core poll logic (acquires its own DB session)."""
-        logger.info("DepositMonitor polling (last_height=%d)", self._last_height)
-        transfers = self.wallet.get_incoming_transfers(
-            min_height=self._last_height,
-        )
-        if not transfers:
-            logger.info("DepositMonitor: no new transfers")
-            return
-        logger.info("DepositMonitor found %d transfer(s)", len(transfers))
-
         with self._db_session_factory() as db:
-            try:
-                self._process_transfers(db, transfers)
-                db.commit()
-            except Exception:
-                db.rollback()
-                raise
+            self._do_poll_with_session(db)
 
     def _do_poll_with_session(self, db) -> None:
-        """Core poll logic using an existing DB session (for PG advisory lock path)."""
-        logger.debug("DepositMonitor polling with session (last_height=%d)", self._last_height)
+        """Core poll logic using an existing DB session."""
+        logger.debug("DepositMonitor polling (last_height=%d)", self._last_height)
         transfers = self.wallet.get_incoming_transfers(
             min_height=self._last_height,
         )
@@ -227,14 +213,21 @@ return 0
         logger.info("DepositMonitor found %d transfer(s)", len(transfers))
 
         try:
-            self._process_transfers(db, transfers)
+            new_height = self._process_transfers(db, transfers)
             db.commit()
+            # Only update in-memory height AFTER successful commit
+            if new_height > self._last_height:
+                self._last_height = new_height
         except Exception:
             db.rollback()
             raise
 
-    def _process_transfers(self, db, transfers: List[Dict]) -> None:
-        """Process a batch of incoming transfers."""
+    def _process_transfers(self, db, transfers: List[Dict]) -> int:
+        """Process a batch of incoming transfers.
+
+        Returns the maximum block height seen so the caller can update
+        ``_last_height`` *after* a successful commit.
+        """
         bal_repo = BalanceRepository(db)
         tx_repo = TransactionRepository(db)
 
@@ -270,41 +263,50 @@ return 0
                     confirmations, height,
                 )
 
-        self._last_height = max_height
-
-        # Persist height to DB for crash recovery
+        # Persist height to DB for crash recovery (will be rolled back with txn if commit fails)
         if max_height > 0:
             state_repo = SystemStateRepository(db)
             state_repo.set(_HEIGHT_KEY, str(max_height))
+
+        return max_height
 
     def _handle_new_transfer(
         self, db, tx_repo, bal_repo, agent_id,
         txid, amount, confirmations, height,
     ) -> None:
         """Handle a newly discovered transfer."""
+        from sqlalchemy.exc import IntegrityError
+
         is_confirmed = confirmations >= self.min_confirmations
         status = "confirmed" if is_confirmed else "pending"
 
-        tx_repo.create(
-            tx_hash=txid,
-            network=self._network,
-            from_agent_id=None,
-            to_agent_id=agent_id,
-            amount=amount,
-            token="XMR",
-            payment_type="hub_routing",
-            status=status,
-        )
+        # Wrap in savepoint so IntegrityError only rolls back THIS insert,
+        # not the entire batch transaction.
+        savepoint = db.begin_nested()
+        try:
+            tx_repo.create(
+                tx_hash=txid,
+                network=self._network,
+                from_agent_id=None,
+                to_agent_id=agent_id,
+                amount=amount,
+                token="XMR",
+                payment_type="hub_routing",
+                status=status,
+            )
+        except IntegrityError:
+            # Duplicate tx_hash — roll back only the savepoint, not the outer tx.
+            savepoint.rollback()
+            logger.warning("Duplicate tx_hash %s — skipping (already processed)", txid)
+            return
 
         if is_confirmed:
             # Directly credit available balance (uses row lock internally)
             bal_repo.deposit(agent_id, amount)
             self._fire_webhook(agent_id, txid, amount)
         else:
-            # Add to pending balance via row lock
-            balance = bal_repo._get_for_update(agent_id)
-            balance.pending = (balance.pending or Decimal("0")) + amount
-            balance.updated_at = datetime.now(tz=timezone.utc)
+            # Add to pending balance via public API (uses row lock internally)
+            bal_repo.add_pending(agent_id, amount)
 
         db.flush()
 
@@ -330,13 +332,7 @@ return 0
             # Move from pending to available (row-locked)
             amount = existing_tx.amount
             bal_repo.deposit(agent_id, amount)
-
-            balance = bal_repo._get_for_update(agent_id)
-            balance.pending = max(
-                (balance.pending or Decimal("0")) - amount,
-                Decimal("0"),
-            )
-            balance.updated_at = datetime.now(tz=timezone.utc)
+            bal_repo.clear_pending_on_confirm(agent_id, amount)
 
             self._fire_webhook(agent_id, existing_tx.tx_hash, amount)
 

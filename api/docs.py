@@ -104,19 +104,14 @@ Use `POST /v2/me/rotate-key` to generate a new key.
 
 ## Rate Limits
 
-Rate limits are enforced per agent tier:
+Rate limits are enforced per rate-limit tier:
 
 | Tier | Requests/min | Burst |
 |------|-------------|-------|
-| free | 30 | 10 |
-| verified | 60 | 20 |
-| premium | 120 | 40 |
-| enterprise | 300 | 100 |
-
-Rate limit headers are included in all responses:
-- `X-RateLimit-Limit` — max requests per window
-- `X-RateLimit-Remaining` — requests remaining
-- `X-RateLimit-Reset` — window reset time (UTC)
+| low | 10 | 5 |
+| standard | 100 | 20 |
+| high | 1,000 | 100 |
+| unlimited | 1,000,000 | 100,000 |
 
 When rate limited, the API returns `429 Too Many Requests`.
 """

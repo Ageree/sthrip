@@ -236,13 +236,16 @@ class BitcoinRPCError(Exception):
 def create_regtest_client() -> BitcoinRPCClient:
     """
     Создает клиент для regtest (для тестирования).
+    Reads configuration from centralized get_settings() instead of os.getenv directly.
     """
+    from sthrip.config import get_settings
+    settings = get_settings()
     return BitcoinRPCClient(
-        host="localhost",
-        port=18443,  # Default regtest RPC port
-        username="bitcoin",
-        password="bitcoin",
-        network="regtest"
+        host=settings.btc_regtest_host,
+        port=settings.btc_regtest_port,
+        username=settings.btc_regtest_user,
+        password=settings.btc_regtest_pass,
+        network="regtest",
     )
 
 

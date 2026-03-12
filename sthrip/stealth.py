@@ -6,10 +6,11 @@ Monero subaddresses provide one-time use addresses for each payment
 import time
 from typing import Optional, List, Dict
 from datetime import datetime, timezone
+import dataclasses
 from dataclasses import asdict
 
 from .types import StealthAddress
-from .wallet import MoneroWalletRPC
+from .wallet import MoneroWalletRPC, WalletRPCError
 
 
 class StealthAddressManager:
@@ -81,8 +82,8 @@ class StealthAddressManager:
             result = self.wallet.get_address_index(address)
             index = result["index"]["minor"]
             if index in self._cache:
-                self._cache[index].used = True
-        except Exception:
+                self._cache[index] = dataclasses.replace(self._cache[index], used=True)
+        except WalletRPCError:
             pass  # Address not found or not ours
     
     def is_ours(self, address: str) -> bool:

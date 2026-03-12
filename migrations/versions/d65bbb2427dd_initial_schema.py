@@ -28,18 +28,18 @@ def upgrade() -> None:
     sa.Column('api_key_hash', sa.String(length=255), nullable=True),
     sa.Column('webhook_url', sa.Text(), nullable=True),
     sa.Column('webhook_secret', sa.String(length=255), nullable=True),
-    sa.Column('privacy_level', sa.Enum('LOW', 'MEDIUM', 'HIGH', 'PARANOID', name='privacylevel'), nullable=True),
+    sa.Column('privacy_level', sa.Enum('low', 'medium', 'high', 'paranoid', name='privacylevel'), nullable=True),
     sa.Column('xmr_address', sa.String(length=255), nullable=True),
     sa.Column('base_address', sa.String(length=255), nullable=True),
     sa.Column('solana_address', sa.String(length=255), nullable=True),
-    sa.Column('tier', sa.Enum('FREE', 'VERIFIED', 'PREMIUM', 'ENTERPRISE', name='agenttier'), nullable=True),
+    sa.Column('tier', sa.Enum('free', 'verified', 'premium', 'enterprise', name='agenttier'), nullable=True),
     sa.Column('verified_at', sa.DateTime(), nullable=True),
     sa.Column('verified_by', sa.String(length=255), nullable=True),
     sa.Column('staked_amount', sa.Numeric(precision=20, scale=8), nullable=True),
     sa.Column('staked_token', sa.String(length=10), nullable=True),
     sa.Column('is_active', sa.Boolean(), nullable=True),
     sa.Column('last_seen_at', sa.DateTime(), nullable=True),
-    sa.Column('rate_limit_tier', sa.Enum('LOW', 'STANDARD', 'HIGH', 'UNLIMITED', name='ratelimittier'), nullable=True),
+    sa.Column('rate_limit_tier', sa.Enum('low', 'standard', 'high', 'unlimited', name='ratelimittier'), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.Column('updated_at', sa.DateTime(), nullable=True),
     sa.PrimaryKeyConstraint('id'),
@@ -54,7 +54,7 @@ def upgrade() -> None:
     sa.Column('amount', sa.Numeric(precision=20, scale=12), nullable=False),
     sa.Column('token', sa.String(length=20), nullable=False),
     sa.Column('usd_value_at_collection', sa.Numeric(precision=20, scale=2), nullable=True),
-    sa.Column('status', sa.Enum('PENDING', 'COLLECTED', 'WITHDRAWN', name='feecollectionstatus'), nullable=True),
+    sa.Column('status', sa.Enum('pending', 'collected', 'withdrawn', name='feecollectionstatus'), nullable=True),
     sa.Column('collection_tx_hash', sa.String(length=255), nullable=True),
     sa.Column('withdrawn_at', sa.DateTime(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),
@@ -134,8 +134,8 @@ def upgrade() -> None:
     sa.Column('amount', sa.Numeric(precision=20, scale=12), nullable=False),
     sa.Column('fee', sa.Numeric(precision=20, scale=12), nullable=True),
     sa.Column('fee_collected', sa.Numeric(precision=20, scale=12), nullable=True),
-    sa.Column('payment_type', sa.Enum('P2P', 'HUB_ROUTING', 'ESCROW_DEPOSIT', 'ESCROW_RELEASE', 'CHANNEL_OPEN', 'CHANNEL_CLOSE', 'FEE_COLLECTION', name='paymenttype'), nullable=True),
-    sa.Column('status', sa.Enum('PENDING', 'CONFIRMED', 'FAILED', 'ORPHANED', name='transactionstatus'), nullable=True),
+    sa.Column('payment_type', sa.Enum('p2p', 'hub_routing', 'escrow_deposit', 'escrow_release', 'channel_open', 'channel_close', 'fee_collection', name='paymenttype'), nullable=True),
+    sa.Column('status', sa.Enum('pending', 'confirmed', 'failed', 'orphaned', name='transactionstatus'), nullable=True),
     sa.Column('block_number', sa.BigInteger(), nullable=True),
     sa.Column('confirmations', sa.Integer(), nullable=True),
     sa.Column('memo', sa.Text(), nullable=True),
@@ -152,7 +152,7 @@ def upgrade() -> None:
     sa.Column('agent_id', sa.UUID(), nullable=False),
     sa.Column('event_type', sa.String(length=100), nullable=False),
     sa.Column('payload', sa.JSON(), nullable=False),
-    sa.Column('status', sa.Enum('PENDING', 'DELIVERED', 'FAILED', 'RETRYING', name='webhookstatus'), nullable=True),
+    sa.Column('status', sa.Enum('pending', 'delivered', 'failed', 'retrying', name='webhookstatus'), nullable=True),
     sa.Column('attempt_count', sa.Integer(), nullable=True),
     sa.Column('max_attempts', sa.Integer(), nullable=True),
     sa.Column('last_response_code', sa.Integer(), nullable=True),
@@ -180,7 +180,7 @@ def upgrade() -> None:
     sa.Column('arbiter_fee_percent', sa.Numeric(precision=5, scale=4), nullable=True),
     sa.Column('arbiter_fee_amount', sa.Numeric(precision=20, scale=12), nullable=True),
     sa.Column('timeout_hours', sa.Integer(), nullable=True),
-    sa.Column('status', sa.Enum('PENDING', 'FUNDED', 'DELIVERED', 'COMPLETED', 'DISPUTED', 'REFUNDED', 'EXPIRED', name='escrowstatus'), nullable=True),
+    sa.Column('status', sa.Enum('pending', 'funded', 'delivered', 'completed', 'disputed', 'refunded', 'expired', name='escrowstatus'), nullable=True),
     sa.Column('deposit_tx_hash', sa.String(length=255), nullable=True),
     sa.Column('release_tx_hash', sa.String(length=255), nullable=True),
     sa.Column('multisig_address', sa.String(length=255), nullable=True),
@@ -215,7 +215,7 @@ def upgrade() -> None:
     sa.Column('fee_collected', sa.Boolean(), nullable=True),
     sa.Column('fee_collected_at', sa.DateTime(), nullable=True),
     sa.Column('instant_confirmation', sa.Boolean(), nullable=True),
-    sa.Column('status', sa.Enum('PENDING', 'CONFIRMED', 'SETTLED', 'FAILED', name='hubroutestatus'), nullable=True),
+    sa.Column('status', sa.Enum('pending', 'confirmed', 'settled', 'failed', name='hubroutestatus'), nullable=True),
     sa.Column('settlement_tx_hash', sa.String(length=255), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.Column('confirmed_at', sa.DateTime(), nullable=True),
@@ -234,7 +234,7 @@ def upgrade() -> None:
     sa.Column('agent_a_id', sa.UUID(), nullable=False),
     sa.Column('agent_b_id', sa.UUID(), nullable=False),
     sa.Column('capacity', sa.Numeric(precision=20, scale=12), nullable=False),
-    sa.Column('status', sa.Enum('PENDING', 'OPEN', 'CLOSING', 'CLOSED', 'DISPUTED', name='channelstatus'), nullable=True),
+    sa.Column('status', sa.Enum('pending', 'open', 'closing', 'closed', 'disputed', name='channelstatus'), nullable=True),
     sa.Column('funding_tx_hash', sa.String(length=255), nullable=True),
     sa.Column('closing_tx_hash', sa.String(length=255), nullable=True),
     sa.Column('multisig_address', sa.String(length=255), nullable=True),
@@ -289,4 +289,15 @@ def downgrade() -> None:
     op.drop_table('fee_collections')
     op.drop_index(op.f('ix_agents_api_key_hash'), table_name='agents')
     op.drop_table('agents')
+    # Drop enum types
+    op.execute("DROP TYPE IF EXISTS privacylevel")
+    op.execute("DROP TYPE IF EXISTS agenttier")
+    op.execute("DROP TYPE IF EXISTS ratelimittier")
+    op.execute("DROP TYPE IF EXISTS feecollectionstatus")
+    op.execute("DROP TYPE IF EXISTS paymenttype")
+    op.execute("DROP TYPE IF EXISTS transactionstatus")
+    op.execute("DROP TYPE IF EXISTS webhookstatus")
+    op.execute("DROP TYPE IF EXISTS escrowstatus")
+    op.execute("DROP TYPE IF EXISTS hubroutestatus")
+    op.execute("DROP TYPE IF EXISTS channelstatus")
     # ### end Alembic commands ###

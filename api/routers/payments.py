@@ -17,7 +17,7 @@ from sthrip.services.idempotency import get_idempotency_store
 from sthrip.services.webhook_service import queue_webhook
 from sthrip.services.audit_logger import log_event as audit_log
 from sthrip.services.metrics import hub_payments_total
-from api.deps import get_current_agent
+from api.deps import get_current_agent, get_fee_collector_dep, get_idempotency_store_dep
 from api.schemas import HubPaymentRequest
 
 logger = logging.getLogger("sthrip")
@@ -40,117 +40,137 @@ async def send_payment():
     raise HTTPException(status_code=501, detail="Direct P2P not available. Use /v2/payments/hub-routing for payments.")
 
 
+def _validate_recipient(to_agent_name):
+    """Look up and validate a recipient agent. Returns the recipient profile."""
+    registry = get_registry()
+    recipient = registry.get_profile(to_agent_name)
+    if not recipient:
+        raise HTTPException(status_code=404, detail="Recipient agent not found")
+    if not recipient.xmr_address:
+        raise HTTPException(status_code=400, detail="Recipient has no XMR address configured")
+    return recipient
+
+
+def _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key):
+    """Atomically deduct sender, credit recipient, create and confirm hub route."""
+    from uuid import UUID as _UUID
+
+    collector = get_fee_collector()
+    total_deduction = fee_info["total_deduction"]
+
+    balance_repo = BalanceRepository(db)
+    try:
+        balance_repo.deduct(agent.id, total_deduction)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Insufficient balance")
+    balance_repo.credit(_UUID(recipient.id), amount)
+
+    route = collector.create_hub_route(
+        from_agent_id=str(agent.id),
+        to_agent_id=recipient.id,
+        amount=amount,
+        from_agent_tier=agent.tier.value,
+        urgency=req.urgency,
+        idempotency_key=idempotency_key,
+        db=db,
+    )
+
+    if route.get("duplicate"):
+        return route
+
+    collector.confirm_hub_route(route["payment_id"], db=db)
+
+    return route
+
+
+def _log_hub_payment(agent, req, route, fee_info, amount):
+    """Log and audit a completed hub payment."""
+    audit_log(
+        "payment.hub_routing",
+        agent_id=agent.id,
+        request_method="POST",
+        request_path="/v2/payments/hub-routing",
+        details={
+            "payment_id": route["payment_id"],
+            "to_agent": req.to_agent_name,
+            "amount": str(amount),
+            "fee": str(fee_info["fee_amount"]),
+        },
+    )
+
+    logger.info(json.dumps({
+        "event": "hub_payment",
+        "payment_id": route["payment_id"],
+        "from_agent": agent.agent_name,
+        "to_agent": req.to_agent_name,
+        "amount": str(amount),
+        "fee": str(fee_info["fee_amount"]),
+        "urgency": req.urgency,
+    }))
+
+
+def _build_hub_payment_response(route, recipient, amount, fee_info, total_deduction):
+    """Build the response dict for a completed hub payment."""
+    return {
+        "payment_id": route["payment_id"],
+        "status": "confirmed",
+        "payment_type": "hub_routing",
+        "recipient": {
+            "agent_name": recipient.agent_name,
+            "address": recipient.xmr_address,
+            "trust_score": recipient.trust_score,
+        },
+        "amount": str(amount),
+        "fee": str(fee_info["fee_amount"]),
+        "fee_percent": str(fee_info["fee_percent"]),
+        "total_deducted": str(total_deduction),
+        "confirmed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @router.post("/hub-routing")
 async def send_hub_routed_payment(
     req: HubPaymentRequest,
     background_tasks: BackgroundTasks,
     agent: Agent = Depends(get_current_agent),
-    idempotency_key: Optional[str] = Header(None),
+    fee_collector=Depends(get_fee_collector_dep),
+    idempotency_store=Depends(get_idempotency_store_dep),
+    idempotency_key: Optional[str] = Header(None, min_length=8, max_length=255),
 ):
     """Send payment via hub routing"""
-    store = get_idempotency_store() if idempotency_key else None
+    store = idempotency_store if idempotency_key else None
     if idempotency_key:
         cached = store.try_reserve(str(agent.id), "hub-routing", idempotency_key)
         if cached is not None:
             return cached
 
     try:
-        from decimal import Decimal
-        from uuid import UUID as _UUID
-
-        registry = get_registry()
-        collector = get_fee_collector()
-
-        recipient = registry.get_profile(req.to_agent_name)
-        if not recipient:
-            raise HTTPException(status_code=404, detail="Recipient agent not found")
-        if not recipient.xmr_address:
-            raise HTTPException(status_code=400, detail="Recipient has no XMR address configured")
-
+        recipient = _validate_recipient(req.to_agent_name)
         amount = req.amount
-        fee_info = collector.calculate_hub_routing_fee(
-            amount=amount,
-            from_agent_tier=agent.tier.value,
-            urgency=req.urgency,
-        )
-        total_deduction = fee_info["total_deduction"]
 
-        # Atomic: deduct sender, credit recipient, create + confirm route in one transaction
         with get_db() as db:
-            balance_repo = BalanceRepository(db)
-            try:
-                balance_repo.deduct(agent.id, total_deduction)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Insufficient balance")
-            balance_repo.credit(_UUID(recipient.id), amount)
-
-            route = collector.create_hub_route(
-                from_agent_id=str(agent.id),
-                to_agent_id=recipient.id,
+            fee_info = fee_collector.calculate_hub_routing_fee(
                 amount=amount,
                 from_agent_tier=agent.tier.value,
                 urgency=req.urgency,
-                idempotency_key=idempotency_key,
-                db=db,
             )
-
-            if route.get("duplicate"):
-                return route
-
-            collector.confirm_hub_route(route["payment_id"], db=db)
+            route = _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key)
+        if route.get("duplicate"):
+            return route
 
         background_tasks.add_task(
-            queue_webhook,
-            str(agent.id),
-            "payment.sent",
-            {
-                "payment_id": route["payment_id"],
-                "amount": float(amount),
-                "to_agent": req.to_agent_name,
-                "fee": float(fee_info["fee_amount"]),
-            },
+            queue_webhook, str(agent.id), "payment.sent",
+            {"payment_id": route["payment_id"], "amount": str(amount),
+             "to_agent": req.to_agent_name, "fee": str(fee_info["fee_amount"])},
         )
 
-        audit_log(
-            "payment.hub_routing",
-            agent_id=agent.id,
-            request_method="POST",
-            request_path="/v2/payments/hub-routing",
-            details={
-                "payment_id": route["payment_id"],
-                "to_agent": req.to_agent_name,
-                "amount": float(amount),
-                "fee": float(fee_info["fee_amount"]),
-            },
+        _log_hub_payment(agent, req, route, fee_info, amount)
+
+        response = _build_hub_payment_response(
+            route, recipient, amount, fee_info, fee_info["total_deduction"],
         )
 
-        logger.info(json.dumps({
-            "event": "hub_payment",
-            "payment_id": route["payment_id"],
-            "from_agent": agent.agent_name,
-            "to_agent": req.to_agent_name,
-            "amount": float(amount),
-            "fee": float(fee_info["fee_amount"]),
-            "urgency": req.urgency,
-        }))
-
-        response = {
-            "payment_id": route["payment_id"],
-            "status": "confirmed",
-            "payment_type": "hub_routing",
-            "recipient": {
-                "agent_name": recipient.agent_name,
-                "address": recipient.xmr_address,
-                "trust_score": recipient.trust_score,
-            },
-            "amount": float(amount),
-            "fee": float(fee_info["fee_amount"]),
-            "fee_percent": float(fee_info["fee_percent"]),
-            "total_deducted": float(total_deduction),
-            "confirmed_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-        hub_payments_total.labels(agent.tier.value, req.urgency).inc()
+        hub_payments_total.labels(status="completed", tier=agent.tier.value).inc()
 
         if idempotency_key:
             store.store_response(str(agent.id), "hub-routing", idempotency_key, response)
@@ -167,30 +187,38 @@ async def send_hub_routed_payment(
 async def get_payment_history(
     direction: Optional[str] = Query(default=None, pattern=r"^(in|out)$"),
     limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     agent: Agent = Depends(get_current_agent),
 ):
     """Get payment history"""
     with get_db() as db:
         repo = TransactionRepository(db)
+        total = repo.count_by_agent(agent_id=agent.id, direction=direction)
         txs = repo.list_by_agent(
             agent_id=agent.id,
             direction=direction,
             limit=limit,
+            offset=offset,
         )
-        return [
-            {
-                "tx_hash": tx.tx_hash,
-                "network": tx.network,
-                "amount": float(tx.amount),
-                "fee": float(tx.fee),
-                "fee_collected": float(tx.fee_collected),
-                "payment_type": tx.payment_type.value,
-                "status": tx.status.value,
-                "memo": tx.memo,
-                "created_at": tx.created_at.isoformat(),
-            }
-            for tx in txs
-        ]
+        return {
+            "items": [
+                {
+                    "tx_hash": tx.tx_hash,
+                    "network": tx.network,
+                    "amount": str(tx.amount),
+                    "fee": str(tx.fee),
+                    "fee_collected": str(tx.fee_collected),
+                    "payment_type": tx.payment_type.value,
+                    "status": tx.status.value,
+                    "memo": tx.memo,
+                    "created_at": tx.created_at.isoformat(),
+                }
+                for tx in txs
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
 
 @router.get("/{payment_id}")
@@ -209,10 +237,10 @@ async def get_payment(
             "payment_id": route.payment_id,
             "from_agent_id": str(route.from_agent_id),
             "to_agent_id": str(route.to_agent_id),
-            "amount": float(route.amount),
+            "amount": str(route.amount),
             "token": route.token,
-            "fee_amount": float(route.fee_amount),
-            "fee_percent": float(route.fee_percent) if route.fee_percent else None,
+            "fee_amount": str(route.fee_amount),
+            "fee_percent": str(route.fee_percent) if route.fee_percent else None,
             "status": route.status.value,
             "created_at": route.created_at.isoformat() if route.created_at else None,
             "confirmed_at": route.confirmed_at.isoformat() if route.confirmed_at else None,

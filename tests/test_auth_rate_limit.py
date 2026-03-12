@@ -63,6 +63,7 @@ def client_with_real_limiter(db_engine, db_session_factory):
     real_limiter.default_tier = RateLimitTier.STANDARD
     real_limiter._local_cache = {}
     real_limiter._cache_lock = __import__("threading").Lock()
+    real_limiter._last_eviction = 0.0
     real_limiter.use_redis = False
     real_limiter.redis = None
 
@@ -100,7 +101,7 @@ def client_with_real_limiter(db_engine, db_session_factory):
 
         # Rate limiter patches
         stack.enter_context(patch("sthrip.services.rate_limiter.get_rate_limiter", return_value=real_limiter))
-        for mod in ["api.main_v2", "api.deps", "api.routers.agents"]:
+        for mod in ["api.main_v2", "api.deps", "api.routers.agents", "api.routers.admin"]:
             stack.enter_context(patch(f"{mod}.get_rate_limiter", return_value=real_limiter))
 
         # Audit log patches
@@ -137,15 +138,15 @@ class TestFailedAuthRateLimiting:
         assert r.status_code == 401
 
     def test_rate_limit_after_many_failed_attempts(self, client_with_real_limiter):
-        """After 20 failed auth attempts from same IP, should return 429."""
-        for i in range(20):
+        """After 5 failed auth attempts from same IP, should return 429."""
+        for i in range(5):
             r = client_with_real_limiter.get(
                 "/v2/me",
                 headers={"Authorization": "Bearer invalid_key"},
             )
             assert r.status_code == 401, f"Attempt {i+1} should be 401"
 
-        # 21st attempt should be rate limited
+        # 6th attempt should be rate limited
         r = client_with_real_limiter.get(
             "/v2/me",
             headers={"Authorization": "Bearer invalid_key"},
@@ -157,7 +158,6 @@ class TestFailedAuthRateLimiting:
         # Register an agent first
         r = client_with_real_limiter.post("/v2/agents/register", json={
             "agent_name": "auth-test-agent",
-            "xmr_address": "test_addr_123",
         })
         assert r.status_code == 201
         valid_key = r.json()["api_key"]
@@ -179,9 +179,29 @@ class TestFailedAuthRateLimiting:
 
     def test_missing_auth_counted_as_failed(self, client_with_real_limiter):
         """Missing auth header should also count toward failed attempts."""
-        for i in range(20):
+        for i in range(5):
             r = client_with_real_limiter.get("/v2/me")
             assert r.status_code == 401
 
         r = client_with_real_limiter.get("/v2/me")
+        assert r.status_code == 429
+
+
+class TestAdminAuthRateLimiting:
+    """Task 6: POST /v2/admin/auth must rate-limit failed attempts."""
+
+    def test_admin_auth_rate_limited_after_failures(self, client_with_real_limiter):
+        """After 5 failed admin auth attempts, 6th should return 429."""
+        for i in range(5):
+            r = client_with_real_limiter.post(
+                "/v2/admin/auth",
+                json={"admin_key": "wrong_key"},
+            )
+            assert r.status_code == 401, f"Attempt {i+1} should be 401"
+
+        # 6th should be rate limited
+        r = client_with_real_limiter.post(
+            "/v2/admin/auth",
+            json={"admin_key": "wrong_key"},
+        )
         assert r.status_code == 429

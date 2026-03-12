@@ -109,7 +109,7 @@ class TestSignPayload:
 
 class TestSendWebhook:
     @pytest.mark.asyncio
-    @patch("sthrip.services.webhook_service.validate_url_target", side_effect=Exception("SSRF"))
+    @patch("sthrip.services.webhook_service.resolve_and_validate", side_effect=Exception("SSRF"))
     async def test_ssrf_blocked(self, mock_validate):
         """SSRF blocked URLs should return failure without sending request."""
         from sthrip.services.url_validator import SSRFBlockedError
@@ -122,7 +122,8 @@ class TestSendWebhook:
         assert "SSRF" in result.error
 
     @pytest.mark.asyncio
-    @patch("sthrip.services.webhook_service.validate_url_target")
+    @patch("sthrip.services.webhook_service.resolve_and_validate",
+           return_value=("https://example.com/hook", "93.184.216.34"))
     async def test_successful_send(self, mock_validate):
         svc = WebhookService()
 
@@ -146,7 +147,8 @@ class TestSendWebhook:
         assert result.response_code == 200
 
     @pytest.mark.asyncio
-    @patch("sthrip.services.webhook_service.validate_url_target")
+    @patch("sthrip.services.webhook_service.resolve_and_validate",
+           return_value=("https://example.com/hook", "93.184.216.34"))
     async def test_non_2xx_returns_failure(self, mock_validate):
         svc = WebhookService()
 
@@ -169,7 +171,8 @@ class TestSendWebhook:
         assert "500" in result.error
 
     @pytest.mark.asyncio
-    @patch("sthrip.services.webhook_service.validate_url_target")
+    @patch("sthrip.services.webhook_service.resolve_and_validate",
+           return_value=("https://example.com/hook", "93.184.216.34"))
     async def test_timeout_returns_failure(self, mock_validate):
         svc = WebhookService()
 
@@ -183,7 +186,8 @@ class TestSendWebhook:
         assert "timeout" in result.error.lower()
 
     @pytest.mark.asyncio
-    @patch("sthrip.services.webhook_service.validate_url_target")
+    @patch("sthrip.services.webhook_service.resolve_and_validate",
+           return_value=("https://example.com/hook", "93.184.216.34"))
     async def test_client_error_returns_failure(self, mock_validate):
         import aiohttp
 
@@ -405,9 +409,80 @@ class TestQueueWebhookConvenience:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# _send_webhook — DNS rebinding prevention (IP pinning)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSendWebhookDNSPinning:
+    """Verify that _send_webhook pins the HTTP request to the resolved IP,
+    preventing DNS rebinding attacks between validation and connection."""
+
+    @pytest.mark.asyncio
+    async def test_request_uses_resolved_ip_with_host_header(self):
+        """The HTTP POST must target the resolved IP (not hostname) and set
+        the Host header to the original hostname."""
+        from sthrip.services.url_validator import resolve_and_validate
+
+        svc = WebhookService()
+        resolved_ip = "93.184.216.34"
+
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.text = AsyncMock(return_value="OK")
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_response)
+
+        with patch(
+            "sthrip.services.webhook_service.resolve_and_validate",
+            return_value=("https://example.com/hook", resolved_ip),
+        ), patch.object(
+            svc, "_get_session", new_callable=AsyncMock, return_value=mock_session
+        ):
+            result = await svc._send_webhook(
+                "https://example.com/hook",
+                {"event_id": "evt_pin", "type": "test"},
+                secret="sec",
+            )
+
+        assert result.success is True
+
+        # Verify the actual URL passed to session.post uses the resolved IP
+        call_args = mock_session.post.call_args
+        actual_url = call_args[0][0] if call_args[0] else call_args[1]["url"]
+        assert resolved_ip in actual_url
+        assert "example.com" not in actual_url
+
+        # Verify Host header is set to original hostname
+        actual_headers = call_args[1].get("headers") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1].get("headers")
+        assert actual_headers["Host"] == "example.com"
+
+    @pytest.mark.asyncio
+    async def test_ssrf_blocked_by_resolve_and_validate(self):
+        """When resolve_and_validate raises SSRFBlockedError, request is not sent."""
+        from sthrip.services.url_validator import SSRFBlockedError
+
+        svc = WebhookService()
+
+        with patch(
+            "sthrip.services.webhook_service.resolve_and_validate",
+            side_effect=SSRFBlockedError("resolves to private IP"),
+        ):
+            result = await svc._send_webhook(
+                "https://evil.com/hook", {"event_id": "evt_bad"}
+            )
+
+        assert result.success is False
+        assert "SSRF" in result.error
+
+
 class TestSendWebhookGenericException:
     @pytest.mark.asyncio
-    @patch("sthrip.services.webhook_service.validate_url_target")
+    @patch("sthrip.services.webhook_service.resolve_and_validate",
+           return_value=("https://example.com/hook", "93.184.216.34"))
     async def test_generic_exception_returns_failure(self, mock_validate):
         """A non-aiohttp, non-timeout exception is caught as 'Unexpected error'."""
         svc = WebhookService()
@@ -429,12 +504,18 @@ class TestSendWebhookGenericException:
 class TestProcessEvent:
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
-    async def test_event_not_found(self, mock_get_db):
+    @patch("sthrip.services.webhook_service.AgentRepository")
+    @patch("sthrip.services.webhook_service.WebhookRepository")
+    async def test_event_not_found(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
         """Returns failure when event_id does not exist."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
-        mock_db.query.return_value.filter.return_value.first.return_value = None
+
+        mock_webhook_repo = MagicMock()
+        # Phase 1 now uses the locking read
+        mock_webhook_repo.get_by_id_for_update.return_value = None
+        mock_webhook_repo_cls.return_value = mock_webhook_repo
 
         svc = WebhookService()
         result = await svc.process_event("nonexistent")
@@ -443,8 +524,9 @@ class TestProcessEvent:
 
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_no_webhook_url_marks_delivered(self, mock_repo_cls, mock_get_db):
+    async def test_no_webhook_url_marks_delivered(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
         """When agent has no webhook_url, event is marked as delivered."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
@@ -457,25 +539,37 @@ class TestProcessEvent:
         mock_agent = MagicMock()
         mock_agent.webhook_url = None
 
-        # First query returns event, second returns agent
-        mock_db.query.return_value.filter.return_value.first.side_effect = [mock_event, mock_agent]
+        mock_webhook_repo = MagicMock()
+        # Phase 1 now uses the locking read
+        mock_webhook_repo.get_by_id_for_update.return_value = mock_event
+        mock_webhook_repo_cls.return_value = mock_webhook_repo
 
-        mock_repo_instance = MagicMock()
-        mock_repo_cls.return_value = mock_repo_instance
+        mock_agent_repo = MagicMock()
+        mock_agent_repo.get_by_id.return_value = mock_agent
+        mock_agent_repo_cls.return_value = mock_agent_repo
 
         svc = WebhookService()
         result = await svc.process_event("evt_1")
         assert result.success is True
-        mock_repo_instance.mark_delivered.assert_called_once()
+        mock_webhook_repo.mark_delivered.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_successful_delivery(self, mock_repo_cls, mock_get_db):
+    async def test_successful_delivery(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
         """Successful webhook delivery marks event as delivered."""
-        mock_db = MagicMock()
-        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+        from sthrip.db.models import WebhookStatus
+
+        mock_db1 = MagicMock()
+        mock_db2 = MagicMock()
+        ctx1 = MagicMock()
+        ctx1.__enter__ = MagicMock(return_value=mock_db1)
+        ctx1.__exit__ = MagicMock(return_value=False)
+        ctx2 = MagicMock()
+        ctx2.__enter__ = MagicMock(return_value=mock_db2)
+        ctx2.__exit__ = MagicMock(return_value=False)
+        mock_get_db.side_effect = [ctx1, ctx2]
 
         mock_event = MagicMock()
         mock_event.agent_id = "agent_1"
@@ -484,11 +578,25 @@ class TestProcessEvent:
         mock_agent = MagicMock()
         mock_agent.webhook_url = "https://example.com/hook"
         mock_agent.webhook_secret = "secret"
+        mock_agent.id = "agent_1"
 
-        mock_db.query.return_value.filter.return_value.first.side_effect = [mock_event, mock_agent]
+        # AgentRepository.get_webhook_secret returns decrypted plaintext
+        mock_agent_repo_instance = MagicMock()
+        mock_agent_repo_instance.get_by_id.return_value = mock_agent
+        mock_agent_repo_instance.get_webhook_secret.return_value = "whsec_plaintext"
+        mock_agent_repo_cls.return_value = mock_agent_repo_instance
 
-        mock_repo_instance = MagicMock()
-        mock_repo_cls.return_value = mock_repo_instance
+        # Phase 1 repo: locking read returns the event
+        mock_webhook_repo_phase1 = MagicMock()
+        mock_webhook_repo_phase1.get_by_id_for_update.return_value = mock_event
+
+        # Phase 3 repo: status check returns pending so write proceeds
+        mock_current_event = MagicMock()
+        mock_current_event.status = WebhookStatus.PENDING
+        mock_webhook_repo_phase3 = MagicMock()
+        mock_webhook_repo_phase3.get_by_id.return_value = mock_current_event
+
+        mock_webhook_repo_cls.side_effect = [mock_webhook_repo_phase1, mock_webhook_repo_phase3]
 
         svc = WebhookService()
         with patch.object(svc, "_send_webhook", new_callable=AsyncMock,
@@ -496,16 +604,25 @@ class TestProcessEvent:
             result = await svc.process_event("evt_1")
 
         assert result.success is True
-        mock_repo_instance.mark_delivered.assert_called_once()
+        mock_webhook_repo_phase3.mark_delivered.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_failed_delivery_schedules_retry(self, mock_repo_cls, mock_get_db):
+    async def test_failed_delivery_schedules_retry(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
         """Failed webhook delivery schedules a retry."""
-        mock_db = MagicMock()
-        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+        from sthrip.db.models import WebhookStatus
+
+        mock_db1 = MagicMock()
+        mock_db2 = MagicMock()
+        ctx1 = MagicMock()
+        ctx1.__enter__ = MagicMock(return_value=mock_db1)
+        ctx1.__exit__ = MagicMock(return_value=False)
+        ctx2 = MagicMock()
+        ctx2.__enter__ = MagicMock(return_value=mock_db2)
+        ctx2.__exit__ = MagicMock(return_value=False)
+        mock_get_db.side_effect = [ctx1, ctx2]
 
         mock_event = MagicMock()
         mock_event.agent_id = "agent_1"
@@ -514,11 +631,25 @@ class TestProcessEvent:
         mock_agent = MagicMock()
         mock_agent.webhook_url = "https://example.com/hook"
         mock_agent.webhook_secret = None
+        mock_agent.id = "agent_1"
 
-        mock_db.query.return_value.filter.return_value.first.side_effect = [mock_event, mock_agent]
+        # AgentRepository.get_webhook_secret returns None (no secret configured)
+        mock_agent_repo_instance = MagicMock()
+        mock_agent_repo_instance.get_by_id.return_value = mock_agent
+        mock_agent_repo_instance.get_webhook_secret.return_value = None
+        mock_agent_repo_cls.return_value = mock_agent_repo_instance
 
-        mock_repo_instance = MagicMock()
-        mock_repo_cls.return_value = mock_repo_instance
+        # Phase 1 repo: locking read returns the event
+        mock_webhook_repo_phase1 = MagicMock()
+        mock_webhook_repo_phase1.get_by_id_for_update.return_value = mock_event
+
+        # Phase 3 repo: status check returns pending so write proceeds
+        mock_current_event = MagicMock()
+        mock_current_event.status = WebhookStatus.PENDING
+        mock_webhook_repo_phase3 = MagicMock()
+        mock_webhook_repo_phase3.get_by_id.return_value = mock_current_event
+
+        mock_webhook_repo_cls.side_effect = [mock_webhook_repo_phase1, mock_webhook_repo_phase3]
 
         svc = WebhookService()
         with patch.object(svc, "_send_webhook", new_callable=AsyncMock,
@@ -526,7 +657,7 @@ class TestProcessEvent:
             result = await svc.process_event("evt_1")
 
         assert result.success is False
-        mock_repo_instance.schedule_retry.assert_called_once()
+        mock_webhook_repo_phase3.schedule_retry.assert_called_once()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -609,3 +740,258 @@ class TestStartWorkerErrorHandling:
             await svc.start_worker(interval_seconds=0)
 
         assert call_count == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# process_event — session split (HIGH-3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestProcessEventSessionSplit:
+    """Verify that process_event uses separate DB sessions for read and write,
+    so the HTTP call happens without holding a DB connection."""
+
+    @pytest.mark.asyncio
+    @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.AgentRepository")
+    @patch("sthrip.services.webhook_service.WebhookRepository")
+    async def test_uses_two_separate_sessions(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
+        """get_db() should be called twice: once for read, once for write."""
+        mock_db1 = MagicMock()
+        mock_db2 = MagicMock()
+        call_count = [0]
+
+        class _FakeCtx:
+            def __init__(self, db):
+                self._db = db
+            def __enter__(self):
+                return self._db
+            def __exit__(self, *a):
+                return False
+
+        def _side_effect():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return _FakeCtx(mock_db1)
+            return _FakeCtx(mock_db2)
+
+        mock_get_db.side_effect = _side_effect
+
+        mock_event = MagicMock()
+        mock_event.agent_id = "agent_1"
+        mock_event.payload = {"event_id": "evt_split"}
+
+        mock_agent = MagicMock()
+        mock_agent.webhook_url = "https://example.com/hook"
+        mock_agent.id = "agent_1"
+
+        from sthrip.db.models import WebhookStatus
+
+        # Phase 1 repo: locking read
+        mock_webhook_repo_phase1 = MagicMock()
+        mock_webhook_repo_phase1.get_by_id_for_update.return_value = mock_event
+
+        # Phase 3 repo: status still pending
+        mock_current_event = MagicMock()
+        mock_current_event.status = WebhookStatus.PENDING
+        mock_webhook_repo_phase3 = MagicMock()
+        mock_webhook_repo_phase3.get_by_id.return_value = mock_current_event
+
+        mock_webhook_repo_cls.side_effect = [mock_webhook_repo_phase1, mock_webhook_repo_phase3]
+
+        mock_agent_repo = MagicMock()
+        mock_agent_repo.get_by_id.return_value = mock_agent
+        mock_agent_repo.get_webhook_secret.return_value = "whsec_test"
+        mock_agent_repo_cls.return_value = mock_agent_repo
+
+        svc = WebhookService()
+        with patch.object(svc, "_send_webhook", new_callable=AsyncMock,
+                          return_value=WebhookResult(success=True, response_code=200, response_body="OK")):
+            result = await svc.process_event("evt_split")
+
+        assert result.success is True
+        # get_db was called exactly twice (read + write)
+        assert call_count[0] == 2
+
+    @pytest.mark.asyncio
+    @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.AgentRepository")
+    @patch("sthrip.services.webhook_service.WebhookRepository")
+    async def test_no_agent_uses_single_session(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
+        """When agent has no webhook_url, only one session needed (mark_delivered in phase 1)."""
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_event = MagicMock()
+        mock_event.agent_id = "agent_1"
+        mock_event.payload = {"event_id": "evt_1"}
+
+        mock_agent = MagicMock()
+        mock_agent.webhook_url = None
+
+        mock_webhook_repo = MagicMock()
+        # Phase 1 uses locking read
+        mock_webhook_repo.get_by_id_for_update.return_value = mock_event
+        mock_webhook_repo_cls.return_value = mock_webhook_repo
+
+        mock_agent_repo = MagicMock()
+        mock_agent_repo.get_by_id.return_value = mock_agent
+        mock_agent_repo_cls.return_value = mock_agent_repo
+
+        svc = WebhookService()
+        result = await svc.process_event("evt_1")
+        assert result.success is True
+        # get_db called only once (no HTTP call, no second session needed)
+        assert mock_get_db.call_count == 1
+
+    @pytest.mark.asyncio
+    @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.AgentRepository")
+    @patch("sthrip.services.webhook_service.WebhookRepository")
+    async def test_failed_delivery_writes_retry_in_phase3(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
+        """Failed delivery should schedule_retry in the second (write) session."""
+        from sthrip.db.models import WebhookStatus
+
+        mock_db1 = MagicMock()
+        mock_db2 = MagicMock()
+        call_count = [0]
+
+        class _FakeCtx:
+            def __init__(self, db):
+                self._db = db
+            def __enter__(self):
+                return self._db
+            def __exit__(self, *a):
+                return False
+
+        def _side_effect():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return _FakeCtx(mock_db1)
+            return _FakeCtx(mock_db2)
+
+        mock_get_db.side_effect = _side_effect
+
+        mock_event = MagicMock()
+        mock_event.agent_id = "agent_1"
+        mock_event.payload = {"event_id": "evt_fail"}
+
+        mock_agent = MagicMock()
+        mock_agent.webhook_url = "https://example.com/hook"
+        mock_agent.id = "agent_1"
+
+        # Phase 1 webhook repo (read) — locking read
+        mock_webhook_repo_read = MagicMock()
+        mock_webhook_repo_read.get_by_id_for_update.return_value = mock_event
+
+        # Phase 3 webhook repo (write) — status still pending so write proceeds
+        mock_current_event = MagicMock()
+        mock_current_event.status = WebhookStatus.PENDING
+        mock_webhook_repo_write = MagicMock()
+        mock_webhook_repo_write.get_by_id.return_value = mock_current_event
+
+        webhook_repos = [mock_webhook_repo_read, mock_webhook_repo_write]
+        mock_webhook_repo_cls.side_effect = webhook_repos
+
+        mock_agent_repo = MagicMock()
+        mock_agent_repo.get_by_id.return_value = mock_agent
+        mock_agent_repo.get_webhook_secret.return_value = None
+        mock_agent_repo_cls.return_value = mock_agent_repo
+
+        svc = WebhookService()
+        with patch.object(svc, "_send_webhook", new_callable=AsyncMock,
+                          return_value=WebhookResult(success=False, error="HTTP 500")):
+            result = await svc.process_event("evt_fail")
+
+        assert result.success is False
+        mock_webhook_repo_write.schedule_retry.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WebhookRepository.get_pending_events uses FOR UPDATE SKIP LOCKED
+# ─────────────────────────────────────────────────────────────────────────────
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sthrip.db.models import Base, WebhookEvent, WebhookStatus, Agent, AgentReputation
+from sthrip.db.repository import WebhookRepository
+
+
+class TestGetPendingEventsLocking:
+    @pytest.fixture
+    def db_session(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[
+            Agent.__table__,
+            AgentReputation.__table__,
+            WebhookEvent.__table__,
+        ])
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        yield session
+        session.close()
+
+    @pytest.fixture
+    def agent(self, db_session):
+        from sthrip.db.models import AgentTier, RateLimitTier, PrivacyLevel
+        agent = Agent(
+            agent_name="webhook-test-agent",
+            api_key_hash="webhooktesthash",
+            tier=AgentTier.FREE,
+            rate_limit_tier=RateLimitTier.STANDARD,
+            privacy_level=PrivacyLevel.MEDIUM,
+            is_active=True,
+        )
+        db_session.add(agent)
+        db_session.flush()
+        return agent
+
+    def test_get_pending_events_uses_skip_locked(self, db_session, agent):
+        """get_pending_events must apply with_for_update(skip_locked=True)."""
+        repo = WebhookRepository(db_session)
+
+        # Create 3 pending events
+        for i in range(3):
+            repo.create_event(agent.id, "test.event", {"i": i})
+        db_session.flush()
+
+        # Monkey-patch the query to track with_for_update calls
+        original_query = db_session.query
+
+        for_update_called = {"skip_locked": None}
+
+        class _TrackingQuery:
+            def __init__(self, *args, **kwargs):
+                self._q = original_query(*args, **kwargs)
+
+            def __getattr__(self, name):
+                result = getattr(self._q, name)
+                if callable(result):
+                    def wrapper(*a, **kw):
+                        r = result(*a, **kw)
+                        if name == "with_for_update":
+                            for_update_called["skip_locked"] = kw.get("skip_locked", False)
+                        # Wrap returned query-like objects
+                        if hasattr(r, "filter") or hasattr(r, "order_by") or hasattr(r, "limit"):
+                            return _TrackingQuery._wrap(r, for_update_called)
+                        return r
+                    return wrapper
+                return result
+
+            @staticmethod
+            def _wrap(q, tracker):
+                """Wrap a query to track with_for_update."""
+                original_wfu = getattr(q, "with_for_update", None)
+                if original_wfu:
+                    def tracked_wfu(*a, **kw):
+                        tracker["skip_locked"] = kw.get("skip_locked", False)
+                        return original_wfu(*a, **kw)
+                    q.with_for_update = tracked_wfu
+                return q
+
+        db_session.query = lambda *a, **kw: _TrackingQuery(*a, **kw)
+
+        events = repo.get_pending_events(limit=2)
+        assert len(events) == 2
+        assert for_update_called["skip_locked"] is True

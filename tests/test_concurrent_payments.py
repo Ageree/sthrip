@@ -5,121 +5,10 @@ Verifies that balance operations are atomic and consistent
 under concurrent access. Uses threads to simulate parallel requests.
 """
 import os
-import contextlib
 import threading
 import pytest
-from decimal import Decimal
-from unittest.mock import patch, MagicMock
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-from contextlib import contextmanager
 
-from sthrip.db.models import (
-    Base, Agent, AgentReputation, AgentBalance, HubRoute, FeeCollection
-)
-
-_TEST_TABLES = [
-    Agent.__table__,
-    AgentReputation.__table__,
-    AgentBalance.__table__,
-    HubRoute.__table__,
-    FeeCollection.__table__,
-]
-
-
-@pytest.fixture
-def db_engine():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine, tables=_TEST_TABLES)
-    return engine
-
-
-@pytest.fixture
-def db_session_factory(db_engine):
-    return sessionmaker(bind=db_engine, expire_on_commit=False)
-
-
-@pytest.fixture
-def client(db_engine, db_session_factory):
-    @contextmanager
-    def get_test_db():
-        session = db_session_factory()
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    mock_limiter = MagicMock()
-    mock_limiter.check_rate_limit.return_value = None
-    mock_limiter.check_ip_rate_limit.return_value = None
-    mock_limiter.get_limit_status.return_value = {"requests_remaining": 100}
-
-    mock_monitor = MagicMock()
-    mock_monitor.get_health_report.return_value = {
-        "status": "healthy",
-        "timestamp": "2026-03-03T00:00:00",
-        "checks": {},
-    }
-    mock_monitor.get_alerts.return_value = []
-
-    mock_webhook = MagicMock()
-    mock_webhook.get_delivery_stats.return_value = {"total": 0}
-
-    with contextlib.ExitStack() as stack:
-        stack.enter_context(patch.dict(os.environ, {"HUB_MODE": "ledger"}))
-
-        # Database patches
-        for mod in [
-            "sthrip.db.database",
-            "sthrip.services.agent_registry",
-            "sthrip.services.fee_collector",
-            "sthrip.services.webhook_service",
-            "api.main_v2",
-            "api.deps",
-            "api.routers.health",
-            "api.routers.agents",
-            "api.routers.payments",
-            "api.routers.balance",
-            "api.routers.webhooks",
-        ]:
-            stack.enter_context(patch(f"{mod}.get_db", side_effect=get_test_db))
-
-        stack.enter_context(patch("sthrip.db.database.create_tables"))
-
-        # Rate limiter patches
-        stack.enter_context(patch("sthrip.services.rate_limiter.get_rate_limiter", return_value=mock_limiter))
-        for mod in ["api.main_v2", "api.deps", "api.routers.agents"]:
-            stack.enter_context(patch(f"{mod}.get_rate_limiter", return_value=mock_limiter))
-
-        # Audit log patches
-        for mod in [
-            "api.main_v2",
-            "api.deps",
-            "api.routers.agents",
-            "api.routers.payments",
-            "api.routers.balance",
-            "api.routers.admin",
-        ]:
-            stack.enter_context(patch(f"{mod}.audit_log"))
-
-        # Monitoring & webhook patches
-        stack.enter_context(patch("sthrip.services.monitoring.get_monitor", return_value=mock_monitor))
-        stack.enter_context(patch("sthrip.services.monitoring.setup_default_monitoring", return_value=mock_monitor))
-        stack.enter_context(patch("sthrip.services.webhook_service.get_webhook_service", return_value=mock_webhook))
-        stack.enter_context(patch("sthrip.services.webhook_service.queue_webhook"))
-
-        from api.main_v2 import app
-        yield TestClient(app, raise_server_exceptions=False)
+# Uses shared client fixture from conftest.py (db_engine, db_session_factory, client).
 
 
 def _register_agent(client, name, xmr_address=None):
@@ -149,7 +38,7 @@ def _get_balance(client, api_key):
     )
     assert resp.status_code == 200
     data = resp.json()
-    return data.get("available", 0)
+    return float(data.get("available", 0))
 
 
 class TestConcurrentDeductions:
@@ -245,7 +134,7 @@ class TestConcurrentDeductions:
         Requires PostgreSQL with FOR UPDATE support.
         """
         a_id, a_key = _register_agent(client, "idem_sender")
-        b_id, b_key = _register_agent(client, "idem_receiver_xmr", xmr_address="addr_" + "r" * 90)
+        b_id, b_key = _register_agent(client, "idem_receiver_xmr", xmr_address="5" + "r" * 94)
         _deposit(client, a_key, 10.0)
 
         results = []
