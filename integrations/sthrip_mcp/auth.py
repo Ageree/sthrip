@@ -51,15 +51,22 @@ def load_api_key() -> Optional[str]:
 
 
 def save_api_key(api_key: str) -> Path:
-    """Save API key to ~/.sthrip/credentials.json.
+    """Save API key to ~/.sthrip/credentials.json (read-merge-write).
 
+    Preserves existing fields (agent_name, base_url) written by CLI or other tools.
     Returns the path where credentials were saved.
     """
     CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
 
-    data = {"api_key": api_key}
+    existing = {}
+    try:
+        existing = json.loads(CREDENTIALS_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+    existing["api_key"] = api_key
     CREDENTIALS_FILE.write_text(
-        json.dumps(data, indent=2),
+        json.dumps(existing, indent=2),
         encoding="utf-8",
     )
 
