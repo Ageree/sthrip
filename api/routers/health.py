@@ -72,11 +72,11 @@ async def readiness():
             await asyncio.to_thread(wallet_svc.wallet.get_height)
             checks["wallet_rpc"] = "ok"
         except Exception:
-            checks["wallet_rpc"] = "failed"
-            logger.warning("Readiness check failed: %s", checks)
-            return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
+            checks["wallet_rpc"] = "unavailable"
+            logger.warning("Wallet RPC unavailable (non-blocking): %s", checks)
 
-    return {"status": "ready", "checks": checks}
+    status = "ready" if checks.get("wallet_rpc", "ok") == "ok" else "degraded"
+    return {"status": status, "checks": checks}
 
 
 @router.get("/metrics")
