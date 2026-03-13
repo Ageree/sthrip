@@ -2,14 +2,13 @@
 Database connection and session management
 """
 
-import os
 import threading
 from contextlib import contextmanager
 
 from sthrip.config import get_settings
 from typing import Generator, Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool
 
@@ -78,7 +77,7 @@ def drop_tables():
     """Drop all tables. Only allowed in dev/test environments."""
     from .models import Base
     settings = get_settings()
-    if settings.environment not in ("dev", "test"):
+    if settings.environment not in ("dev",):
         raise RuntimeError(
             f"drop_tables() is disabled in '{settings.environment}' environment"
         )
@@ -103,6 +102,14 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def _reject_readonly_writes(session, flush_context, instances):
+    """Event listener that blocks flush on readonly sessions."""
+    if session.info.get("readonly"):
+        raise RuntimeError(
+            "Write operation rejected: this is a readonly session"
+        )
+
+
 @contextmanager
 def get_db_readonly() -> Generator[Session, None, None]:
     """Get read-only database session (no auto-commit, writes rejected)."""
@@ -111,10 +118,13 @@ def get_db_readonly() -> Generator[Session, None, None]:
     db = _SessionFactory()
     db.info["readonly"] = True
     db.autoflush = False
+
     try:
+        event.listen(db, "before_flush", _reject_readonly_writes)
         yield db
     except Exception:
         db.rollback()
         raise
     finally:
+        event.remove(db, "before_flush", _reject_readonly_writes)
         db.close()

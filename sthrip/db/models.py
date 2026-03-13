@@ -159,6 +159,7 @@ class Transaction(Base):
 
     __table_args__ = (
         Index("ix_transactions_status", "status"),
+        Index("ix_transactions_status_created", "status", "created_at"),
         Index("ix_transactions_from_agent_created", "from_agent_id", "created_at"),
         Index("ix_transactions_to_agent_created", "to_agent_id", "created_at"),
     )
@@ -371,6 +372,10 @@ class FeeCollection(Base):
     withdrawn_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=func.now())
+
+    __table_args__ = (
+        Index("ix_fee_collections_status_created", "status", "created_at"),
+    )
 
 
 class SystemState(Base):

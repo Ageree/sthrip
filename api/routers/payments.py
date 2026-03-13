@@ -2,9 +2,9 @@
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Depends, Header, BackgroundTasks, Query
 
@@ -41,7 +41,12 @@ async def send_payment():
 
 
 def _validate_recipient(to_agent_name):
-    """Look up and validate a recipient agent. Returns the recipient profile."""
+    """Look up and validate a recipient agent. Returns the recipient profile.
+
+    NOTE: This opens its own DB session via the registry.  Prefer
+    ``_validate_recipient_in_session`` inside an existing session to avoid
+    race conditions between lookup and transfer.
+    """
     registry = get_registry()
     recipient = registry.get_profile(to_agent_name)
     if not recipient:
@@ -51,20 +56,67 @@ def _validate_recipient(to_agent_name):
     return recipient
 
 
-def _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key):
-    """Atomically deduct sender, credit recipient, create and confirm hub route."""
+def _validate_recipient_in_session(db, to_agent_name: str) -> Agent:
+    """Validate recipient within the same DB session as the transfer.
+
+    This ensures no race condition between lookup and deactivation.
+    """
+    agent = db.query(Agent).filter(
+        Agent.agent_name == to_agent_name,
+    ).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Recipient agent not found")
+    if not agent.is_active:
+        raise HTTPException(status_code=400, detail="Recipient agent is not active")
+    if not agent.xmr_address:
+        raise HTTPException(status_code=400, detail="Recipient has no XMR address configured")
+    return agent
+
+
+def _check_not_self_payment(sender_id, recipient_agent) -> None:
+    """Reject self-payments: sender cannot be the recipient."""
+    if str(sender_id) == str(recipient_agent.id):
+        raise HTTPException(status_code=400, detail="Cannot send payment to yourself")
+
+
+def _build_recipient_profile(agent: Agent):
+    """Build a lightweight profile object from an Agent ORM model for response building.
+
+    Returns a simple dataclass with the fields needed by ``_build_hub_payment_response``
+    and ``_execute_hub_transfer``: id, agent_name, xmr_address, trust_score.
+    """
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class _RecipientProfile:
+        id: str
+        agent_name: str
+        xmr_address: str
+        trust_score: int
+
+    reputation = getattr(agent, "reputation", None)
+    trust_score = reputation.trust_score if reputation else 0
+
+    return _RecipientProfile(
+        id=str(agent.id),
+        agent_name=agent.agent_name,
+        xmr_address=agent.xmr_address,
+        trust_score=trust_score,
+    )
+
+
+def _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key, fee_collector=None):
+    """Atomically deduct sender, credit recipient, create and confirm hub route.
+
+    The duplicate check (via create_hub_route) runs BEFORE balance mutations
+    to prevent double-credit on idempotent replay.
+    """
     from uuid import UUID as _UUID
 
-    collector = get_fee_collector()
+    collector = fee_collector or get_fee_collector()
     total_deduction = fee_info["total_deduction"]
 
-    balance_repo = BalanceRepository(db)
-    try:
-        balance_repo.deduct(agent.id, total_deduction)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Insufficient balance")
-    balance_repo.credit(_UUID(recipient.id), amount)
-
+    # Check for idempotent duplicate BEFORE any balance mutations
     route = collector.create_hub_route(
         from_agent_id=str(agent.id),
         to_agent_id=recipient.id,
@@ -77,6 +129,13 @@ def _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempoten
 
     if route.get("duplicate"):
         return route
+
+    balance_repo = BalanceRepository(db)
+    try:
+        balance_repo.deduct(agent.id, total_deduction)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Insufficient balance")
+    balance_repo.credit(_UUID(recipient.id), amount)
 
     collector.confirm_hub_route(route["payment_id"], db=db)
 
@@ -145,16 +204,21 @@ async def send_hub_routed_payment(
             return cached
 
     try:
-        recipient = _validate_recipient(req.to_agent_name)
         amount = req.amount
 
         with get_db() as db:
+            # Validate recipient IN THE SAME session as the transfer to
+            # prevent race between lookup and deactivation (HIGH-1 fix).
+            recipient_agent = _validate_recipient_in_session(db, req.to_agent_name)
+            _check_not_self_payment(agent.id, recipient_agent)
+            recipient = _build_recipient_profile(recipient_agent)
+
             fee_info = fee_collector.calculate_hub_routing_fee(
                 amount=amount,
                 from_agent_tier=agent.tier.value,
                 urgency=req.urgency,
             )
-            route = _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key)
+            route = _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key, fee_collector=fee_collector)
         if route.get("duplicate"):
             return route
 
@@ -223,12 +287,12 @@ async def get_payment_history(
 
 @router.get("/{payment_id}")
 async def get_payment(
-    payment_id: str,
+    payment_id: UUID,
     agent: Agent = Depends(get_current_agent),
 ):
     """Look up a hub-routing payment by ID"""
     with get_db() as db:
-        route = db.query(HubRoute).filter(HubRoute.payment_id == payment_id).first()
+        route = db.query(HubRoute).filter(HubRoute.payment_id == str(payment_id)).first()
         if not route:
             raise HTTPException(status_code=404, detail="Payment not found")
         if route.from_agent_id != agent.id and route.to_agent_id != agent.id:

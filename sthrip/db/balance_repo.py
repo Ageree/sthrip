@@ -44,10 +44,15 @@ class BalanceRepository:
                 savepoint.rollback()
             else:
                 self.db.rollback()
-            return self.db.query(AgentBalance).filter(
+            balance = self.db.query(AgentBalance).filter(
                 AgentBalance.agent_id == agent_id,
                 AgentBalance.token == token,
             ).first()
+            if balance is None:
+                raise RuntimeError(
+                    f"Balance record for agent {agent_id} vanished after race condition"
+                )
+            return balance
 
     def _get_for_update(self, agent_id: UUID, token: str = "XMR") -> AgentBalance:
         """Get balance with row-level lock for safe mutations.
@@ -90,6 +95,10 @@ class BalanceRepository:
                         AgentBalance.agent_id == agent_id,
                         AgentBalance.token == token
                     ).with_for_update().first()
+        if balance is None:
+            raise RuntimeError(
+                f"Balance record for agent {agent_id} could not be created or found"
+            )
         return balance
 
     def get_available(self, agent_id: UUID, token: str = "XMR") -> Decimal:

@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 
-ADMIN_KEY = "test-admin-key-for-tests"
+ADMIN_KEY = "test-admin-key-for-tests-long-enough-32"
 
 
 @pytest.fixture

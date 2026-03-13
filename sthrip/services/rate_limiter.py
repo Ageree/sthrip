@@ -112,12 +112,16 @@ class RateLimiter:
 
         if REDIS_AVAILABLE:
             redis_url = redis_url or settings.redis_url
-            try:
-                self.redis = redis.from_url(redis_url, decode_responses=True)
-                self.redis.ping()
-                self.use_redis = True
-            except (redis.ConnectionError, redis.ResponseError):
+            if not redis_url:
+                self.redis = None
                 self._handle_redis_unavailable(fail_open)
+            else:
+                try:
+                    self.redis = redis.from_url(redis_url, decode_responses=True)
+                    self.redis.ping()
+                    self.use_redis = True
+                except (redis.ConnectionError, redis.ResponseError, ValueError):
+                    self._handle_redis_unavailable(fail_open)
         else:
             self.redis = None
             self._handle_redis_unavailable(fail_open)
@@ -202,10 +206,15 @@ class RateLimiter:
         now = time.time()
         window = 60  # 1 minute window
 
-        result = self.redis.eval(
-            _RATE_LIMIT_LUA, 1, key,
-            config.requests_per_minute, window, cost, now
-        )
+        try:
+            result = self.redis.eval(
+                _RATE_LIMIT_LUA, 1, key,
+                config.requests_per_minute, window, cost, now
+            )
+        except (redis.ConnectionError, redis.RedisError) as exc:
+            logger.warning("Redis failed mid-request in _check_redis, falling back to local: %s", exc)
+            return self._check_local(key, config, cost)
+
         count = int(result[0])
         reset_at = float(result[1])
 
@@ -370,8 +379,19 @@ class RateLimiter:
             return {"allowed": True, "ip_remaining": per_ip_limit - ip_count, "global_remaining": global_limit - g_count}
 
     def _check_ip_redis(self, ip_key, global_key, per_ip_limit, global_limit, window, now):
-        """Check IP + global limits using atomic Lua scripts."""
-        # Per-IP check
+        """Check IP + global limits using atomic Lua scripts.
+
+        Global limit is checked first (peek) so that the IP counter is not
+        charged when the global limit is already exceeded.
+        """
+        # Peek at global_key first — do NOT increment yet
+        g_data = self.redis.hmget(global_key, "count", "reset_at")
+        g_count_peek = int(g_data[0]) if g_data[0] else 0
+        g_reset_peek = float(g_data[1]) if g_data[1] else now
+        if g_reset_peek >= now and g_count_peek + 1 > global_limit:
+            raise RateLimitExceeded(limit=global_limit, reset_at=g_reset_peek)
+
+        # Per-IP check+increment
         ip_result = self.redis.eval(
             _RATE_LIMIT_LUA, 1, ip_key,
             per_ip_limit, window, 1, now
@@ -382,7 +402,7 @@ class RateLimiter:
         if ip_count == -1:
             raise RateLimitExceeded(limit=per_ip_limit, reset_at=ip_reset)
 
-        # Global check
+        # Global check+increment
         g_result = self.redis.eval(
             _RATE_LIMIT_LUA, 1, global_key,
             global_limit, window, 1, now
@@ -397,27 +417,34 @@ class RateLimiter:
 
     def _check_ip_local(self, ip_key, global_key, per_ip_limit, global_limit, window, now):
         with self._cache_lock:
-            # Per-IP check: increment then check (consistent with Redis Lua script)
+            # Read current counts (without incrementing yet)
             ip_entry = self._local_cache.get(ip_key)
             if ip_entry is None or ip_entry["reset_at"] < now:
-                ip_entry = {"count": 1, "reset_at": now + window}
+                ip_count = 0
+                ip_reset = now + window
             else:
-                ip_entry = {"count": ip_entry["count"] + 1, "reset_at": ip_entry["reset_at"]}
-            self._local_cache[ip_key] = ip_entry
-            if ip_entry["count"] > per_ip_limit:
-                raise RateLimitExceeded(limit=per_ip_limit, reset_at=ip_entry["reset_at"])
+                ip_count = ip_entry["count"]
+                ip_reset = ip_entry["reset_at"]
 
-            # Global check: same pattern
             g_entry = self._local_cache.get(global_key)
             if g_entry is None or g_entry["reset_at"] < now:
-                g_entry = {"count": 1, "reset_at": now + window}
+                g_count = 0
+                g_reset = now + window
             else:
-                g_entry = {"count": g_entry["count"] + 1, "reset_at": g_entry["reset_at"]}
-            self._local_cache[global_key] = g_entry
-            if g_entry["count"] > global_limit:
-                raise RateLimitExceeded(limit=global_limit, reset_at=g_entry["reset_at"])
+                g_count = g_entry["count"]
+                g_reset = g_entry["reset_at"]
 
-        return {"allowed": True, "ip_remaining": per_ip_limit - ip_entry["count"], "global_remaining": global_limit - g_entry["count"]}
+            # Check both limits BEFORE incrementing
+            if ip_count + 1 > per_ip_limit:
+                raise RateLimitExceeded(limit=per_ip_limit, reset_at=ip_reset)
+            if g_count + 1 > global_limit:
+                raise RateLimitExceeded(limit=global_limit, reset_at=g_reset)
+
+            # Both limits OK — now increment atomically
+            self._local_cache[ip_key] = {"count": ip_count + 1, "reset_at": ip_reset}
+            self._local_cache[global_key] = {"count": g_count + 1, "reset_at": g_reset}
+
+        return {"allowed": True, "ip_remaining": per_ip_limit - (ip_count + 1), "global_remaining": global_limit - (g_count + 1)}
 
     def get_limit_status(self, agent_id: str, tier: str = "standard") -> Dict:
         """Get current rate limit status for agent"""
@@ -480,8 +507,8 @@ class RateLimiter:
                 if entry.get("count", 0) >= limit:
                     raise RateLimitExceeded(limit=limit, reset_at=entry["reset_at"])
 
-    def record_failed_auth(self, ip: str, window: int = 60) -> None:
-        """Increment failed auth counter for IP."""
+    def record_failed_auth(self, ip: str, window: int = 60) -> int:
+        """Increment failed auth counter for IP. Returns current count."""
         key = f"ratelimit:ip:failed_auth:{ip}"
         now = time.time()
 
@@ -490,20 +517,25 @@ class RateLimiter:
             pipe.hincrby(key, "count", 1)
             pipe.hsetnx(key, "reset_at", str(now + window))
             pipe.expire(key, window + 60)
-            pipe.execute()
+            results = pipe.execute()
+            count = int(results[0])
+            return count
         else:
             with self._cache_lock:
                 entry = self._local_cache.get(key)
                 if entry and entry.get("reset_at", 0) >= now:
+                    count = entry.get("count", 0) + 1
                     self._local_cache[key] = {
-                        "count": entry.get("count", 0) + 1,
+                        "count": count,
                         "reset_at": entry["reset_at"],
                     }
                 else:
+                    count = 1
                     self._local_cache[key] = {
-                        "count": 1,
+                        "count": count,
                         "reset_at": now + window,
                     }
+                return count
 
 
 # Global rate limiter instance

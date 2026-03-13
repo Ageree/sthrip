@@ -52,6 +52,11 @@ class IdempotencyStore:
                 self.redis.ping()
                 self.use_redis = True
             except Exception:
+                logger.warning(
+                    "Redis unavailable for idempotency store — falling back to local dict. "
+                    "Idempotency keys will not be shared across workers.",
+                    exc_info=True,
+                )
                 self.redis = None
         else:
             self.redis = None
@@ -133,7 +138,13 @@ class IdempotencyStore:
                     full_key, json.dumps(response, default=str), ex=_TTL_SECONDS,
                 )
             except Exception:
-                logger.warning("Redis write failed for idempotency key", exc_info=True)
+                logger.critical(
+                    "Redis write failed for idempotency store_response — "
+                    "sentinel key may be stranded until TTL expiry. "
+                    "Agent=%s endpoint=%s",
+                    agent_id, endpoint,
+                    exc_info=True,
+                )
         else:
             with self._lock:
                 self._local_cache[full_key] = {

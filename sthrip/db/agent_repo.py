@@ -12,7 +12,7 @@ import hmac as _hmac
 import secrets
 import threading
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Tuple, Dict
 from uuid import UUID
 
 from sqlalchemy.orm import Session, joinedload
@@ -45,8 +45,8 @@ class AgentRepository:
         webhook_url: Optional[str] = None,
         privacy_level: str = "medium",
         tier: str = "free"
-    ) -> models.Agent:
-        """Create new agent with API key"""
+    ) -> Tuple[models.Agent, Dict[str, str]]:
+        """Create new agent with API key. Returns (agent, credentials_dict)."""
         api_key = f"sk_{secrets.token_hex(32)}"
         api_key_hash = self._hash_api_key(api_key)
 
@@ -149,9 +149,10 @@ class AgentRepository:
 
         self.db.query(models.Agent).filter(
             models.Agent.id == agent_id
-        ).update({
-            "last_seen_at": datetime.now(timezone.utc)
-        })
+        ).update(
+            {"last_seen_at": datetime.now(timezone.utc)},
+            synchronize_session="evaluate",
+        )
 
     def get_webhook_secret(self, agent_id: UUID) -> Optional[str]:
         """Get decrypted webhook secret for agent."""
@@ -192,4 +193,4 @@ class AgentRepository:
         if updates:
             self.db.query(models.Agent).filter(
                 models.Agent.id == agent_id
-            ).update(updates)
+            ).update(updates, synchronize_session="evaluate")

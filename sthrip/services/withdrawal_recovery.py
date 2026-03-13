@@ -60,8 +60,15 @@ def recover_pending_withdrawals(
 async def periodic_recovery_loop(
     interval_seconds: int = 300,
     max_age_minutes: int = 5,
+    wallet_service=None,
 ):
-    """Run withdrawal recovery periodically (default: every 5 minutes)."""
+    """Run withdrawal recovery periodically (default: every 5 minutes).
+
+    Args:
+        wallet_service: WalletService instance for matching on-chain txs.
+            Passed from the call site (api/main_v2.py) to avoid a
+            circular import from sthrip.services → api.helpers.
+    """
     import asyncio
     from sthrip.db.database import get_db
     from sthrip.db.repository import PendingWithdrawalRepository, BalanceRepository
@@ -69,12 +76,7 @@ async def periodic_recovery_loop(
     while True:
         try:
             await asyncio.sleep(interval_seconds)
-            wallet_svc = None
-            try:
-                from api.helpers import get_wallet_service
-                wallet_svc = get_wallet_service()
-            except Exception:
-                pass
+            wallet_svc = wallet_service
             with get_db() as db:
                 pw_repo = PendingWithdrawalRepository(db)
                 bal_repo = BalanceRepository(db)

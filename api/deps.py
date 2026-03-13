@@ -108,7 +108,10 @@ async def get_current_agent(
 ) -> Agent:
     """Authenticate agent using the same DB session as the request handler."""
     client_ip = get_client_ip(request)
-    limiter = get_rate_limiter()
+    try:
+        limiter = request.app.state.rate_limiter
+    except AttributeError:
+        limiter = get_rate_limiter()
 
     # Check failed auth limit (read-only check, no increment)
     try:
@@ -132,6 +135,8 @@ async def get_current_agent(
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     if not agent.is_active:
+        limiter.record_failed_auth(client_ip)
+        audit_log("auth.failed", agent_id=str(agent.id), ip_address=client_ip, details={"reason": "agent_disabled"}, success=False)
         raise HTTPException(status_code=403, detail="Agent account disabled")
 
     # Update last seen

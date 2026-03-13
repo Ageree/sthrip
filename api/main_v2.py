@@ -2,7 +2,6 @@
 Sthrip API v2 — App factory
 """
 
-import os
 import json
 import asyncio
 import logging
@@ -66,23 +65,37 @@ def _init_sentry():
         if dsn:
             import re
 
-            _SENSITIVE_PATTERNS = re.compile(
-                r"(api[_-]?key|password|secret|mnemonic|seed|"
-                r"MONERO_RPC_PASS|ADMIN_API_KEY|BACKUP_PASSPHRASE)"
-                r"['\"]?\s*[:=]\s*['\"]?([^'\"\s,}]+)",
+            _SENSITIVE_KEY_RE = re.compile(
+                r"(auth|admin_key|api[_-]?key|password|secret|mnemonic|seed|token|"
+                r"monero_rpc_pass|admin_api_key|backup_passphrase|"
+                r"webhook_encryption_key|api_key_hmac_secret|hmac_secret)",
+                re.IGNORECASE,
+            )
+            _SENSITIVE_VALUE_RE = re.compile(
+                r"(api[_-]?key|password|secret|mnemonic|seed|admin_key|"
+                r"MONERO_RPC_PASS|ADMIN_API_KEY|BACKUP_PASSPHRASE|"
+                r"WEBHOOK_ENCRYPTION_KEY|API_KEY_HMAC_SECRET)"
+                r"['\"]?\s*[:=]\s*['\"]?[^'\"\s,}]+",
                 re.IGNORECASE,
             )
 
+            def _scrub_value(obj):
+                """Recursively scrub sensitive values from a data structure."""
+                if isinstance(obj, dict):
+                    return {
+                        k: "[Filtered]" if _SENSITIVE_KEY_RE.search(k) else _scrub_value(v)
+                        for k, v in obj.items()
+                    }
+                if isinstance(obj, list):
+                    return [_scrub_value(item) for item in obj]
+                if isinstance(obj, str) and _SENSITIVE_VALUE_RE.search(obj):
+                    return "[Filtered]"
+                return obj
+
             def _scrub_event(event, hint):
-                if event.get("request", {}).get("headers"):
-                    headers = event["request"]["headers"]
-                    for key in list(headers.keys()):
-                        if "auth" in key.lower() or "api" in key.lower() or "key" in key.lower():
-                            headers[key] = "[Filtered]"
-                raw = json.dumps(event)
-                if _SENSITIVE_PATTERNS.search(raw):
-                    event = json.loads(_SENSITIVE_PATTERNS.sub(r"\1=[Filtered]", raw))
-                return event
+                import copy as _copy
+
+                return _scrub_value(_copy.deepcopy(event))
 
             sentry_sdk.init(
                 dsn=dsn,
@@ -164,7 +177,8 @@ def _run_database_migrations():
     except SystemExit:
         raise
     except _SqlaOperationalError as e:
-        if "already exists" in str(e):
+        pgcode = getattr(getattr(e, "orig", None), "pgcode", None)
+        if pgcode == "42P07" or ("relation" in str(e).lower() and "already exists" in str(e)):
             logger.warning("Migration skipped (schema already exists): %s", e)
         elif settings.environment != "dev":
             logger.critical("DATABASE MIGRATION FAILED: %s", e, exc_info=True)
@@ -220,7 +234,10 @@ def _startup_services(hub_mode):
     from sthrip.services.withdrawal_recovery import periodic_recovery_loop
     reconciliation_task = None
     if hub_mode == "onchain":
-        reconciliation_task = asyncio.create_task(periodic_recovery_loop())
+        wallet_svc = get_wallet_service()
+        reconciliation_task = asyncio.create_task(
+            periodic_recovery_loop(wallet_service=wallet_svc)
+        )
         logger.info("Periodic withdrawal reconciliation started")
 
     return {
@@ -293,8 +310,8 @@ async def _shutdown_services(services):
     try:
         get_engine().dispose()
         logger.info("Database connections closed")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Failed to dispose database engine: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -390,4 +407,5 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+    from sthrip.config import get_settings
+    uvicorn.run(app, host="0.0.0.0", port=get_settings().port)

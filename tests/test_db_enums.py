@@ -188,7 +188,7 @@ class TestPaymentType:
 
     def test_member_count(self):
         from sthrip.db.enums import PaymentType
-        assert len(PaymentType) == 7
+        assert len(PaymentType) == 9
 
 
 # ---------------------------------------------------------------------------

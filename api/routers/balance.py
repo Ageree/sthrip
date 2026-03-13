@@ -59,7 +59,11 @@ async def deposit_balance(
     try:
         if hub_mode == "onchain":
             wallet_svc = get_wallet_service()
-            deposit_address = await asyncio.to_thread(wallet_svc.get_or_create_deposit_address, agent.id)
+            rpc_timeout = get_settings().wallet_rpc_timeout * 3  # 3 retries max
+            deposit_address = await asyncio.wait_for(
+                asyncio.to_thread(wallet_svc.get_or_create_deposit_address, agent.id),
+                timeout=rpc_timeout,
+            )
             min_conf = get_settings().monero_min_confirmations
             network = get_settings().monero_network
             response = {
@@ -70,6 +74,11 @@ async def deposit_balance(
                 "message": f"Send XMR to this address. Balance will be credited after {min_conf} confirmations.",
             }
         else:
+            if get_settings().environment not in ("dev",):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Ledger deposit is only available in dev environment",
+                )
             if req is None or req.amount is None:
                 raise HTTPException(status_code=422, detail="amount is required in ledger mode")
             amount = req.amount
@@ -89,7 +98,10 @@ async def deposit_balance(
             agent_id=agent.id,
             request_method="POST",
             request_path="/v2/balance/deposit",
-            details={"mode": hub_mode},
+            details={
+                "mode": hub_mode,
+                "amount": str(req.amount) if req and req.amount else None,
+            },
         )
 
         if idempotency_key:
@@ -102,11 +114,24 @@ async def deposit_balance(
         raise
 
 
-def _deduct_and_create_pending(agent_id, amount, address):
-    """Atomically deduct balance and create a pending withdrawal record. Returns pending_id."""
+def _deduct_and_create_pending(agent_id, amount, address, check_self_send: bool = False):
+    """Atomically check self-send, deduct balance, and create pending withdrawal.
+
+    All operations happen in a single DB session for TOCTOU safety.
+    Returns pending_id.
+    """
     with get_db() as db:
         repo = BalanceRepository(db)
         pw_repo = PendingWithdrawalRepository(db)
+
+        if check_self_send:
+            balance = repo.get_or_create(agent_id)
+            if balance.deposit_address and balance.deposit_address == address:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot withdraw to your own deposit address (self-send)",
+                )
+
         try:
             repo.withdraw(agent_id, amount)
         except ValueError:
@@ -118,8 +143,25 @@ def _deduct_and_create_pending(agent_id, amount, address):
 async def _process_onchain_withdrawal(agent, amount, address, pending_id):
     """Execute onchain withdrawal via wallet RPC. Returns response dict."""
     wallet_svc = get_wallet_service()
+    rpc_timeout = get_settings().wallet_rpc_timeout * 3  # 3 retries max
     try:
-        tx_result = await asyncio.to_thread(wallet_svc.send_withdrawal, address, amount)
+        tx_result = await asyncio.wait_for(
+            asyncio.to_thread(wallet_svc.send_withdrawal, address, amount),
+            timeout=rpc_timeout,
+        )
+    except asyncio.TimeoutError:
+        # Treat same as RPC error — mark needs_review
+        with get_db() as db:
+            pw_repo = PendingWithdrawalRepository(db)
+            pw_repo.mark_needs_review(
+                pending_id,
+                reason="RPC timeout — verify on-chain before refunding",
+            )
+        logger.error("Withdrawal RPC timed out for agent=%s pw=%s", agent.id, pending_id)
+        raise HTTPException(
+            status_code=504,
+            detail="Withdrawal timed out. An admin will review this transaction.",
+        )
     except Exception as e:
         # Mark as needs_review — do NOT auto-refund because the RPC may have
         # actually submitted the transaction (e.g. network timeout on response).
@@ -128,7 +170,7 @@ async def _process_onchain_withdrawal(agent, amount, address, pending_id):
             pw_repo = PendingWithdrawalRepository(db)
             pw_repo.mark_needs_review(
                 pending_id,
-                reason=f"RPC error, verify on-chain before refunding: {e}",
+                reason=f"RPC error (see server logs): {type(e).__name__}",
             )
         logger.error("Withdrawal RPC failed for agent=%s pw=%s: %s", agent.id, pending_id, e)
         raise HTTPException(status_code=502, detail="Withdrawal processing failed. An admin will review this transaction.")
@@ -146,7 +188,7 @@ async def _process_onchain_withdrawal(agent, amount, address, pending_id):
             to_agent_id=None,
             amount=amount,
             fee=tx_result.get("fee", Decimal("0")),
-            payment_type="hub_routing",
+            payment_type="withdrawal",
             status="pending",
         )
         fresh_balance = BalanceRepository(db).get_or_create(agent.id)
@@ -163,7 +205,7 @@ async def _process_onchain_withdrawal(agent, amount, address, pending_id):
         "tx_hash": tx_result["tx_hash"],
         "amount": str(amount),
         "fee": str(tx_result.get("fee", 0)),
-        "to_address": address,
+        "to_address": address[:8] + "...",
         "remaining_balance": remaining,
         "token": "XMR",
     }
@@ -193,9 +235,13 @@ async def withdraw_balance(
         if cached is not None:
             return cached
 
+    pending_id = None
     try:
         amount = req.amount
-        pending_id = _deduct_and_create_pending(agent.id, amount, req.address)
+        pending_id = _deduct_and_create_pending(
+            agent.id, amount, req.address,
+            check_self_send=True,
+        )
 
         if hub_mode == "onchain":
             response = await _process_onchain_withdrawal(agent, amount, req.address, pending_id)
@@ -204,7 +250,7 @@ async def withdraw_balance(
             response = {
                 "status": "withdrawn",
                 "amount": str(amount),
-                "to_address": req.address,
+                "to_address": req.address[:8] + "...",
                 "remaining_balance": remaining,
                 "token": "XMR",
             }

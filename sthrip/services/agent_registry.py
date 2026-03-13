@@ -180,7 +180,7 @@ class AgentRegistry:
             if verified_only:
                 query = query.filter(Agent.verified_at.isnot(None))
 
-            if min_trust_score:
+            if min_trust_score is not None:
                 query = query.join(AgentReputation).filter(
                     AgentReputation.trust_score >= min_trust_score
                 )
@@ -208,7 +208,7 @@ class AgentRegistry:
                 query = query.filter(Agent.tier == tier)
             if verified_only:
                 query = query.filter(Agent.verified_at.isnot(None))
-            if min_trust_score:
+            if min_trust_score is not None:
                 query = query.join(AgentReputation).filter(
                     AgentReputation.trust_score >= min_trust_score
                 )

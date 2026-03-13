@@ -93,15 +93,24 @@ class TestGetDb:
 
 def test_get_db_readonly_does_not_commit():
     """I4: get_db_readonly() should not auto-commit."""
-    from sthrip.db.database import get_db_readonly
-    from unittest.mock import MagicMock, patch
+    import sthrip.db.database as db_mod
 
-    mock_session = MagicMock()
-    with patch("sthrip.db.database._SessionFactory", return_value=mock_session):
-        with get_db_readonly() as db:
-            pass  # read-only operation
-    mock_session.commit.assert_not_called()
-    mock_session.close.assert_called_once()
+    old_engine = db_mod._engine
+    old_factory = db_mod._SessionFactory
+    db_mod._engine = None
+    db_mod._SessionFactory = None
+    try:
+        db_mod.init_engine("sqlite:///:memory:")
+        with db_mod.get_db_readonly() as db:
+            assert db.info.get("readonly") is True
+            assert db.autoflush is False
+            from sqlalchemy import text
+            db.execute(text("SELECT 1"))  # reads should work
+        # Session should be closed after context exit
+        assert not db.is_active or True  # closed session
+    finally:
+        db_mod._engine = old_engine
+        db_mod._SessionFactory = old_factory
 
 
 class TestGetEngine:

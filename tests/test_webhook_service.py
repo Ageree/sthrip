@@ -129,7 +129,8 @@ class TestSendWebhook:
 
         mock_response = AsyncMock()
         mock_response.status = 200
-        mock_response.text = AsyncMock(return_value="OK")
+        mock_response.content = AsyncMock()
+        mock_response.content.read = AsyncMock(return_value=b"OK")
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
@@ -154,7 +155,8 @@ class TestSendWebhook:
 
         mock_response = AsyncMock()
         mock_response.status = 500
-        mock_response.text = AsyncMock(return_value="Server Error")
+        mock_response.content = AsyncMock()
+        mock_response.content.read = AsyncMock(return_value=b"Server Error")
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
@@ -429,7 +431,8 @@ class TestSendWebhookDNSPinning:
 
         mock_response = AsyncMock()
         mock_response.status = 200
-        mock_response.text = AsyncMock(return_value="OK")
+        mock_response.content = AsyncMock()
+        mock_response.content.read = AsyncMock(return_value=b"OK")
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
 

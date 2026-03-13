@@ -213,25 +213,29 @@ return 0
         logger.info("DepositMonitor found %d transfer(s)", len(transfers))
 
         try:
-            new_height = self._process_transfers(db, transfers)
+            new_height, deferred_webhooks = self._process_transfers(db, transfers)
             db.commit()
             # Only update in-memory height AFTER successful commit
             if new_height > self._last_height:
                 self._last_height = new_height
+            # Fire webhooks only after commit so we never notify for rolled-back balances
+            for agent_id, txid, amount in deferred_webhooks:
+                self._fire_webhook(agent_id, txid, amount)
         except Exception:
             db.rollback()
             raise
 
-    def _process_transfers(self, db, transfers: List[Dict]) -> int:
+    def _process_transfers(self, db, transfers: List[Dict]):
         """Process a batch of incoming transfers.
 
-        Returns the maximum block height seen so the caller can update
-        ``_last_height`` *after* a successful commit.
+        Returns (max_height, deferred_webhooks) where deferred_webhooks is a
+        list of (agent_id, txid, amount) tuples to fire after commit.
         """
         bal_repo = BalanceRepository(db)
         tx_repo = TransactionRepository(db)
 
         max_height = self._last_height
+        deferred_webhooks: List[tuple] = []
 
         for transfer in transfers:
             txid = transfer["txid"]
@@ -253,28 +257,33 @@ return 0
             existing_tx = tx_repo.get_by_hash(txid)
 
             if existing_tx is None:
-                self._handle_new_transfer(
+                webhook = self._handle_new_transfer(
                     db, tx_repo, bal_repo, agent_id,
                     txid, amount, confirmations, height,
                 )
             else:
-                self._handle_existing_transfer(
+                webhook = self._handle_existing_transfer(
                     db, tx_repo, bal_repo, agent_id, existing_tx,
                     confirmations, height,
                 )
+            if webhook is not None:
+                deferred_webhooks.append(webhook)
 
         # Persist height to DB for crash recovery (will be rolled back with txn if commit fails)
         if max_height > 0:
             state_repo = SystemStateRepository(db)
             state_repo.set(_HEIGHT_KEY, str(max_height))
 
-        return max_height
+        return max_height, deferred_webhooks
 
     def _handle_new_transfer(
         self, db, tx_repo, bal_repo, agent_id,
         txid, amount, confirmations, height,
-    ) -> None:
-        """Handle a newly discovered transfer."""
+    ):
+        """Handle a newly discovered transfer.
+
+        Returns (agent_id, txid, amount) tuple for deferred webhook, or None.
+        """
         from sqlalchemy.exc import IntegrityError
 
         is_confirmed = confirmations >= self.min_confirmations
@@ -291,30 +300,34 @@ return 0
                 to_agent_id=agent_id,
                 amount=amount,
                 token="XMR",
-                payment_type="hub_routing",
+                payment_type="deposit",
                 status=status,
             )
         except IntegrityError:
             # Duplicate tx_hash — roll back only the savepoint, not the outer tx.
             savepoint.rollback()
             logger.warning("Duplicate tx_hash %s — skipping (already processed)", txid)
-            return
+            return None
 
         if is_confirmed:
             # Directly credit available balance (uses row lock internally)
             bal_repo.deposit(agent_id, amount)
-            self._fire_webhook(agent_id, txid, amount)
+            db.flush()
+            return (agent_id, txid, amount)
         else:
             # Add to pending balance via public API (uses row lock internally)
             bal_repo.add_pending(agent_id, amount)
-
-        db.flush()
+            db.flush()
+            return None
 
     def _handle_existing_transfer(
         self, db, tx_repo, bal_repo, agent_id, existing_tx,
         confirmations, height,
-    ) -> None:
-        """Update an existing transfer's confirmation count."""
+    ):
+        """Update an existing transfer's confirmation count.
+
+        Returns (agent_id, txid, amount) tuple for deferred webhook, or None.
+        """
         # Update confirmations
         existing_tx.confirmations = confirmations
 
@@ -325,6 +338,7 @@ return 0
         was_pending = existing_tx.status == TransactionStatus.PENDING
         is_now_confirmed = confirmations >= self.min_confirmations
 
+        webhook = None
         if was_pending and is_now_confirmed:
             existing_tx.status = TransactionStatus.CONFIRMED
             existing_tx.confirmed_at = datetime.now(tz=timezone.utc)
@@ -334,9 +348,10 @@ return 0
             bal_repo.deposit(agent_id, amount)
             bal_repo.clear_pending_on_confirm(agent_id, amount)
 
-            self._fire_webhook(agent_id, existing_tx.tx_hash, amount)
+            webhook = (agent_id, existing_tx.tx_hash, amount)
 
         db.flush()
+        return webhook
 
     def _match_subaddress_to_agent(self, db, address: str) -> Optional[UUID]:
         """Look up agent_id by deposit_address in AgentBalance table."""

@@ -35,6 +35,7 @@ class WebhookRepository:
             next_attempt_at=datetime.now(timezone.utc)
         )
         self.db.add(event)
+        self.db.flush()
         return event
 
     def get_by_id(self, event_id: UUID) -> Optional[models.WebhookEvent]:
@@ -91,10 +92,14 @@ class WebhookRepository:
         })
 
     def schedule_retry(self, event_id: UUID, error: str):
-        """Schedule retry with exponential backoff"""
+        """Schedule retry with exponential backoff.
+
+        Uses FOR UPDATE to prevent a concurrent worker from reading the
+        same row between our SELECT and UPDATE (TOCTOU).
+        """
         event = self.db.query(models.WebhookEvent).filter(
             models.WebhookEvent.id == event_id
-        ).first()
+        ).with_for_update().first()
 
         if event:
             attempt = event.attempt_count + 1

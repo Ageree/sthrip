@@ -38,7 +38,7 @@ _TEST_TABLES = [
     FeeCollection.__table__,
 ]
 
-ADMIN_KEY = "test-admin-key-for-dashboard"
+ADMIN_KEY = "test-admin-key-for-dashboard-32char"
 
 
 @pytest.fixture
@@ -557,9 +557,10 @@ class TestBalancesPage:
 
         original_template_response = views_mod.templates.TemplateResponse
 
-        def capturing_template_response(name, context, **kwargs):
-            captured_context.update(context)
-            return original_template_response(name, context, **kwargs)
+        def capturing_template_response(request, name, context=None, **kwargs):
+            if context is not None:
+                captured_context.update(context)
+            return original_template_response(request, name, context, **kwargs)
 
         _login(admin_client)
 
@@ -641,8 +642,9 @@ class TestBalancesPage:
 
         rendered_context = {}
 
-        def capture_response(name, context, **kwargs):
-            rendered_context.update(context)
+        def capture_response(request, name, context=None, **kwargs):
+            if context is not None:
+                rendered_context.update(context)
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             return mock_resp

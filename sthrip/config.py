@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     db_pool_overflow: int = 20
 
     # Redis
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = ""
 
     # Auth
     admin_api_key: str = Field(...)
@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     monero_rpc_port: int = 18082
     monero_rpc_user: str = ""
     monero_rpc_pass: str = ""
+    monero_rpc_use_ssl: bool = False
     monero_network: Literal["mainnet", "stagenet", "testnet"] = "stagenet"
     monero_min_confirmations: int = 10
     deposit_poll_interval: int = 30
@@ -88,6 +89,10 @@ class Settings(BaseSettings):
         if env != "dev" and v in ("change_me", "dev-admin-key", "test", ""):
             raise ValueError(
                 "ADMIN_API_KEY must be set to a secure value in non-dev environments"
+            )
+        if env != "dev" and len(v) < 32:
+            raise ValueError(
+                "ADMIN_API_KEY must be at least 32 characters in non-dev environments"
             )
         return v
 

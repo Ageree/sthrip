@@ -34,3 +34,22 @@ def test_peek_allows_below_limit():
 
     result = limiter._peek_ip_limit(ip_key, global_key, limit, 1000, now)
     assert result["allowed"] is True
+
+
+def test_global_rejection_does_not_consume_per_ip_quota():
+    """H3: If global limit rejects, per-IP counter must NOT be incremented."""
+    limiter = RateLimiter(redis_url=None)
+    now = time.time()
+    ip_key = "ratelimit:ip:h3test:10.0.0.1"
+    global_key = "ratelimit:global:h3test"
+
+    # Set global counter at limit, per-IP has room
+    with limiter._cache_lock:
+        limiter._local_cache[global_key] = {"count": 100, "reset_at": now + 3600}
+        limiter._local_cache[ip_key] = {"count": 1, "reset_at": now + 3600}
+
+    with pytest.raises(RateLimitExceeded):
+        limiter._check_ip_local(ip_key, global_key, 5, 100, 3600, now)
+
+    # Per-IP counter must remain at 1 (not incremented)
+    assert limiter._local_cache[ip_key]["count"] == 1

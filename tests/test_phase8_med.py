@@ -187,21 +187,15 @@ class TestFeeCollectorBulkQuery:
 
     @patch("sthrip.services.fee_collector.get_db")
     def test_withdraw_uses_bulk_update(self, mock_get_db):
-        """withdraw_fees should use filter(id.in_(...)) instead of per-ID loop."""
+        """withdraw_fees should use FOR UPDATE locking on matched rows."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
-        # Mock the bulk query chain
-        mock_query = MagicMock()
-        mock_db.query.return_value = mock_query
-        mock_filter = MagicMock()
-        mock_query.filter.return_value = mock_filter
-
-        # sum query returns total
-        mock_filter.scalar.return_value = Decimal("0.3")
-        # update query returns count
-        mock_filter.update.return_value = 3
+        fee1 = MagicMock(amount=Decimal("0.1"))
+        fee2 = MagicMock(amount=Decimal("0.1"))
+        fee3 = MagicMock(amount=Decimal("0.1"))
+        mock_db.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = [fee1, fee2, fee3]
 
         from sthrip.services.fee_collector import FeeCollector
         collector = FeeCollector()
@@ -212,23 +206,20 @@ class TestFeeCollectorBulkQuery:
 
     @patch("sthrip.services.fee_collector.get_db")
     def test_withdraw_returns_correct_total(self, mock_get_db):
-        """Total amount should come from bulk SUM query."""
+        """Total amount should come from locked rows sum."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
-        mock_query = MagicMock()
-        mock_db.query.return_value = mock_query
-        mock_filter = MagicMock()
-        mock_query.filter.return_value = mock_filter
-        mock_filter.scalar.return_value = Decimal("1.5")
-        mock_filter.update.return_value = 2
+        fee1 = MagicMock(amount=Decimal("1.0"))
+        fee2 = MagicMock(amount=Decimal("0.5"))
+        mock_db.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = [fee1, fee2]
 
         from sthrip.services.fee_collector import FeeCollector
         collector = FeeCollector()
         result = collector.withdraw_fees(["f1", "f2"], "tx_total")
 
-        assert result["total_amount"] == 1.5
+        assert result["total_amount"] == "1.5"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -2,6 +2,7 @@
 
 import hmac
 import logging
+import uuid as _uuid
 
 from fastapi import APIRouter, HTTPException, Depends, Header, Request, Query
 from pydantic import BaseModel, Field
@@ -31,16 +32,9 @@ async def admin_auth(body: AdminAuthRequest, request: Request):
     client_ip = get_client_ip(request)
     limiter = get_rate_limiter()
 
-    # Read-only check: reject if already over the limit (do NOT increment yet)
+    # Check if already rate-limited before verifying credentials
     try:
-        limiter.check_ip_rate_limit(
-            ip_address=client_ip,
-            action="admin_auth",
-            per_ip_limit=5,
-            global_limit=100,
-            window_seconds=300,
-            check_only=True,
-        )
+        limiter.check_failed_auth(client_ip, limit=5, window=300)
     except RateLimitExceeded:
         raise HTTPException(status_code=429, detail="Too many failed admin auth attempts")
 
@@ -48,17 +42,8 @@ async def admin_auth(body: AdminAuthRequest, request: Request):
     if not expected_key or not hmac.compare_digest(
         body.admin_key.encode(), expected_key.encode()
     ):
-        # Increment counter only on failed authentication
-        try:
-            limiter.check_ip_rate_limit(
-                ip_address=client_ip,
-                action="admin_auth",
-                per_ip_limit=5,
-                global_limit=100,
-                window_seconds=300,
-            )
-        except RateLimitExceeded:
-            raise HTTPException(status_code=429, detail="Too many failed admin auth attempts")
+        # Atomically increment counter on failed authentication
+        limiter.record_failed_auth(client_ip, window=300)
         raise HTTPException(status_code=401, detail="Invalid admin key")
 
     store = get_admin_session_store()
@@ -109,6 +94,11 @@ async def verify_agent(
     _auth: bool = Depends(get_admin_session),
 ):
     """Verify agent (admin only)"""
+    try:
+        _uuid.UUID(agent_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Agent not found or verification failed.")
+
     registry = get_registry()
     try:
         result = registry.verify_agent(

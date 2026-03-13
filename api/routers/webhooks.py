@@ -1,6 +1,7 @@
 """Webhook event endpoints."""
 
 from datetime import datetime, timezone
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Depends, Query
@@ -10,6 +11,26 @@ from sthrip.db.models import Agent, WebhookEvent, WebhookStatus
 from api.deps import get_current_agent
 
 router = APIRouter(prefix="/v2/webhooks", tags=["webhooks"])
+
+# Patterns that indicate internal infrastructure details in error messages
+_INTERNAL_PATTERNS = (
+    "resolves to private", "resolves to internal",
+    "SSRF", "10.", "172.", "192.168.", "127.",
+    "Traceback", "File \"", "line ",
+)
+
+
+def _sanitize_last_error(error: Optional[str]) -> Optional[str]:
+    """Redact internal infrastructure details from webhook delivery errors."""
+    if not error:
+        return error
+    for pattern in _INTERNAL_PATTERNS:
+        if pattern in error:
+            return "Delivery failed"
+    # Truncate long error messages that might contain stack traces
+    if len(error) > 200:
+        return error[:200] + "..."
+    return error
 
 
 @router.get("/events")
@@ -32,7 +53,7 @@ async def list_webhook_events(
                 "event_type": e.event_type,
                 "status": e.status.value if hasattr(e.status, "value") else str(e.status),
                 "attempt_count": e.attempt_count,
-                "last_error": e.last_error,
+                "last_error": _sanitize_last_error(e.last_error),
                 "delivered_at": e.delivered_at.isoformat() if e.delivered_at else None,
                 "created_at": e.created_at.isoformat() if e.created_at else None,
             }
@@ -62,7 +83,7 @@ async def retry_webhook_event(
             )
 
         event.status = WebhookStatus.PENDING
-        event.attempt_count = max((event.attempt_count or 0) - 1, 0)
+        event.attempt_count = 0
         event.next_attempt_at = datetime.now(timezone.utc)
 
     return {"message": "Event queued for retry", "event_id": str(event_id)}

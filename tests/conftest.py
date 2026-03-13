@@ -71,7 +71,7 @@ _AUDIT_LOG_MODULES = [
 @pytest.fixture(autouse=True)
 def _ensure_settings_env(monkeypatch):
     """Set required env vars for Settings and clear the lru_cache between tests."""
-    monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key-for-tests")
+    monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key-for-tests-long-enough-32")
     monkeypatch.setenv("ENVIRONMENT", "dev")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("WEBHOOK_ENCRYPTION_KEY", _TEST_ENCRYPTION_KEY)

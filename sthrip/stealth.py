@@ -4,6 +4,7 @@ Monero subaddresses provide one-time use addresses for each payment
 """
 
 import time
+from collections import OrderedDict
 from typing import Optional, List, Dict
 from datetime import datetime, timezone
 import dataclasses
@@ -18,11 +19,13 @@ class StealthAddressManager:
     Manages one-time stealth addresses (subaddresses) for anonymous payments.
     Each payment uses a unique address, making blockchain analysis impossible.
     """
-    
+
+    MAX_CACHE_SIZE = 10000
+
     def __init__(self, wallet_rpc: MoneroWalletRPC, account_index: int = 0):
         self.wallet = wallet_rpc
         self.account_index = account_index
-        self._cache: Dict[int, StealthAddress] = {}
+        self._cache: OrderedDict[int, StealthAddress] = OrderedDict()
     
     def generate(
         self,
@@ -57,6 +60,9 @@ class StealthAddressManager:
             used=False
         )
         
+        # Evict oldest entries if cache is full
+        while len(self._cache) >= self.MAX_CACHE_SIZE:
+            self._cache.popitem(last=False)
         self._cache[stealth.index] = stealth
         return stealth
     

@@ -247,7 +247,7 @@ class TestAdminAuthRateLimitOrder:
                 compare_line = None
                 for child in ast.walk(node):
                     if isinstance(child, ast.Attribute) and hasattr(child, 'attr'):
-                        if child.attr == "check_ip_rate_limit" and rate_limit_line is None:
+                        if child.attr in ("check_ip_rate_limit", "check_failed_auth") and rate_limit_line is None:
                             rate_limit_line = child.lineno
                     if isinstance(child, ast.Attribute) and hasattr(child, 'attr'):
                         if child.attr == "compare_digest" and compare_line is None:

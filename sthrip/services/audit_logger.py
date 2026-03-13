@@ -28,6 +28,8 @@ def _sanitize(data: Optional[dict]) -> Optional[dict]:
             result[k] = "***"
         elif isinstance(v, dict):
             result[k] = _sanitize(v)
+        elif isinstance(v, list):
+            result[k] = [_sanitize(item) if isinstance(item, dict) else item for item in v]
         else:
             result[k] = v
     return result

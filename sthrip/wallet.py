@@ -2,6 +2,7 @@
 Monero wallet RPC client
 """
 
+import asyncio
 import requests
 from requests.auth import HTTPDigestAuth
 import json
@@ -34,6 +35,7 @@ class MoneroWalletRPC:
         self.timeout = timeout
         self.headers = {"Content-Type": "application/json"}
         self._async_client = None
+        self._async_lock = None  # Lazy-init asyncio.Lock (needs running loop)
     
     @classmethod
     def from_env(cls):
@@ -46,6 +48,7 @@ class MoneroWalletRPC:
             user=settings.monero_rpc_user,
             password=settings.monero_rpc_pass,
             timeout=settings.wallet_rpc_timeout,
+            use_ssl=settings.monero_rpc_use_ssl,
         )
 
     @retry(
@@ -213,23 +216,26 @@ class MoneroWalletRPC:
 
 
     async def _get_async_client(self):
-        """Get or create persistent async httpx client."""
+        """Get or create persistent async httpx client. Thread-safe via asyncio.Lock."""
         import httpx
-        if self._async_client is None or self._async_client.is_closed:
-            auth = None
-            if self.auth:
-                auth = httpx.DigestAuth(self.auth.username, self.auth.password)
-            self._async_client = httpx.AsyncClient(
-                timeout=self.timeout,
-                auth=auth,
-                headers=self.headers,
-            )
-        return self._async_client
+        if self._async_lock is None:
+            self._async_lock = asyncio.Lock()
+        async with self._async_lock:
+            if self._async_client is None or self._async_client.is_closed:
+                auth = None
+                if self.auth:
+                    auth = httpx.DigestAuth(self.auth.username, self.auth.password)
+                self._async_client = httpx.AsyncClient(
+                    timeout=self.timeout,
+                    auth=auth,
+                    headers=self.headers,
+                )
+            return self._async_client
 
     async def aclose(self):
         """Close the persistent async HTTP client."""
         if self._async_client is not None and not self._async_client.is_closed:
-            await self._async_client.close()
+            await self._async_client.aclose()
         self._async_client = None
 
     async def _acall(self, method: str, params: Optional[Dict] = None) -> Any:

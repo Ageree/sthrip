@@ -393,6 +393,7 @@ def create_system_health_check() -> HealthCheck:
 _last_dispatch: Dict[str, float] = {}
 _DEBOUNCE_SECONDS = 300  # 5 minutes
 
+_dispatch_lock = threading.Lock()
 
 _validated_webhook_url: Optional[str] = None
 
@@ -408,23 +409,24 @@ def dispatch_alert_webhook(alert: Alert) -> None:
     if not webhook_url:
         return
 
-    # Validate URL once on first use (defense-in-depth SSRF protection)
-    if _validated_webhook_url != webhook_url:
-        try:
-            from ..services.url_validator import validate_url_target
-            validate_url_target(webhook_url)
-            _validated_webhook_url = webhook_url
-        except Exception:
-            logger.warning("ALERT_WEBHOOK_URL failed SSRF validation: %s", webhook_url)
-            return
+    with _dispatch_lock:
+        # Validate URL once on first use (defense-in-depth SSRF protection)
+        if _validated_webhook_url != webhook_url:
+            try:
+                from ..services.url_validator import validate_url_target
+                validate_url_target(webhook_url)
+                _validated_webhook_url = webhook_url
+            except Exception:
+                logger.warning("ALERT_WEBHOOK_URL failed SSRF validation: %s", webhook_url)
+                return
 
-    # Debounce
-    now = time.time()
-    key = f"{alert.source}:{alert.severity.value}"
-    last = _last_dispatch.get(key, 0)
-    if now - last < _DEBOUNCE_SECONDS:
-        return
-    _last_dispatch[key] = now
+        # Debounce
+        now = time.time()
+        key = f"{alert.source}:{alert.severity.value}"
+        last = _last_dispatch.get(key, 0)
+        if now - last < _DEBOUNCE_SECONDS:
+            return
+        _last_dispatch[key] = now
 
     severity_emoji = {"info": "ℹ️", "warning": "⚠️", "critical": "🚨"}.get(alert.severity.value, "❓")
 

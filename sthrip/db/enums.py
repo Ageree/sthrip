@@ -43,6 +43,8 @@ class TransactionStatus(str, _PyEnum):
 class PaymentType(str, _PyEnum):
     P2P = "p2p"
     HUB_ROUTING = "hub_routing"
+    DEPOSIT = "deposit"
+    WITHDRAWAL = "withdrawal"
     ESCROW_DEPOSIT = "escrow_deposit"
     ESCROW_RELEASE = "escrow_release"
     CHANNEL_OPEN = "channel_open"

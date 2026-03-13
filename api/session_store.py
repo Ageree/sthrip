@@ -30,6 +30,7 @@ CSRF (dashboard only):
 import hashlib
 import logging
 import secrets
+import threading
 import time as _time
 from typing import Optional
 
@@ -57,32 +58,37 @@ class AdminSessionStore:
         self._local: dict = {}
         self._redis = None
         self._redis_checked = False
+        self._init_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _ensure_redis(self) -> None:
-        """Lazily attempt Redis connection on first use."""
+        """Lazily attempt Redis connection on first use (thread-safe)."""
         if self._redis_checked:
             return
-        self._redis_checked = True
-        try:
-            import redis
-            redis_url = get_settings().redis_url
-            if redis_url:
-                client = redis.from_url(redis_url, decode_responses=True)
-                client.ping()
-                self._redis = client
-                logger.info(
-                    "AdminSessionStore using Redis (prefix=%r)", self._key_prefix
+        with self._init_lock:
+            if self._redis_checked:
+                return
+            try:
+                import redis
+                redis_url = get_settings().redis_url
+                if redis_url:
+                    client = redis.from_url(redis_url, decode_responses=True)
+                    client.ping()
+                    self._redis = client
+                    logger.info(
+                        "AdminSessionStore using Redis (prefix=%r)", self._key_prefix
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "AdminSessionStore using in-memory fallback (prefix=%r): %s",
+                    self._key_prefix,
+                    exc,
                 )
-        except Exception as exc:
-            logger.warning(
-                "AdminSessionStore using in-memory fallback (prefix=%r): %s",
-                self._key_prefix,
-                exc,
-            )
+            finally:
+                self._redis_checked = True
 
     def _evict_expired(self) -> None:
         """Remove expired entries from the in-memory fallback dict."""

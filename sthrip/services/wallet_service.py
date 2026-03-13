@@ -5,7 +5,9 @@ Handles deposit address generation, withdrawals, incoming transfer
 retrieval, and wallet info for health checks.
 """
 
+import threading
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 from uuid import UUID
@@ -56,6 +58,9 @@ class WalletService:
         self._hub_addr_cache = None
         self._hub_addr_cache_time = 0.0
         self._hub_addr_cache_ttl = 300  # 5 minutes
+        self._hub_addr_lock = threading.Lock()
+        self._deposit_addr_locks: Dict[UUID, threading.Lock] = {}
+        self._deposit_addr_locks_guard = threading.Lock()
 
     @classmethod
     def from_env(cls, db_session_factory: Callable) -> "WalletService":
@@ -65,28 +70,40 @@ class WalletService:
             db_session_factory=db_session_factory,
         )
 
+    def _get_agent_lock(self, agent_id: UUID) -> threading.Lock:
+        """Get or create a per-agent lock for deposit address creation."""
+        with self._deposit_addr_locks_guard:
+            if agent_id not in self._deposit_addr_locks:
+                self._deposit_addr_locks[agent_id] = threading.Lock()
+            return self._deposit_addr_locks[agent_id]
+
     def get_or_create_deposit_address(self, agent_id: UUID) -> str:
         """Get or create a unique subaddress for an agent.
+
+        Uses a per-agent lock to prevent race conditions where two concurrent
+        requests create duplicate subaddresses.
 
         1. Check AgentBalance.deposit_address in DB
         2. If missing — create via wallet RPC with label=agent_id
         3. Save to DB via BalanceRepository.set_deposit_address()
         4. Return the subaddress
         """
-        with self._db_session_factory() as db:
-            repo = BalanceRepository(db)
-            balance = repo.get_or_create(agent_id)
+        agent_lock = self._get_agent_lock(agent_id)
+        with agent_lock:
+            with self._db_session_factory() as db:
+                repo = BalanceRepository(db)
+                balance = repo.get_or_create(agent_id)
 
-            if balance.deposit_address:
-                return balance.deposit_address
+                if balance.deposit_address:
+                    return balance.deposit_address
 
-            result = self.wallet.create_address(
-                account_index=self._account_index,
-                label=str(agent_id),
-            )
-            address = result["address"]
-            repo.set_deposit_address(agent_id, address)
-            return address
+                result = self.wallet.create_address(
+                    account_index=self._account_index,
+                    label=str(agent_id),
+                )
+                address = result["address"]
+                repo.set_deposit_address(agent_id, address)
+                return address
 
     def send_withdrawal(self, to_address: str, amount: Decimal) -> Dict:
         """Send XMR from hub wallet to external address.
@@ -118,21 +135,22 @@ class WalletService:
         """Return all known hub wallet addresses (primary + subaddresses).
 
         Results are cached for _hub_addr_cache_ttl seconds to avoid
-        an RPC call on every withdrawal.
+        an RPC call on every withdrawal.  Thread-safe via _hub_addr_lock.
         """
-        now = time.monotonic()
-        if self._hub_addr_cache is not None and (now - self._hub_addr_cache_time) < self._hub_addr_cache_ttl:
-            return self._hub_addr_cache
+        with self._hub_addr_lock:
+            now = time.monotonic()
+            if self._hub_addr_cache is not None and (now - self._hub_addr_cache_time) < self._hub_addr_cache_ttl:
+                return self._hub_addr_cache
 
-        addr_data = self.wallet.get_address(self._account_index)
-        addresses = {addr_data["address"]}
-        for entry in addr_data.get("addresses", []):
-            addresses.add(entry["address"])
-        result = frozenset(addresses)
+            addr_data = self.wallet.get_address(self._account_index)
+            addresses = {addr_data["address"]}
+            for entry in addr_data.get("addresses", []):
+                addresses.add(entry["address"])
+            result = frozenset(addresses)
 
-        self._hub_addr_cache = result
-        self._hub_addr_cache_time = now
-        return result
+            self._hub_addr_cache = result
+            self._hub_addr_cache_time = now
+            return result
 
     def get_incoming_transfers(self, min_height: int = 0) -> List[Dict]:
         """Get incoming transfers from wallet RPC.
@@ -208,7 +226,6 @@ class WalletService:
 
         result = []
         for tx in raw.get("out", []):
-            from datetime import datetime, timezone
             timestamp = tx.get("timestamp")
             result.append({
                 "tx_hash": tx.get("txid", tx.get("tx_hash", "")),

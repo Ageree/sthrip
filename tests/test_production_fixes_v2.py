@@ -367,7 +367,7 @@ class TestAdminAuthRateLimit:
         mock_limiter.check_ip_rate_limit = mock_check_ip
         mock_limiter.check_rate_limit.return_value = None
 
-        admin_key = os.environ.get("ADMIN_API_KEY", "test-admin-key-for-tests")
+        admin_key = os.environ.get("ADMIN_API_KEY", "test-admin-key-for-tests-long-enough-32")
 
         with patch("api.routers.admin.get_rate_limiter", return_value=mock_limiter):
             resp = client.post("/v2/admin/auth", json={"admin_key": admin_key})

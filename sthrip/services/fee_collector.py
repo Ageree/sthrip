@@ -123,9 +123,10 @@ class FeeCollector:
         # Calculate fee
         fee_amount = amount * fee_percent
         
-        # Apply min/max
+        # Apply min/max, but never let fee exceed the payment amount
         fee_amount = max(fee_amount, config.min_fee)
         fee_amount = min(fee_amount, config.max_fee)
+        fee_amount = min(fee_amount, amount)
         
         return {
             "base_amount": amount,
@@ -297,14 +298,16 @@ class FeeCollector:
         with get_db() as session:
             return _execute(session)
 
-    def settle_hub_route(self, payment_id: str, settlement_tx_hash: str) -> Dict:
+    def settle_hub_route(self, payment_id: str, settlement_tx_hash: str, db=None) -> Dict:
         """
         Final settlement of hub route on-chain.
 
         Uses with_for_update() to prevent double settlement from
         concurrent calls.
+
+        Accepts optional db session for transactional use.
         """
-        with get_db() as db:
+        def _execute(db):
             route = db.query(HubRoute).filter(
                 HubRoute.payment_id == payment_id
             ).with_for_update().first()
@@ -314,6 +317,12 @@ class FeeCollector:
 
             if route.status == HubRouteStatus.SETTLED:
                 raise ValueError(f"Route already settled: {payment_id}")
+
+            if route.status != HubRouteStatus.CONFIRMED:
+                raise ValueError(
+                    f"Route must be confirmed before settlement, "
+                    f"current status: {route.status.value}"
+                )
 
             route.status = HubRouteStatus.SETTLED
             route.settled_at = datetime.now(timezone.utc)
@@ -325,6 +334,11 @@ class FeeCollector:
                 "settlement_tx": settlement_tx_hash,
                 "settled_at": route.settled_at.isoformat()
             }
+
+        if db is not None:
+            return _execute(db)
+        with get_db() as session:
+            return _execute(session)
     
     def get_revenue_stats(self, days: int = 30) -> Dict:
         """Get revenue statistics"""
@@ -378,7 +392,7 @@ class FeeCollector:
                 {
                     "id": str(fee.id),
                     "source_type": fee.source_type,
-                    "amount": float(fee.amount),
+                    "amount": str(fee.amount),
                     "token": fee.token,
                     "created_at": fee.created_at.isoformat()
                 }
@@ -386,26 +400,23 @@ class FeeCollector:
             ]
     
     def withdraw_fees(self, fee_ids: List[str], tx_hash: str) -> Dict:
-        """Mark fees as withdrawn using bulk query."""
+        """Mark fees as withdrawn. Locks rows first to prevent TOCTOU."""
         with get_db() as db:
             now = datetime.now(timezone.utc)
-            # Get total amount of pending fees first
-            total = db.query(func.coalesce(func.sum(FeeCollection.amount), 0)).filter(
+            # Lock rows with FOR UPDATE before computing total
+            rows = db.query(FeeCollection).filter(
                 FeeCollection.id.in_(fee_ids),
                 FeeCollection.status == FeeCollectionStatus.PENDING,
-            ).scalar()
-            # Bulk update all matching pending fees
-            count = db.query(FeeCollection).filter(
-                FeeCollection.id.in_(fee_ids),
-                FeeCollection.status == FeeCollectionStatus.PENDING,
-            ).update({
-                "status": FeeCollectionStatus.WITHDRAWN,
-                "collection_tx_hash": tx_hash,
-                "withdrawn_at": now,
-            }, synchronize_session="fetch")
+            ).with_for_update().all()
+            total = sum(r.amount for r in rows)
+            count = len(rows)
+            for r in rows:
+                r.status = FeeCollectionStatus.WITHDRAWN
+                r.collection_tx_hash = tx_hash
+                r.withdrawn_at = now
             return {
                 "withdrawn_fees": count,
-                "total_amount": float(total),
+                "total_amount": str(total),
                 "tx_hash": tx_hash,
             }
 

@@ -41,9 +41,10 @@ class TestFeeCalculation:
         urgent = self.collector.calculate_hub_routing_fee(Decimal("100.0"), urgency="urgent")
         assert urgent["fee_amount"] == normal["fee_amount"] * Decimal("2.0")
 
-    def test_zero_amount_hits_min_fee(self):
+    def test_zero_amount_fee_capped_at_amount(self):
+        """Fee for zero amount must be zero (fee cannot exceed payment amount)."""
         result = self.collector.calculate_hub_routing_fee(Decimal("0.0"))
-        assert result["fee_amount"] == Decimal("0.0001")
+        assert result["fee_amount"] == Decimal("0.0")
 
     def test_fee_config_values(self):
         hub = DEFAULT_FEES[FeeType.HUB_ROUTING]
@@ -153,9 +154,10 @@ class TestSettleHubRoute:
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_route = MagicMock()
+        mock_route.status = HubRouteStatus.CONFIRMED
         mock_route.settled_at = None
         mock_filter = mock_db.query.return_value.filter.return_value
-        mock_filter.first.return_value = mock_route
+        mock_filter.with_for_update.return_value.first.return_value = mock_route
 
         collector = FeeCollector()
         result = collector.settle_hub_route("hp_abc", "tx_hash_123")
@@ -172,7 +174,7 @@ class TestSettleHubRoute:
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_route = MagicMock()
-        mock_route.status = HubRouteStatus.PENDING
+        mock_route.status = HubRouteStatus.CONFIRMED
         mock_filter = mock_db.query.return_value.filter.return_value
         mock_filter.with_for_update.return_value.first.return_value = mock_route
 
@@ -272,7 +274,7 @@ class TestGetPendingFees:
 
         assert len(result) == 1
         assert result[0]["id"] == "fee_1"
-        assert result[0]["amount"] == 0.05
+        assert result[0]["amount"] == "0.05"
         assert result[0]["token"] == "XMR"
 
     @patch("sthrip.services.fee_collector.get_db")
@@ -296,25 +298,20 @@ class TestGetPendingFees:
 class TestWithdrawFees:
     @patch("sthrip.services.fee_collector.get_db")
     def test_withdraw_pending_fees(self, mock_get_db):
-        """Bulk withdraw should return count and total from bulk query."""
+        """Bulk withdraw should return count and total using FOR UPDATE locking."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
-        mock_query = MagicMock()
-        mock_db.query.return_value = mock_query
-        mock_filter = MagicMock()
-        mock_query.filter.return_value = mock_filter
-        # First call: scalar() for total amount
-        mock_filter.scalar.return_value = Decimal("0.2")
-        # Second call: update() for bulk update count
-        mock_filter.update.return_value = 2
+        fee1 = MagicMock(amount=Decimal("0.1"))
+        fee2 = MagicMock(amount=Decimal("0.1"))
+        mock_db.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = [fee1, fee2]
 
         collector = FeeCollector()
         result = collector.withdraw_fees(["fee_1", "fee_2"], "tx_abc")
 
         assert result["withdrawn_fees"] == 2
-        assert result["total_amount"] == 0.2
+        assert result["total_amount"] == "0.2"
         assert result["tx_hash"] == "tx_abc"
 
     @patch("sthrip.services.fee_collector.get_db")
@@ -324,17 +321,12 @@ class TestWithdrawFees:
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
-        mock_query = MagicMock()
-        mock_db.query.return_value = mock_query
-        mock_filter = MagicMock()
-        mock_query.filter.return_value = mock_filter
-        mock_filter.scalar.return_value = Decimal("0")
-        mock_filter.update.return_value = 0
+        mock_db.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = []
 
         collector = FeeCollector()
         result = collector.withdraw_fees(["fee_1"], "tx_abc")
 
-        assert result["total_amount"] == 0.0
+        assert result["total_amount"] == "0"
         assert result["withdrawn_fees"] == 0
 
     @patch("sthrip.services.fee_collector.get_db")
@@ -354,5 +346,5 @@ class TestWithdrawFees:
         collector = FeeCollector()
         result = collector.withdraw_fees(["nonexistent"], "tx_abc")
 
-        assert result["total_amount"] == 0.0
+        assert result["total_amount"] == "0"
         assert result["withdrawn_fees"] == 0

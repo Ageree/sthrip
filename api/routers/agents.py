@@ -17,6 +17,7 @@ from api.helpers import get_client_ip
 from api.schemas import (
     AgentRegistration, AgentResponse, AgentProfileResponse, AgentSettingsUpdate,
 )
+from sthrip.db.enums import PrivacyLevel
 from sthrip.db.repository import AgentRepository
 
 logger = logging.getLogger("sthrip")
@@ -127,8 +128,8 @@ async def get_agent_profile(agent_name: str, request: Request):
 @router.get("/v2/agents")
 async def discover_agents(
     request: Request,
-    min_trust_score: Optional[int] = None,
-    tier: Optional[str] = None,
+    min_trust_score: Optional[int] = Query(default=None, ge=0, le=100),
+    tier: Optional[str] = Query(default=None, pattern=r"^(free|verified|premium|enterprise)$"),
     verified_only: bool = False,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -226,7 +227,8 @@ async def update_agent_settings(
             old_val = getattr(db_agent, field)
             old_values[field] = str(old_val) if old_val else None
             new_values[field] = value
-            setattr(db_agent, field, value)
+            coerced = PrivacyLevel(value) if field == "privacy_level" else value
+            setattr(db_agent, field, coerced)
 
     if not new_values:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -238,6 +240,7 @@ async def update_agent_settings(
         request_method="PATCH",
         request_path="/v2/me/settings",
         details={"old": _redact_addresses(old_values), "new": _redact_addresses(new_values)},
+        db=db,
     )
 
     return {"updated": list(new_values.keys()), "message": "Settings updated"}
@@ -266,6 +269,7 @@ async def rotate_api_key(
         ip_address=get_client_ip(request),
         request_method="POST",
         request_path="/v2/me/rotate-key",
+        db=db,
     )
 
     return {

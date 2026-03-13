@@ -259,13 +259,13 @@ def test_withdrawal_completion_is_atomic(
     assert resp.json()["tx_hash"] == "abc123"
 
     # The withdraw endpoint opens sessions for:
-    #   1. deduct + create pending  (always 1)
-    #   2. mark_completed + create transaction + fresh balance  (should be 1, was 2)
-    # Total expected after fix: 2 sessions.
-    # Before fix: 3 sessions (mark_completed, create_transaction merged but fresh balance separate).
+    #   1. self-send check (onchain only)  (1)
+    #   2. deduct + create pending  (1)
+    #   3. mark_completed + create transaction + fresh balance  (should be 1, was 2)
+    # Total expected: 3 sessions (onchain) or 2 (ledger).
     # NOTE: The initial deduct+pending session runs before RPC so it is counted too.
-    # We assert <= 2 total sessions, proving completion + balance read are merged.
-    assert len(call_log) <= 2, (
-        f"Expected at most 2 DB sessions for withdraw, got {len(call_log)}. "
+    # We assert <= 3 total sessions, proving completion + balance read are merged.
+    assert len(call_log) <= 3, (
+        f"Expected at most 3 DB sessions for withdraw, got {len(call_log)}. "
         "mark_completed, create_transaction, and fresh balance read must share one session."
     )

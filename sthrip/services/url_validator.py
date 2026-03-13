@@ -38,6 +38,10 @@ def validate_url_target(url: str, *, enforce_https: Optional[bool] = None, block
     """
     parsed = urlparse(url)
 
+    # Reject URLs with embedded credentials (user:pass@host)
+    if parsed.username or parsed.password:
+        raise ValueError("Webhook URL must not contain credentials (user:pass@host is not allowed)")
+
     if enforce_https is None:
         enforce_https = get_settings().environment != "dev"
 

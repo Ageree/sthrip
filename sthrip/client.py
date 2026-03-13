@@ -343,13 +343,13 @@ class Sthrip:
         """Convert RPC transfer to Payment object"""
         amount_atomic = transfer.get("amount", 0)
         amount = float(Decimal(amount_atomic).abs() / Decimal("1000000000000"))
-        
+
         fee_atomic = transfer.get("fee", 0)
         fee = float(Decimal(fee_atomic) / Decimal("1000000000000"))
-        
-        is_outgoing = amount_atomic < 0
-        
-        timestamp = datetime.fromtimestamp(transfer.get("timestamp", 0))
+
+        is_outgoing = transfer.get("type") == "out"
+
+        timestamp = datetime.fromtimestamp(transfer.get("timestamp", 0), tz=timezone.utc)
         
         confirmations = transfer.get("confirmations", 0)
         status = PaymentStatus.CONFIRMED if confirmations >= 10 else PaymentStatus.PENDING

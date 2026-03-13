@@ -167,7 +167,7 @@ def test_recovery_empty_outgoing_does_not_auto_credit():
 
 def test_recovery_logs_critical_for_unmatched_stale():
     """Logger emits CRITICAL for unmatched stale withdrawals."""
-    import logging
+    from unittest.mock import patch, call
     from sthrip.services.withdrawal_recovery import recover_pending_withdrawals
 
     mock_pw = MagicMock()
@@ -183,16 +183,18 @@ def test_recovery_logs_critical_for_unmatched_stale():
     mock_pw_repo = MagicMock()
     mock_pw_repo.get_stale_pending.return_value = [mock_pw]
 
-    with pytest.raises(AssertionError) if False else \
-            _capture_log("sthrip", logging.CRITICAL) as captured:
+    with patch("sthrip.services.withdrawal_recovery.logger") as mock_logger:
         recover_pending_withdrawals(
             pw_repo=mock_pw_repo,
             wallet_service=mock_wallet,
         )
 
-    assert len(captured) >= 1
-    assert "HUMAN_ACTION_REQUIRED" in captured[0]
-    assert "pw-4" in captured[0]
+    mock_logger.critical.assert_called_once()
+    log_msg = mock_logger.critical.call_args[0][0]
+    assert "HUMAN_ACTION_REQUIRED" in log_msg
+    # Verify pw id is passed as argument
+    log_args = mock_logger.critical.call_args[0]
+    assert "pw-4" in str(log_args)
 
 
 def test_find_matching_transfer_rejects_timestamp_delta_over_threshold():
@@ -238,31 +240,81 @@ def test_find_matching_transfer_accepts_timestamp_within_threshold():
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# periodic_recovery_loop tests (M6)
 # ---------------------------------------------------------------------------
 
-import contextlib
-import logging
+@pytest.mark.asyncio
+async def test_periodic_recovery_loop_passes_wallet_to_recover():
+    """periodic_recovery_loop passes wallet_service param to recover_pending_withdrawals."""
+    import asyncio
+    from unittest.mock import patch, MagicMock
+
+    from sthrip.services.withdrawal_recovery import periodic_recovery_loop
+
+    iteration = 0
+
+    async def _mock_sleep(seconds):
+        nonlocal iteration
+        iteration += 1
+        if iteration >= 2:
+            raise asyncio.CancelledError()
+
+    mock_wallet = MagicMock()
+
+    with patch("sthrip.services.withdrawal_recovery.recover_pending_withdrawals") as mock_recover, \
+         patch("asyncio.sleep", side_effect=_mock_sleep):
+
+        await periodic_recovery_loop(
+            interval_seconds=0, max_age_minutes=5, wallet_service=mock_wallet,
+        )
+
+        # Verify wallet_service was passed through
+        assert mock_recover.called
+        call_kwargs = mock_recover.call_args[1]
+        assert call_kwargs["wallet_service"] is mock_wallet
 
 
-@contextlib.contextmanager
-def _capture_log(logger_name: str, level: int):
-    """Capture log messages at the given level from a named logger."""
-    captured: list[str] = []
-    logger = logging.getLogger(logger_name)
+@pytest.mark.asyncio
+async def test_periodic_recovery_loop_works_without_wallet():
+    """periodic_recovery_loop runs with wallet_service=None (marks all needs_review)."""
+    import asyncio
+    from unittest.mock import patch, MagicMock
 
-    class _Handler(logging.Handler):
-        def emit(self, record):
-            if record.levelno >= level:
-                captured.append(self.format(record))
+    from sthrip.services.withdrawal_recovery import periodic_recovery_loop
 
-    handler = _Handler()
-    handler.setLevel(level)
-    logger.addHandler(handler)
-    old_level = logger.level
-    logger.setLevel(level)
-    try:
-        yield captured
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(old_level)
+    iteration = 0
+
+    async def _mock_sleep(seconds):
+        nonlocal iteration
+        iteration += 1
+        if iteration >= 2:
+            raise asyncio.CancelledError()
+
+    with patch("sthrip.services.withdrawal_recovery.recover_pending_withdrawals") as mock_recover, \
+         patch("asyncio.sleep", side_effect=_mock_sleep):
+
+        await periodic_recovery_loop(
+            interval_seconds=0, max_age_minutes=5, wallet_service=None,
+        )
+
+        assert mock_recover.called
+        call_kwargs = mock_recover.call_args[1]
+        assert call_kwargs["wallet_service"] is None
+
+
+@pytest.mark.asyncio
+async def test_periodic_recovery_loop_cancellation():
+    """periodic_recovery_loop exits cleanly on CancelledError."""
+    import asyncio
+    from unittest.mock import patch
+
+    from sthrip.services.withdrawal_recovery import periodic_recovery_loop
+
+    async def _cancel_sleep(seconds):
+        raise asyncio.CancelledError()
+
+    with patch("asyncio.sleep", side_effect=_cancel_sleep):
+        # Should exit without raising
+        await periodic_recovery_loop(interval_seconds=1)
+
+

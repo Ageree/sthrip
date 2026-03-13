@@ -71,7 +71,7 @@ def configure_middleware(app: FastAPI) -> None:
         # For mutation requests without Content-Length (e.g. chunked transfers),
         # stream the body and reject as soon as the limit is exceeded so we never
         # buffer more than MAX_REQUEST_BODY_BYTES + 1 chunk worth of data.
-        if request.method in ("POST", "PUT", "PATCH") and not content_length:
+        if request.method in ("POST", "PUT", "PATCH", "DELETE") and not content_length:
             chunks: list[bytes] = []
             total = 0
             async for chunk in request.stream():
@@ -105,7 +105,7 @@ def configure_middleware(app: FastAPI) -> None:
         CORSMiddleware,
         allow_origins=_get_cors_origins(),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
     )
 

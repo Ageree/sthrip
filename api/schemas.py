@@ -99,7 +99,7 @@ class PaymentRequest(BaseModel):
 
 class HubPaymentRequest(BaseModel):
     to_agent_name: str = Field(..., min_length=1, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$', description="Recipient agent name")
-    amount: Decimal = Field(..., gt=0, le=9980, description="Amount in XMR (max 9980 to account for fees)")
+    amount: Decimal = Field(..., ge=Decimal("0.0001"), le=9980, description="Amount in XMR (min 0.0001 to cover minimum fee)")
     memo: Optional[str] = Field(default=None, max_length=500)
     urgency: str = Field(default="normal", pattern=r"^(normal|urgent)$")
 
@@ -238,7 +238,7 @@ def validate_monero_address(address: str) -> str:
 
 
 class WithdrawRequest(BaseModel):
-    amount: Decimal = Field(gt=0, le=10000, description="Amount to withdraw")
+    amount: Decimal = Field(ge=Decimal("0.001"), le=10000, description="Amount to withdraw (minimum 0.001 XMR)")
     address: str = Field(min_length=10, max_length=200, description="XMR address to withdraw to")
 
     @field_validator("address")

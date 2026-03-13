@@ -246,7 +246,10 @@ def test_admin_ui_login_success_not_blocked_after_failed_attempts(api_client):
 
         # Verify the successful attempt did NOT increment the counter
         # (counter should still be at 4, not 5)
-        ip_key = "ratelimit:ip:admin_login:testclient"
+        # After TOCTOU fix, failed auth uses record_failed_auth which writes
+        # to "ratelimit:ip:failed_auth:<ip>" key instead of the old
+        # check_ip_rate_limit key.
+        ip_key = "ratelimit:ip:failed_auth:testclient"
         entry = real_limiter._local_cache.get(ip_key)
         assert entry is not None, "Rate limit entry should exist for the IP"
         assert entry["count"] == 4, (

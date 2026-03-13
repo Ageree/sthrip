@@ -205,12 +205,14 @@ class TestDecimalPrecision:
             "addresses": [{"address": "hub_primary_addr", "address_index": 0}],
         }
 
+        import threading
         service = WalletService.__new__(WalletService)
         service.wallet = mock_wallet
         service._account_index = 0
         service._hub_addr_cache = None
         service._hub_addr_cache_time = 0.0
         service._hub_addr_cache_ttl = 300
+        service._hub_addr_lock = threading.Lock()
 
         amount = Decimal("1.123456789012")
         service.send_withdrawal("addr", amount)
@@ -317,4 +319,39 @@ class TestDateTimeTimezoneConsistency:
 
         assert non_tz_columns == [], (
             f"DateTime columns without timezone=True: {non_tz_columns}"
+        )
+
+
+# ── Task 12: Missing database indexes ──────────────────────────────────
+
+
+class TestRequiredIndexes:
+    """Critical tables must have indexes for query performance."""
+
+    def test_fee_collections_has_status_created_at_index(self):
+        """fee_collections needs an index on (status, created_at) for filtered queries."""
+        from sthrip.db.models import FeeCollection
+
+        index_columns = set()
+        for idx in FeeCollection.__table__.indexes:
+            cols = tuple(c.name for c in idx.columns)
+            index_columns.add(cols)
+
+        assert ("status", "created_at") in index_columns, (
+            f"fee_collections missing index on (status, created_at). "
+            f"Found indexes: {index_columns}"
+        )
+
+    def test_high_volume_tables_have_required_indexes(self):
+        """Tables that are queried with status filters must have appropriate indexes."""
+        from sthrip.db.models import Transaction, FeeCollection
+
+        # transactions: queried by status + created_at in admin/list views
+        tx_idx_cols = [
+            tuple(c.name for c in idx.columns)
+            for idx in Transaction.__table__.indexes
+        ]
+        assert any("status" in cols and "created_at" in cols for cols in tx_idx_cols), (
+            f"transactions missing composite index including (status, created_at). "
+            f"Found: {tx_idx_cols}"
         )

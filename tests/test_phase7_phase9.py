@@ -37,7 +37,7 @@ _TEST_TABLES = [
     FeeCollection.__table__,
 ]
 
-ADMIN_KEY = "test-admin-key-for-dashboard"
+ADMIN_KEY = "test-admin-key-for-dashboard-32char"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -356,26 +356,21 @@ class TestBulkWithdrawFees:
 
     @patch("sthrip.services.fee_collector.get_db")
     def test_withdraw_returns_correct_count(self, mock_get_db):
-        """Bulk update count must match actual updated rows."""
+        """Bulk update count must match actual locked rows."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
-        mock_query = MagicMock()
-        mock_db.query.return_value = mock_query
-        mock_filter = MagicMock()
-        mock_query.filter.return_value = mock_filter
-        # Total amount query
-        mock_filter.scalar.return_value = Decimal("0.2")
-        # Bulk update returns 2 rows
-        mock_filter.update.return_value = 2
+        fee1 = MagicMock(amount=Decimal("0.1"))
+        fee2 = MagicMock(amount=Decimal("0.1"))
+        mock_db.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = [fee1, fee2]
 
         from sthrip.services.fee_collector import FeeCollector
         collector = FeeCollector()
         result = collector.withdraw_fees(["fee_1", "fee_2"], "tx_xyz")
 
         assert result["withdrawn_fees"] == 2
-        assert result["total_amount"] == float(Decimal("0.2"))
+        assert result["total_amount"] == "0.2"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -434,7 +429,7 @@ class TestMoneroRpcHostValidation:
         from sthrip.config import Settings
         with pytest.raises(Exception, match="loopback"):
             Settings(
-                admin_api_key="real-secure-key-for-production",
+                admin_api_key="real-secure-key-for-production-32c",
                 api_key_hmac_secret="real-hmac-secret-for-production-32ch",
                 webhook_encryption_key="uRWhVK_rogw9mlMJ6mYR1uCHU8zg1A0Q9TrHhHsu5jE=",
                 monero_rpc_pass="secure-rpc-pass",
@@ -446,7 +441,7 @@ class TestMoneroRpcHostValidation:
     def test_production_allows_hostname(self):
         from sthrip.config import Settings
         s = Settings(
-            admin_api_key="real-secure-key-for-production",
+            admin_api_key="real-secure-key-for-production-32c",
             api_key_hmac_secret="real-hmac-secret-for-production-32ch",
             webhook_encryption_key="uRWhVK_rogw9mlMJ6mYR1uCHU8zg1A0Q9TrHhHsu5jE=",
             monero_rpc_pass="secure-rpc-pass",
@@ -460,7 +455,7 @@ class TestMoneroRpcHostValidation:
     def test_production_allows_private_ip(self):
         from sthrip.config import Settings
         s = Settings(
-            admin_api_key="real-secure-key-for-production",
+            admin_api_key="real-secure-key-for-production-32c",
             api_key_hmac_secret="real-hmac-secret-for-production-32ch",
             webhook_encryption_key="uRWhVK_rogw9mlMJ6mYR1uCHU8zg1A0Q9TrHhHsu5jE=",
             monero_rpc_pass="secure-rpc-pass",

@@ -45,12 +45,14 @@ class PendingWithdrawalRepository:
         return self.db.query(PendingWithdrawal).filter_by(status=WithdrawalStatus.PENDING).all()
 
     def mark_completed(self, pw_id: str, tx_hash: str) -> None:
-        self.db.query(PendingWithdrawal).filter_by(id=pw_id).update({
+        rowcount = self.db.query(PendingWithdrawal).filter_by(id=pw_id).update({
             "status": WithdrawalStatus.COMPLETED,
             "tx_hash": tx_hash,
             "completed_at": datetime.now(timezone.utc),
         })
         self.db.flush()
+        if rowcount != 1:
+            raise RuntimeError(f"mark_completed: expected 1 row, got {rowcount} for pw_id={pw_id}")
 
     def mark_failed(self, pw_id: str, error: str) -> None:
         self.db.query(PendingWithdrawal).filter_by(id=pw_id).update({
@@ -61,8 +63,10 @@ class PendingWithdrawalRepository:
         self.db.flush()
 
     def mark_needs_review(self, pw_id: str, reason: str) -> None:
-        self.db.query(PendingWithdrawal).filter_by(id=pw_id).update({
+        rowcount = self.db.query(PendingWithdrawal).filter_by(id=pw_id).update({
             "status": WithdrawalStatus.NEEDS_REVIEW,
             "error": reason,
         })
         self.db.flush()
+        if rowcount != 1:
+            raise RuntimeError(f"mark_needs_review: expected 1 row, got {rowcount} for pw_id={pw_id}")

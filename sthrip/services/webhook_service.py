@@ -45,11 +45,15 @@ class WebhookService:
         self.max_retries = max_retries
         self._running = False
         self._session: Optional[aiohttp.ClientSession] = None
+        self._session_lock: Optional[asyncio.Lock] = None  # lazy init for Python 3.9
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
-        return self._session
+        if self._session_lock is None:
+            self._session_lock = asyncio.Lock()
+        async with self._session_lock:
+            if self._session is None or self._session.closed:
+                self._session = aiohttp.ClientSession()
+            return self._session
 
     async def close(self):
         if self._session and not self._session.closed:
@@ -137,7 +141,10 @@ class WebhookService:
                 ssl=ssl_ctx,
                 server_hostname=original_hostname if ssl_ctx else None,
             ) as response:
-                    body = await response.text()
+                    # Read at most 2048 bytes to prevent memory exhaustion
+                    # from malicious endpoints returning huge responses
+                    body_bytes = await response.content.read(2048)
+                    body = body_bytes.decode("utf-8", errors="replace")
                     
                     # Success: 2xx status
                     success = 200 <= response.status < 300
@@ -154,15 +161,16 @@ class WebhookService:
                 success=False,
                 error="Request timeout"
             )
-        except aiohttp.ClientError as e:
+        except aiohttp.ClientError:
             return WebhookResult(
                 success=False,
-                error=f"Client error: {str(e)}"
+                error="Client error: connection failed"
             )
-        except Exception as e:
+        except Exception:
+            logger.exception("Unexpected error delivering webhook")
             return WebhookResult(
                 success=False,
-                error=f"Unexpected error: {str(e)}"
+                error="Unexpected error during webhook delivery"
             )
     
     def _build_event_payload(
