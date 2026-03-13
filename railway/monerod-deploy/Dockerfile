@@ -24,7 +24,7 @@ COPY <<'EOF' /opt/start.sh
 #!/bin/sh
 set -e
 
-DATA_DIR=/data/monerod
+DATA_DIR="${MONEROD_DATA_DIR:-/data/monerod}"
 
 # Fix permissions on Railway-mounted volume
 mkdir -p "$DATA_DIR"
