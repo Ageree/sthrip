@@ -18,15 +18,22 @@ RUN wget -q "https://downloads.getmonero.org/cli/monero-linux-x64-v${MONERO_VERS
 # Non-root user
 RUN useradd -r -m -s /bin/false monero
 
-EXPOSE 18081 38080
+EXPOSE 18080 18081
 
 COPY <<'EOF' /opt/start.sh
 #!/bin/sh
 set -e
 
 DATA_DIR="${MONEROD_DATA_DIR:-/data/monerod}"
-P2P_PORT="${MONEROD_P2P_PORT:-38080}"
+P2P_PORT="${MONEROD_P2P_PORT:-18080}"
 RPC_PORT="${MONEROD_RPC_PORT:-18081}"
+
+# Disk status
+echo "=== DISK STATUS ==="
+df -h /data
+echo "=== /data contents ==="
+du -sh /data/* 2>/dev/null || echo "(empty)"
+echo "==================="
 
 # One-time cleanup: remove old stagenet data if mainnet dir exists
 if [ "$DATA_DIR" = "/data/monerod-mainnet" ] && [ -d "/data/monerod" ]; then
@@ -35,7 +42,7 @@ if [ "$DATA_DIR" = "/data/monerod-mainnet" ] && [ -d "/data/monerod" ]; then
     echo "Stagenet data removed."
 fi
 
-# Fix permissions on Railway-mounted volume
+# Fix permissions on Railway disk
 mkdir -p "$DATA_DIR"
 chown -R monero:monero /data
 
