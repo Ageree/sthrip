@@ -15,10 +15,33 @@ from sqlalchemy import desc, func, and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
+from sqlalchemy.types import String as SAString
+
 from ..db.database import get_db
 from ..db.models import Agent, AgentReputation, AgentTier
 from ..db.repository import AgentRepository, ReputationRepository
 from ..utils import escape_ilike
+
+
+def _apply_capability_filter(db, query, capability: str):
+    """Apply capability filter using dialect-appropriate JSON containment.
+
+    PostgreSQL: uses native @> (JSONB contains) via the GIN index.
+    SQLite/other: falls back to LIKE on the serialized JSON text.
+    """
+    dialect = db.bind.dialect.name if db.bind else "sqlite"
+    if dialect == "postgresql":
+        import json
+        query = query.filter(
+            Agent.capabilities.op("@>")(func.cast(json.dumps([capability]), SAString))
+        )
+    else:
+        # SQLite: capabilities stored as JSON text, e.g. '["translation", "code-review"]'
+        query = query.filter(
+            func.cast(Agent.capabilities, SAString).contains(f'"{capability}"')
+        )
+    return query
+
 
 @dataclass
 class AgentProfile:
@@ -27,20 +50,26 @@ class AgentProfile:
     agent_name: str
     did: Optional[str]
     tier: str
-    
+
     # Wallet addresses (public)
     xmr_address: Optional[str]
     base_address: Optional[str]
     solana_address: Optional[str]
-    
+
     # Reputation
     trust_score: int
     total_transactions: int
     average_rating: float
-    
+
     # Services offered
     services: List[Dict[str, Any]]
-    
+
+    # Marketplace
+    capabilities: List[str]
+    pricing: Dict[str, str]
+    description: Optional[str]
+    accepts_escrow: bool
+
     # Metadata
     verified_at: Optional[str]
     last_seen_at: Optional[str]
@@ -68,11 +97,15 @@ class AgentRegistry:
         privacy_level: str = "medium",
         xmr_address: Optional[str] = None,
         base_address: Optional[str] = None,
-        solana_address: Optional[str] = None
+        solana_address: Optional[str] = None,
+        capabilities: Optional[List[str]] = None,
+        pricing: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+        accepts_escrow: Optional[bool] = None,
     ) -> Dict:
         """
         Register new agent
-        
+
         Returns:
             Registration result with API key (shown once)
         """
@@ -96,6 +129,16 @@ class AgentRegistry:
                         base_address=base_address,
                         solana_address=solana_address
                     )
+
+                # Set marketplace fields if provided
+                if capabilities is not None:
+                    agent.capabilities = capabilities
+                if pricing is not None:
+                    agent.pricing = pricing
+                if description is not None:
+                    agent.description = description
+                if accepts_escrow is not None:
+                    agent.accepts_escrow = accepts_escrow
 
                 db.flush()
             except IntegrityError:
@@ -156,16 +199,20 @@ class AgentRegistry:
         min_trust_score: Optional[int] = None,
         tier: Optional[str] = None,
         verified_only: bool = False,
+        capability: Optional[str] = None,
+        accepts_escrow: Optional[bool] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
     ) -> List[AgentProfile]:
         """
         Discover agents with filters
-        
+
         Args:
             min_trust_score: Minimum trust score (0-100)
             tier: Filter by tier (free, verified, premium, enterprise)
             verified_only: Only verified agents
+            capability: Filter by capability (JSON contains)
+            accepts_escrow: Filter agents that accept escrow
             limit: Max results
             offset: Pagination offset
         """
@@ -185,21 +232,29 @@ class AgentRegistry:
                     AgentReputation.trust_score >= min_trust_score
                 )
 
+            if capability is not None:
+                query = _apply_capability_filter(db, query, capability)
+
+            if accepts_escrow is not None:
+                query = query.filter(Agent.accepts_escrow == accepts_escrow)
+
             agents = query.order_by(desc(Agent.created_at)).offset(offset).limit(limit).all()
-            
+
             profiles = []
             for agent in agents:
                 profile = self._agent_to_profile(agent)
                 if profile:
                     profiles.append(profile)
-            
+
             return profiles
-    
+
     def count_agents(
         self,
         min_trust_score: Optional[int] = None,
         tier: Optional[str] = None,
         verified_only: bool = False,
+        capability: Optional[str] = None,
+        accepts_escrow: Optional[bool] = None,
     ) -> int:
         """Count agents matching the given filters."""
         with get_db() as db:
@@ -212,6 +267,10 @@ class AgentRegistry:
                 query = query.join(AgentReputation).filter(
                     AgentReputation.trust_score >= min_trust_score
                 )
+            if capability is not None:
+                query = _apply_capability_filter(db, query, capability)
+            if accepts_escrow is not None:
+                query = query.filter(Agent.accepts_escrow == accepts_escrow)
             return query.scalar() or 0
 
     def search_agents(
@@ -341,6 +400,10 @@ class AgentRegistry:
             total_transactions=rep.total_transactions if rep else 0,
             average_rating=float(rep.average_rating) if rep else 0.0,
             services=[],
+            capabilities=agent.capabilities if agent.capabilities else [],
+            pricing=agent.pricing if agent.pricing else {},
+            description=agent.description,
+            accepts_escrow=agent.accepts_escrow if agent.accepts_escrow is not None else True,
             verified_at=agent.verified_at.isoformat() if agent.verified_at else None,
             last_seen_at=agent.last_seen_at.isoformat() if agent.last_seen_at else None,
             created_at=agent.created_at.isoformat()

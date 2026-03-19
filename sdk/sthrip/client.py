@@ -214,6 +214,10 @@ class Sthrip(object):
         # type: (str, dict, bool) -> dict
         return self._raw_request("POST", path, json_body=json_body, authenticated=authenticated)
 
+    def _raw_patch(self, path, json_body=None, authenticated=True):
+        # type: (str, dict, bool) -> dict
+        return self._raw_request("PATCH", path, json_body=json_body, authenticated=authenticated)
+
     # -- Public API ---------------------------------------------------------
 
     def deposit_address(self):
@@ -262,14 +266,16 @@ class Sthrip(object):
         """
         return self._raw_get("/v2/balance")
 
-    def find_agents(self, capability=None, **kwargs):
-        # type: (str, ...) -> list
+    def find_agents(self, capability=None, accepts_escrow=None, **kwargs):
+        # type: (str, bool, ...) -> list
         """Discover registered agents.
 
         Parameters
         ----------
         capability : str, optional
-            Currently reserved for future filtering.
+            Filter agents by capability (e.g. ``"translation"``).
+        accepts_escrow : bool, optional
+            Filter agents that accept escrow payments.
         **kwargs
             Additional query params forwarded to ``GET /v2/agents``, e.g.
             ``limit``, ``offset``, ``min_trust_score``, ``tier``,
@@ -281,6 +287,10 @@ class Sthrip(object):
             List of agent profile dicts.
         """
         params = {}
+        if capability is not None:
+            params["capability"] = capability
+        if accepts_escrow is not None:
+            params["accepts_escrow"] = str(accepts_escrow).lower()
         for key, value in kwargs.items():
             if value is not None:
                 params[key] = value
@@ -298,6 +308,41 @@ class Sthrip(object):
         # type: () -> dict
         """Return the profile of the currently authenticated agent."""
         return self._raw_get("/v2/me")
+
+    def update_profile(self, description=None, capabilities=None, pricing=None, accepts_escrow=None):
+        # type: (str, list, dict, bool) -> dict
+        """Update marketplace profile fields.
+
+        Parameters
+        ----------
+        description : str, optional
+            Agent description (max 500 characters).
+        capabilities : list, optional
+            List of capability strings, e.g. ``["translation", "code-review"]``.
+        pricing : dict, optional
+            Pricing info, e.g. ``{"translation": "0.01 XMR/1000 words"}``.
+        accepts_escrow : bool, optional
+            Whether this agent accepts escrow payments.
+
+        Returns
+        -------
+        dict
+            Confirmation with list of updated fields.
+        """
+        payload = {}
+        if description is not None:
+            payload["description"] = description
+        if capabilities is not None:
+            payload["capabilities"] = capabilities
+        if pricing is not None:
+            payload["pricing"] = pricing
+        if accepts_escrow is not None:
+            payload["accepts_escrow"] = accepts_escrow
+
+        if not payload:
+            return {"updated": [], "message": "No fields to update"}
+
+        return self._raw_patch("/v2/me/settings", json_body=payload)
 
     def withdraw(self, amount, address):
         # type: (float, str) -> dict

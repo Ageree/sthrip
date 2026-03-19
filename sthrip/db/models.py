@@ -72,6 +72,12 @@ class Agent(Base):
     staked_amount = Column(Numeric(20, 8), default=Decimal('0'))
     staked_token = Column(String(10), default='USDC')
     
+    # Marketplace
+    capabilities = Column(JSON, default=list)  # ["translation", "code-review", ...]
+    pricing = Column(JSON, default=dict)       # {"translation": "0.01 XMR/1000 words"}
+    description = Column(Text, nullable=True)  # max 500 chars, enforced at API layer
+    accepts_escrow = Column(Boolean, default=True)
+
     # Status
     is_active = Column(Boolean, default=True)
     last_seen_at = Column(DateTime(timezone=True), nullable=True)

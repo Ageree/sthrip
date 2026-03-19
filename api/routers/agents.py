@@ -16,6 +16,7 @@ from api.deps import get_current_agent, get_db_session
 from api.helpers import get_client_ip
 from api.schemas import (
     AgentRegistration, AgentResponse, AgentProfileResponse, AgentSettingsUpdate,
+    AgentMarketplaceResponse,
 )
 from sthrip.db.enums import PrivacyLevel
 from sthrip.db.repository import AgentRepository
@@ -80,6 +81,10 @@ async def register_agent(reg: AgentRegistration, request: Request):
             xmr_address=reg.xmr_address,
             base_address=reg.base_address,
             solana_address=reg.solana_address,
+            capabilities=reg.capabilities,
+            pricing=reg.pricing,
+            description=reg.description,
+            accepts_escrow=reg.accepts_escrow,
         )
 
         client_ip = get_client_ip(request)
@@ -104,6 +109,51 @@ async def register_agent(reg: AgentRegistration, request: Request):
         raise HTTPException(status_code=400, detail="Registration failed. Check your input and try again.")
 
 
+@router.get("/v2/agents/marketplace")
+async def marketplace(
+    request: Request,
+    capability: Optional[str] = Query(default=None, min_length=1, max_length=50),
+    accepts_escrow: Optional[bool] = Query(default=None),
+    min_trust_score: Optional[int] = Query(default=None, ge=0, le=100),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    """Browse the agent marketplace -- returns capability and pricing info."""
+    _check_ip_rate_limit(request, "discovery", per_ip_limit=60, global_limit=1000, window_seconds=60)
+
+    registry = get_registry()
+    profiles = registry.discover_agents(
+        min_trust_score=min_trust_score,
+        capability=capability,
+        accepts_escrow=accepts_escrow,
+        limit=limit,
+        offset=offset,
+    )
+    total = registry.count_agents(
+        min_trust_score=min_trust_score,
+        capability=capability,
+        accepts_escrow=accepts_escrow,
+    )
+    return {
+        "items": [
+            AgentMarketplaceResponse(
+                agent_name=p.agent_name,
+                description=p.description,
+                capabilities=p.capabilities,
+                pricing=p.pricing,
+                accepts_escrow=p.accepts_escrow,
+                tier=p.tier,
+                trust_score=p.trust_score,
+                verified_at=p.verified_at,
+            )
+            for p in profiles
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 @router.get("/v2/agents/{agent_name}", response_model=AgentProfileResponse)
 async def get_agent_profile(agent_name: str, request: Request):
     """Get public agent profile"""
@@ -122,6 +172,10 @@ async def get_agent_profile(agent_name: str, request: Request):
         xmr_address=profile.xmr_address,
         base_address=profile.base_address,
         verified_at=profile.verified_at,
+        capabilities=profile.capabilities,
+        pricing=profile.pricing,
+        description=profile.description,
+        accepts_escrow=profile.accepts_escrow,
     )
 
 
@@ -131,6 +185,8 @@ async def discover_agents(
     min_trust_score: Optional[int] = Query(default=None, ge=0, le=100),
     tier: Optional[str] = Query(default=None, pattern=r"^(free|verified|premium|enterprise)$"),
     verified_only: bool = False,
+    capability: Optional[str] = Query(default=None, min_length=1, max_length=50),
+    accepts_escrow: Optional[bool] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ):
@@ -142,6 +198,8 @@ async def discover_agents(
         min_trust_score=min_trust_score,
         tier=tier,
         verified_only=verified_only,
+        capability=capability,
+        accepts_escrow=accepts_escrow,
         limit=limit,
         offset=offset,
     )
@@ -149,6 +207,8 @@ async def discover_agents(
         min_trust_score=min_trust_score,
         tier=tier,
         verified_only=verified_only,
+        capability=capability,
+        accepts_escrow=accepts_escrow,
     )
     return {
         "items": [
@@ -161,6 +221,10 @@ async def discover_agents(
                 xmr_address=p.xmr_address,
                 base_address=p.base_address,
                 verified_at=p.verified_at,
+                capabilities=p.capabilities,
+                pricing=p.pricing,
+                description=p.description,
+                accepts_escrow=p.accepts_escrow,
             )
             for p in profiles
         ],
@@ -215,20 +279,36 @@ async def update_agent_settings(
 
     old_values = {}
     new_values = {}
-    fields = {
+
+    # Scalar fields (coerce privacy_level to enum)
+    scalar_fields = {
         "webhook_url": settings.webhook_url,
         "privacy_level": settings.privacy_level,
         "xmr_address": settings.xmr_address,
         "base_address": settings.base_address,
         "solana_address": settings.solana_address,
+        "description": settings.description,
+        "accepts_escrow": settings.accepts_escrow,
     }
-    for field, value in fields.items():
+    for field, value in scalar_fields.items():
         if value is not None:
             old_val = getattr(db_agent, field)
             old_values[field] = str(old_val) if old_val else None
             new_values[field] = value
             coerced = PrivacyLevel(value) if field == "privacy_level" else value
             setattr(db_agent, field, coerced)
+
+    # JSON fields (list/dict -- compare against None, not truthiness)
+    json_fields = {
+        "capabilities": settings.capabilities,
+        "pricing": settings.pricing,
+    }
+    for field, value in json_fields.items():
+        if value is not None:
+            old_val = getattr(db_agent, field)
+            old_values[field] = old_val
+            new_values[field] = value
+            setattr(db_agent, field, value)
 
     if not new_values:
         raise HTTPException(status_code=400, detail="No fields to update")

@@ -2,7 +2,7 @@
 
 import re
 from decimal import Decimal
-from typing import Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -16,6 +16,12 @@ class AgentRegistration(BaseModel):
     xmr_address: Optional[str] = None
     base_address: Optional[str] = None
     solana_address: Optional[str] = None
+
+    # Marketplace fields (optional at registration)
+    capabilities: Optional[List[str]] = Field(default=None, max_length=20)
+    pricing: Optional[Dict[str, str]] = None
+    description: Optional[str] = Field(default=None, max_length=500)
+    accepts_escrow: Optional[bool] = None
 
     @field_validator("webhook_url")
     @classmethod
@@ -35,6 +41,32 @@ class AgentRegistration(BaseModel):
             return v
         return validate_monero_address(v)
 
+    @field_validator("capabilities")
+    @classmethod
+    def validate_capabilities(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        if len(v) > 20:
+            raise ValueError("Maximum 20 capabilities allowed")
+        for cap in v:
+            if not cap or len(cap) > 50:
+                raise ValueError("Each capability must be 1-50 characters")
+        return v
+
+    @field_validator("pricing")
+    @classmethod
+    def validate_pricing(cls, v: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+        if v is None:
+            return v
+        if len(v) > 20:
+            raise ValueError("Maximum 20 pricing entries allowed")
+        for key, val in v.items():
+            if not key or len(key) > 50:
+                raise ValueError("Pricing key must be 1-50 characters")
+            if not val or len(val) > 100:
+                raise ValueError("Pricing value must be 1-100 characters")
+        return v
+
 
 class AgentResponse(BaseModel):
     agent_id: str
@@ -51,6 +83,12 @@ class AgentSettingsUpdate(BaseModel):
     xmr_address: Optional[str] = None
     base_address: Optional[str] = None
     solana_address: Optional[str] = None
+
+    # Marketplace fields
+    capabilities: Optional[List[str]] = None
+    pricing: Optional[Dict[str, str]] = None
+    description: Optional[str] = Field(default=None, max_length=500)
+    accepts_escrow: Optional[bool] = None
 
     @field_validator("webhook_url")
     @classmethod
@@ -77,6 +115,32 @@ class AgentSettingsUpdate(BaseModel):
             raise ValueError("Wallet address must not be empty")
         return v
 
+    @field_validator("capabilities")
+    @classmethod
+    def validate_capabilities(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        if len(v) > 20:
+            raise ValueError("Maximum 20 capabilities allowed")
+        for cap in v:
+            if not cap or len(cap) > 50:
+                raise ValueError("Each capability must be 1-50 characters")
+        return v
+
+    @field_validator("pricing")
+    @classmethod
+    def validate_pricing(cls, v: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+        if v is None:
+            return v
+        if len(v) > 20:
+            raise ValueError("Maximum 20 pricing entries allowed")
+        for key, val in v.items():
+            if not key or len(key) > 50:
+                raise ValueError("Pricing key must be 1-50 characters")
+            if not val or len(val) > 100:
+                raise ValueError("Pricing value must be 1-100 characters")
+        return v
+
 
 class AgentProfileResponse(BaseModel):
     agent_name: str
@@ -87,6 +151,24 @@ class AgentProfileResponse(BaseModel):
     xmr_address: Optional[str]
     base_address: Optional[str]
     verified_at: Optional[str]
+
+    # Marketplace fields
+    capabilities: List[str] = Field(default_factory=list)
+    pricing: Dict[str, str] = Field(default_factory=dict)
+    description: Optional[str] = None
+    accepts_escrow: bool = True
+
+
+class AgentMarketplaceResponse(BaseModel):
+    """Marketplace-focused agent response with capabilities and pricing."""
+    agent_name: str
+    description: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
+    pricing: Dict[str, str] = Field(default_factory=dict)
+    accepts_escrow: bool = True
+    tier: str
+    trust_score: int
+    verified_at: Optional[str] = None
 
 
 class PaymentRequest(BaseModel):
