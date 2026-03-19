@@ -20,6 +20,8 @@ def upgrade() -> None:
 
     if is_pg:
         # --- Enum migration (PostgreSQL) ---
+        # Clean up any leftover type from a failed prior attempt
+        op.execute("DROP TYPE IF EXISTS escrowstatus_new")
         op.execute(
             "CREATE TYPE escrowstatus_new AS ENUM "
             "('created', 'accepted', 'delivered', 'completed', 'cancelled', 'expired')"
@@ -80,55 +82,39 @@ def upgrade() -> None:
             except Exception:
                 pass
 
-    # --- Add new columns ---
-    op.add_column(
-        "escrow_deals",
-        sa.Column("fee_percent", sa.Numeric(5, 4), server_default="0.001", nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("fee_amount", sa.Numeric(20, 12), server_default="0", nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("accept_timeout_hours", sa.Integer(), server_default="24", nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("delivery_timeout_hours", sa.Integer(), server_default="48", nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("review_timeout_hours", sa.Integer(), server_default="24", nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("accept_deadline", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("delivery_deadline", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("review_deadline", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("accepted_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("release_amount", sa.Numeric(20, 12), nullable=True),
-    )
-    op.add_column(
-        "escrow_deals",
-        sa.Column("cancelled_at", sa.DateTime(timezone=True), nullable=True),
-    )
+    # --- Add new columns (idempotent via IF NOT EXISTS for PostgreSQL) ---
+    if is_pg:
+        _new_cols = [
+            ("fee_percent", "NUMERIC(5,4) DEFAULT 0.001"),
+            ("fee_amount", "NUMERIC(20,12) DEFAULT 0"),
+            ("accept_timeout_hours", "INTEGER DEFAULT 24"),
+            ("delivery_timeout_hours", "INTEGER DEFAULT 48"),
+            ("review_timeout_hours", "INTEGER DEFAULT 24"),
+            ("accept_deadline", "TIMESTAMPTZ"),
+            ("delivery_deadline", "TIMESTAMPTZ"),
+            ("review_deadline", "TIMESTAMPTZ"),
+            ("accepted_at", "TIMESTAMPTZ"),
+            ("delivered_at", "TIMESTAMPTZ"),
+            ("release_amount", "NUMERIC(20,12)"),
+            ("cancelled_at", "TIMESTAMPTZ"),
+        ]
+        for col_name, col_type in _new_cols:
+            op.execute(
+                f"ALTER TABLE escrow_deals ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+            )
+    else:
+        op.add_column("escrow_deals", sa.Column("fee_percent", sa.Numeric(5, 4), server_default="0.001", nullable=True))
+        op.add_column("escrow_deals", sa.Column("fee_amount", sa.Numeric(20, 12), server_default="0", nullable=True))
+        op.add_column("escrow_deals", sa.Column("accept_timeout_hours", sa.Integer(), server_default="24", nullable=True))
+        op.add_column("escrow_deals", sa.Column("delivery_timeout_hours", sa.Integer(), server_default="48", nullable=True))
+        op.add_column("escrow_deals", sa.Column("review_timeout_hours", sa.Integer(), server_default="24", nullable=True))
+        op.add_column("escrow_deals", sa.Column("accept_deadline", sa.DateTime(timezone=True), nullable=True))
+        op.add_column("escrow_deals", sa.Column("delivery_deadline", sa.DateTime(timezone=True), nullable=True))
+        op.add_column("escrow_deals", sa.Column("review_deadline", sa.DateTime(timezone=True), nullable=True))
+        op.add_column("escrow_deals", sa.Column("accepted_at", sa.DateTime(timezone=True), nullable=True))
+        op.add_column("escrow_deals", sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True))
+        op.add_column("escrow_deals", sa.Column("release_amount", sa.Numeric(20, 12), nullable=True))
+        op.add_column("escrow_deals", sa.Column("cancelled_at", sa.DateTime(timezone=True), nullable=True))
 
     # Index for the background auto-resolution task
     if is_pg:
