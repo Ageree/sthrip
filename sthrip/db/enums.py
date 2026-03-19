@@ -53,12 +53,11 @@ class PaymentType(str, _PyEnum):
 
 
 class EscrowStatus(str, _PyEnum):
-    PENDING = "pending"
-    FUNDED = "funded"
+    CREATED = "created"
+    ACCEPTED = "accepted"
     DELIVERED = "delivered"
     COMPLETED = "completed"
-    DISPUTED = "disputed"
-    REFUNDED = "refunded"
+    CANCELLED = "cancelled"
     EXPIRED = "expired"
 
 

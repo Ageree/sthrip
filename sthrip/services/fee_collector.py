@@ -46,14 +46,14 @@ DEFAULT_FEES: Dict[FeeType, FeeConfig] = {
         percent=Decimal("0.001"),  # 0.1%
         fixed_amount=Decimal("0"),
         min_fee=Decimal("0.0001"),  # Minimum 0.0001 XMR
-        max_fee=Decimal("1.0")      # Maximum 1 XMR
+        max_fee=Decimal("999999999")  # No practical cap
     ),
     FeeType.ESCROW: FeeConfig(
         fee_type=FeeType.ESCROW,
-        percent=Decimal("0.01"),   # 1%
+        percent=Decimal("0.001"),  # 0.1% (same as hub routing)
         fixed_amount=Decimal("0"),
-        min_fee=Decimal("0.001"),
-        max_fee=Decimal("10.0")
+        min_fee=Decimal("0.0001"),
+        max_fee=Decimal("999999999")
     ),
     FeeType.CROSS_CHAIN: FeeConfig(
         fee_type=FeeType.CROSS_CHAIN,
@@ -141,31 +141,28 @@ class FeeCollector:
     def calculate_escrow_fee(
         self,
         amount: Decimal,
-        use_arbiter: bool = True
+        from_agent_tier: str = "free",
     ) -> Dict:
-        """Calculate escrow fees"""
+        """Calculate escrow fee (0.1%, same structure as hub routing, with tier discounts)."""
         config = DEFAULT_FEES[FeeType.ESCROW]
-        
-        platform_fee = amount * config.percent
-        platform_fee = max(platform_fee, config.min_fee)
-        platform_fee = min(platform_fee, config.max_fee)
-        
-        # Arbiter fee (if used)
-        arbiter_fee = Decimal("0")
-        if use_arbiter:
-            arbiter_fee = amount * Decimal("0.005")  # 0.5%
-            arbiter_fee = min(arbiter_fee, Decimal("1.0"))
-        
-        total_fee = platform_fee + arbiter_fee
-        
+
+        fee_percent = config.percent
+        if from_agent_tier == "premium":
+            fee_percent = fee_percent * Decimal("0.5")
+        elif from_agent_tier == "verified":
+            fee_percent = fee_percent * Decimal("0.75")
+
+        fee_amount = amount * fee_percent
+        fee_amount = max(fee_amount, config.min_fee)
+        fee_amount = min(fee_amount, config.max_fee)
+        fee_amount = min(fee_amount, amount)
+
         return {
             "escrow_amount": amount,
-            "platform_fee": platform_fee,
-            "platform_fee_percent": config.percent,
-            "arbiter_fee": arbiter_fee,
-            "total_fee": total_fee,
-            "buyer_deposits": amount + total_fee,
-            "seller_receives": amount
+            "fee_amount": fee_amount,
+            "fee_percent": fee_percent,
+            "tier_discount": from_agent_tier,
+            "seller_receives": amount - fee_amount,
         }
     
     def create_hub_route(

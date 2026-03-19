@@ -63,13 +63,15 @@ class TestEscrowRepoModule:
         for method in (
             "create",
             "get_by_id",
+            "get_by_id_for_update",
             "get_by_hash",
             "list_by_agent",
-            "fund_deal",
-            "mark_delivered",
+            "accept",
+            "deliver",
             "release",
-            "open_dispute",
-            "arbitrate",
+            "cancel",
+            "expire",
+            "get_pending_expiry",
         ):
             assert hasattr(EscrowRepository, method), f"Missing method: {method}"
 

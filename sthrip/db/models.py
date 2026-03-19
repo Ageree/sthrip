@@ -166,48 +166,50 @@ class Transaction(Base):
 
 
 class EscrowDeal(Base):
-    """2-of-3 multisig escrow deals"""
+    """Hub-held escrow deals (no multisig, no arbiter)"""
     __tablename__ = "escrow_deals"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     deal_hash = Column(String(64), unique=True, nullable=False)
-    
+
+    # Participants
     buyer_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
     seller_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
-    arbiter_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True)
-    
+
+    # Deal terms
     amount = Column(Numeric(20, 12), nullable=False)
     token = Column(String(20), default='XMR')
     description = Column(Text, nullable=True)
-    
-    # Fees
-    platform_fee_percent = Column(Numeric(5, 4), default=Decimal('0.01'))
-    platform_fee_amount = Column(Numeric(20, 12), default=Decimal('0'))
-    arbiter_fee_percent = Column(Numeric(5, 4), default=Decimal('0.005'))
-    arbiter_fee_amount = Column(Numeric(20, 12), default=Decimal('0'))
-    
-    timeout_hours = Column(Integer, default=48)
-    
-    status = Column(SQLEnum(EscrowStatus), default=EscrowStatus.PENDING)
-    
-    deposit_tx_hash = Column(String(255), ForeignKey("transactions.tx_hash"), nullable=True)
-    release_tx_hash = Column(String(255), ForeignKey("transactions.tx_hash"), nullable=True)
-    multisig_address = Column(String(255), nullable=True)
-    
-    # Dispute
-    disputed_at = Column(DateTime(timezone=True), nullable=True)
-    disputed_by = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True)
-    dispute_reason = Column(Text, nullable=True)
-    arbiter_decision = Column(String(20), nullable=True)
-    arbiter_signature = Column(Text, nullable=True)
+
+    # Fee (0.1% of released amount)
+    fee_percent = Column(Numeric(5, 4), default=Decimal('0.001'))
+    fee_amount = Column(Numeric(20, 12), default=Decimal('0'))
+
+    # Timeouts (hours)
+    accept_timeout_hours = Column(Integer, default=24)
+    delivery_timeout_hours = Column(Integer, default=48)
+    review_timeout_hours = Column(Integer, default=24)
+
+    # Deadlines (computed from timeouts at state transitions)
+    accept_deadline = Column(DateTime(timezone=True), nullable=True)
+    delivery_deadline = Column(DateTime(timezone=True), nullable=True)
+    review_deadline = Column(DateTime(timezone=True), nullable=True)
+
+    # Release
+    release_amount = Column(Numeric(20, 12), nullable=True)
+
+    status = Column(SQLEnum(EscrowStatus), default=EscrowStatus.CREATED)
 
     deal_metadata = Column("metadata", JSON, default=dict)
 
+    # Timestamps
     created_at = Column(DateTime(timezone=True), default=func.now())
-    funded_at = Column(DateTime(timezone=True), nullable=True)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
-    
+
     # Relationships
     buyer = relationship("Agent", foreign_keys=[buyer_id], back_populates="escrow_deals_as_buyer")
     seller = relationship("Agent", foreign_keys=[seller_id], back_populates="escrow_deals_as_seller")

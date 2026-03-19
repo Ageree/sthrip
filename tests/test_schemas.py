@@ -55,7 +55,7 @@ def test_escrow_create_request_uses_decimal():
     from api.schemas import EscrowCreateRequest
 
     req = EscrowCreateRequest(
-        seller_address="5" + "a" * 94,
+        seller_agent_name="test-seller",
         amount=Decimal("2.0"),
         description="test escrow",
     )

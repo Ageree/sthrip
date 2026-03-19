@@ -105,11 +105,77 @@ class HubPaymentRequest(BaseModel):
 
 
 class EscrowCreateRequest(BaseModel):
-    seller_address: str
-    arbiter_address: Optional[str] = None
-    amount: Decimal = Field(..., gt=0)
+    seller_agent_name: str = Field(..., min_length=1, max_length=255, pattern=r"^[a-zA-Z0-9_-]+$")
+    amount: Decimal = Field(..., ge=Decimal("0.001"), le=Decimal("10000"))
     description: str = Field(..., min_length=1, max_length=1000)
-    timeout_hours: int = Field(default=48, ge=1, le=720)
+    accept_timeout_hours: int = Field(default=24, ge=1, le=168)
+    delivery_timeout_hours: int = Field(default=48, ge=1, le=720)
+    review_timeout_hours: int = Field(default=24, ge=1, le=168)
+
+
+class EscrowCreateResponse(BaseModel):
+    escrow_id: str
+    status: str
+    amount: str
+    seller_agent_name: str
+    description: str
+    accept_deadline: str
+    created_at: str
+
+
+class EscrowAcceptResponse(BaseModel):
+    escrow_id: str
+    status: str
+    delivery_deadline: str
+
+
+class EscrowDeliverResponse(BaseModel):
+    escrow_id: str
+    status: str
+    review_deadline: str
+
+
+class EscrowReleaseRequest(BaseModel):
+    release_amount: Decimal = Field(..., ge=Decimal("0"), le=Decimal("10000"))
+
+
+class EscrowReleaseResponse(BaseModel):
+    escrow_id: str
+    status: str
+    released_to_seller: str
+    fee: str
+    seller_received: str
+    refunded_to_buyer: str
+    completed_at: str
+
+
+class EscrowCancelResponse(BaseModel):
+    escrow_id: str
+    status: str
+    refunded: str
+
+
+class EscrowDetailResponse(BaseModel):
+    escrow_id: str
+    status: str
+    amount: str
+    description: Optional[str]
+    buyer_agent_name: str
+    seller_agent_name: str
+    accept_deadline: Optional[str]
+    delivery_deadline: Optional[str]
+    review_deadline: Optional[str]
+    created_at: str
+    accepted_at: Optional[str]
+    delivered_at: Optional[str]
+    completed_at: Optional[str]
+
+
+class EscrowListResponse(BaseModel):
+    items: list
+    total: int
+    limit: int
+    offset: int
 
 
 class DepositRequest(BaseModel):

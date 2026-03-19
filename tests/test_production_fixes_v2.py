@@ -452,8 +452,9 @@ class TestRepositoryLimitCap:
         session = Session()
 
         repo = EscrowRepository(session)
-        result = repo.list_by_agent(uuid4(), limit=10000)
-        assert isinstance(result, list)
+        items, total = repo.list_by_agent(uuid4(), limit=10000)
+        assert isinstance(items, list)
+        assert isinstance(total, int)
         session.close()
 
     def test_channel_list_caps_limit(self):

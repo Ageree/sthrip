@@ -22,9 +22,10 @@ class TestFeeCalculation:
         result = self.collector.calculate_hub_routing_fee(Decimal("0.001"))
         assert result["fee_amount"] == Decimal("0.0001")
 
-    def test_hub_routing_max_fee(self):
+    def test_hub_routing_no_cap(self):
+        """Fee is always 0.1% with no practical cap."""
         result = self.collector.calculate_hub_routing_fee(Decimal("5000.0"))
-        assert result["fee_amount"] == Decimal("1.0")
+        assert result["fee_amount"] == Decimal("5.0")
 
     def test_premium_tier_discount(self):
         normal = self.collector.calculate_hub_routing_fee(Decimal("100.0"), from_agent_tier="free")
@@ -50,7 +51,7 @@ class TestFeeCalculation:
         hub = DEFAULT_FEES[FeeType.HUB_ROUTING]
         assert hub.percent == Decimal("0.001")
         assert hub.min_fee == Decimal("0.0001")
-        assert hub.max_fee == Decimal("1.0")
+        assert hub.max_fee == Decimal("999999999")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,37 +67,33 @@ class TestEscrowFeeCalculation:
         self.collector.db = None
         self.collector.fee_wallet_address = None
 
-    def test_escrow_fee_with_arbiter(self):
-        result = self.collector.calculate_escrow_fee(Decimal("10.0"), use_arbiter=True)
+    def test_escrow_fee_basic(self):
+        result = self.collector.calculate_escrow_fee(Decimal("10.0"))
         assert result["escrow_amount"] == Decimal("10.0")
-        assert result["platform_fee"] == Decimal("0.1")  # 1% of 10
-        assert result["arbiter_fee"] == Decimal("0.05")   # 0.5% of 10
-        assert result["total_fee"] == Decimal("0.15")
-        assert result["buyer_deposits"] == Decimal("10.15")
-        assert result["seller_receives"] == Decimal("10.0")
+        assert result["fee_amount"] == Decimal("0.01")  # 0.1% of 10
+        assert result["fee_percent"] == Decimal("0.001")
+        assert result["tier_discount"] == "free"
+        assert result["seller_receives"] == Decimal("9.99")
 
-    def test_escrow_fee_without_arbiter(self):
-        result = self.collector.calculate_escrow_fee(Decimal("10.0"), use_arbiter=False)
-        assert result["arbiter_fee"] == Decimal("0")
-        assert result["total_fee"] == result["platform_fee"]
+    def test_escrow_fee_premium_tier(self):
+        result = self.collector.calculate_escrow_fee(Decimal("10.0"), from_agent_tier="premium")
+        assert result["fee_amount"] == Decimal("0.005")  # 50% discount
+        assert result["tier_discount"] == "premium"
+
+    def test_escrow_fee_verified_tier(self):
+        result = self.collector.calculate_escrow_fee(Decimal("10.0"), from_agent_tier="verified")
+        assert result["fee_amount"] == Decimal("0.0075")  # 25% discount
+        assert result["tier_discount"] == "verified"
 
     def test_escrow_fee_min_applied(self):
-        result = self.collector.calculate_escrow_fee(Decimal("0.01"), use_arbiter=False)
-        assert result["platform_fee"] == Decimal("0.001")  # min_fee
-
-    def test_escrow_fee_max_applied(self):
-        result = self.collector.calculate_escrow_fee(Decimal("5000.0"), use_arbiter=False)
-        assert result["platform_fee"] == Decimal("10.0")  # max_fee
-
-    def test_escrow_arbiter_fee_capped(self):
-        result = self.collector.calculate_escrow_fee(Decimal("500.0"), use_arbiter=True)
-        assert result["arbiter_fee"] == Decimal("1.0")  # capped at 1.0
+        result = self.collector.calculate_escrow_fee(Decimal("0.01"))
+        assert result["fee_amount"] == Decimal("0.0001")  # min_fee
 
     def test_escrow_fee_config(self):
         config = DEFAULT_FEES[FeeType.ESCROW]
-        assert config.percent == Decimal("0.01")
-        assert config.min_fee == Decimal("0.001")
-        assert config.max_fee == Decimal("10.0")
+        assert config.percent == Decimal("0.001")
+        assert config.min_fee == Decimal("0.0001")
+        assert config.max_fee == Decimal("999999999")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

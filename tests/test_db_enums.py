@@ -198,17 +198,16 @@ class TestPaymentType:
 class TestEscrowStatus:
     def test_has_expected_members(self):
         from sthrip.db.enums import EscrowStatus
-        assert EscrowStatus.PENDING.value == "pending"
-        assert EscrowStatus.FUNDED.value == "funded"
+        assert EscrowStatus.CREATED.value == "created"
+        assert EscrowStatus.ACCEPTED.value == "accepted"
         assert EscrowStatus.DELIVERED.value == "delivered"
         assert EscrowStatus.COMPLETED.value == "completed"
-        assert EscrowStatus.DISPUTED.value == "disputed"
-        assert EscrowStatus.REFUNDED.value == "refunded"
+        assert EscrowStatus.CANCELLED.value == "cancelled"
         assert EscrowStatus.EXPIRED.value == "expired"
 
     def test_member_count(self):
         from sthrip.db.enums import EscrowStatus
-        assert len(EscrowStatus) == 7
+        assert len(EscrowStatus) == 6
 
 
 # ---------------------------------------------------------------------------

@@ -24,14 +24,6 @@ logger = logging.getLogger("sthrip")
 
 router = APIRouter(prefix="/v2/payments", tags=["payments"])
 
-# Separate router for escrow (different prefix)
-escrow_router = APIRouter(tags=["escrow"])
-
-
-@escrow_router.post("/v2/escrow/create")
-async def create_escrow():
-    """Escrow is not available in this version"""
-    raise HTTPException(status_code=501, detail="Escrow not available. Use hub routing for payments.")
 
 
 @router.post("/send")

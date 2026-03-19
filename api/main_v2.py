@@ -38,7 +38,7 @@ from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 from api.middleware import configure_middleware
 from api.helpers import get_hub_mode, get_wallet_service, create_deposit_monitor
 from api.docs import setup_docs
-from api.routers import health, agents, payments, balance, webhooks, admin
+from api.routers import health, agents, payments, balance, webhooks, admin, wellknown, escrow
 from api.admin_ui.views import setup_admin_ui
 from sthrip.config import get_settings
 
@@ -224,6 +224,23 @@ def _recover_pending_withdrawals():
         logger.error("Withdrawal recovery failed (non-fatal): %s", e)
 
 
+async def _escrow_resolution_loop():
+    """Resolve expired escrows every 5 minutes."""
+    from sthrip.services.escrow_service import EscrowService
+    svc = EscrowService()
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+            with get_db() as db:
+                resolved = svc.resolve_expired(db)
+                if resolved > 0:
+                    logger.info("Escrow auto-resolution: resolved %d deals", resolved)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Escrow auto-resolution error")
+
+
 def _startup_services(hub_mode):
     """Start health monitoring, webhook worker, and deposit monitor. Returns resources for shutdown."""
     monitor = setup_default_monitoring(include_wallet=(hub_mode == "onchain"))
@@ -249,6 +266,10 @@ def _startup_services(hub_mode):
         )
         logger.info("Periodic withdrawal reconciliation started")
 
+    # Escrow auto-resolution background task (runs every 5 minutes)
+    escrow_resolution_task = asyncio.create_task(_escrow_resolution_loop())
+    logger.info("Escrow auto-resolution task started")
+
     return {
         "monitor": monitor,
         "webhook_service": webhook_service,
@@ -256,6 +277,7 @@ def _startup_services(hub_mode):
         "deposit_monitor": deposit_monitor,
         "deposit_task": deposit_task,
         "reconciliation_task": reconciliation_task,
+        "escrow_resolution_task": escrow_resolution_task,
     }
 
 
@@ -303,6 +325,14 @@ async def _shutdown_services(services):
         reconciliation_task.cancel()
         try:
             await reconciliation_task
+        except asyncio.CancelledError:
+            pass
+
+    escrow_task = services.get("escrow_resolution_task")
+    if escrow_task is not None:
+        escrow_task.cancel()
+        try:
+            await escrow_task
         except asyncio.CancelledError:
             pass
 
@@ -397,9 +427,10 @@ def create_app() -> FastAPI:
     configure_middleware(application)
 
     application.include_router(health.router)
+    application.include_router(wellknown.router)
     application.include_router(agents.router)
     application.include_router(payments.router)
-    application.include_router(payments.escrow_router)
+    application.include_router(escrow.router)
     application.include_router(balance.router)
     application.include_router(webhooks.router)
     application.include_router(admin.router)

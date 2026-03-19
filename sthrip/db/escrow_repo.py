@@ -1,21 +1,22 @@
 """
-EscrowRepository — data-access layer for EscrowDeal records.
+EscrowRepository — data-access layer for hub-held EscrowDeal records.
 """
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 
 from . import models
+from .models import EscrowStatus
 from ._repo_base import _MAX_QUERY_LIMIT
 
 
 class EscrowRepository:
-    """Escrow deal data access"""
+    """Hub-held escrow deal data access"""
 
     def __init__(self, db: Session):
         self.db = db
@@ -27,38 +28,52 @@ class EscrowRepository:
         seller_id: UUID,
         amount: Decimal,
         description: str,
-        arbiter_id: Optional[UUID] = None,
-        timeout_hours: int = 48,
-        platform_fee_percent: Decimal = Decimal('0.01')
+        accept_timeout_hours: int = 24,
+        delivery_timeout_hours: int = 48,
+        review_timeout_hours: int = 24,
+        fee_percent: Decimal = Decimal("0.001"),
     ) -> models.EscrowDeal:
-        """Create new escrow deal"""
-        platform_fee_amount = amount * platform_fee_percent
+        """Create new hub-held escrow deal in CREATED state."""
+        now = datetime.now(timezone.utc)
+        accept_deadline = now + timedelta(hours=accept_timeout_hours)
 
         deal = models.EscrowDeal(
             deal_hash=deal_hash,
             buyer_id=buyer_id,
             seller_id=seller_id,
-            arbiter_id=arbiter_id,
             amount=amount,
             description=description,
-            timeout_hours=timeout_hours,
-            platform_fee_percent=platform_fee_percent,
-            platform_fee_amount=platform_fee_amount,
-            status=models.EscrowStatus.PENDING,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=timeout_hours)
+            accept_timeout_hours=accept_timeout_hours,
+            delivery_timeout_hours=delivery_timeout_hours,
+            review_timeout_hours=review_timeout_hours,
+            fee_percent=fee_percent,
+            status=EscrowStatus.CREATED,
+            accept_deadline=accept_deadline,
+            expires_at=accept_deadline,
         )
 
         self.db.add(deal)
+        self.db.flush()
         return deal
 
     def get_by_id(self, deal_id: UUID) -> Optional[models.EscrowDeal]:
-        """Get deal by ID"""
+        """Get deal by ID."""
         return self.db.query(models.EscrowDeal).filter(
             models.EscrowDeal.id == deal_id
         ).first()
 
+    def get_by_id_for_update(self, deal_id: UUID) -> Optional[models.EscrowDeal]:
+        """Get deal by ID with row-level lock."""
+        is_sqlite = self.db.bind and self.db.bind.dialect.name == "sqlite"
+        query = self.db.query(models.EscrowDeal).filter(
+            models.EscrowDeal.id == deal_id
+        )
+        if not is_sqlite:
+            query = query.with_for_update()
+        return query.first()
+
     def get_by_hash(self, deal_hash: str) -> Optional[models.EscrowDeal]:
-        """Get deal by hash"""
+        """Get deal by hash."""
         return self.db.query(models.EscrowDeal).filter(
             models.EscrowDeal.deal_hash == deal_hash
         ).first()
@@ -68,84 +83,127 @@ class EscrowRepository:
         agent_id: UUID,
         role: Optional[str] = None,
         status: Optional[str] = None,
-        limit: int = 100
-    ) -> List[models.EscrowDeal]:
-        """List deals where agent participates"""
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Tuple[List[models.EscrowDeal], int]:
+        """List deals where agent participates. Returns (items, total)."""
         limit = min(limit, _MAX_QUERY_LIMIT)
         query = self.db.query(models.EscrowDeal)
 
-        if role == 'buyer':
+        if role == "buyer":
             query = query.filter(models.EscrowDeal.buyer_id == agent_id)
-        elif role == 'seller':
+        elif role == "seller":
             query = query.filter(models.EscrowDeal.seller_id == agent_id)
-        elif role == 'arbiter':
-            query = query.filter(models.EscrowDeal.arbiter_id == agent_id)
         else:
             query = query.filter(
-                (models.EscrowDeal.buyer_id == agent_id) |
-                (models.EscrowDeal.seller_id == agent_id) |
-                (models.EscrowDeal.arbiter_id == agent_id)
+                or_(
+                    models.EscrowDeal.buyer_id == agent_id,
+                    models.EscrowDeal.seller_id == agent_id,
+                )
             )
 
         if status:
             query = query.filter(models.EscrowDeal.status == status)
 
-        return query.order_by(desc(models.EscrowDeal.created_at)).limit(limit).all()
+        total = query.count()
+        items = (
+            query.order_by(desc(models.EscrowDeal.created_at))
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return items, total
 
-    def fund_deal(self, deal_id: UUID, deposit_tx_hash: str, multisig_address: str):
-        """Mark deal as funded"""
-        self.db.query(models.EscrowDeal).filter(
-            models.EscrowDeal.id == deal_id
+    def accept(self, deal_id: UUID, delivery_timeout_hours: int) -> int:
+        """Transition CREATED → ACCEPTED, set delivery deadline.
+
+        Caller must hold the row lock via get_by_id_for_update.
+        Returns rows affected (0 if state already changed).
+        """
+        now = datetime.now(timezone.utc)
+        delivery_deadline = now + timedelta(hours=delivery_timeout_hours)
+        return self.db.query(models.EscrowDeal).filter(
+            models.EscrowDeal.id == deal_id,
+            models.EscrowDeal.status == EscrowStatus.CREATED,
         ).update({
-            "status": models.EscrowStatus.FUNDED,
-            "deposit_tx_hash": deposit_tx_hash,
-            "multisig_address": multisig_address,
-            "funded_at": datetime.now(timezone.utc)
+            "status": EscrowStatus.ACCEPTED,
+            "accepted_at": now,
+            "delivery_deadline": delivery_deadline,
+            "expires_at": delivery_deadline,
         })
 
-    def mark_delivered(self, deal_id: UUID):
-        """Mark deal as delivered"""
-        self.db.query(models.EscrowDeal).filter(
-            models.EscrowDeal.id == deal_id
+    def deliver(self, deal_id: UUID, review_timeout_hours: int) -> int:
+        """Transition ACCEPTED → DELIVERED, set review deadline.
+
+        Caller must hold the row lock via get_by_id_for_update.
+        Returns rows affected (0 if state already changed).
+        """
+        now = datetime.now(timezone.utc)
+        review_deadline = now + timedelta(hours=review_timeout_hours)
+        return self.db.query(models.EscrowDeal).filter(
+            models.EscrowDeal.id == deal_id,
+            models.EscrowDeal.status == EscrowStatus.ACCEPTED,
         ).update({
-            "status": models.EscrowStatus.DELIVERED
+            "status": EscrowStatus.DELIVERED,
+            "delivered_at": now,
+            "review_deadline": review_deadline,
+            "expires_at": review_deadline,
         })
 
-    def release(self, deal_id: UUID, release_tx_hash: str):
-        """Release funds to seller"""
-        self.db.query(models.EscrowDeal).filter(
-            models.EscrowDeal.id == deal_id
+    def release(
+        self,
+        deal_id: UUID,
+        release_amount: Decimal,
+        fee_amount: Decimal,
+    ) -> int:
+        """Transition DELIVERED → COMPLETED with release amount and fee.
+
+        Returns number of rows affected (0 if already transitioned).
+        """
+        now = datetime.now(timezone.utc)
+        return self.db.query(models.EscrowDeal).filter(
+            models.EscrowDeal.id == deal_id,
+            models.EscrowDeal.status == EscrowStatus.DELIVERED,
         ).update({
-            "status": models.EscrowStatus.COMPLETED,
-            "release_tx_hash": release_tx_hash,
-            "completed_at": datetime.now(timezone.utc)
+            "status": EscrowStatus.COMPLETED,
+            "release_amount": release_amount,
+            "fee_amount": fee_amount,
+            "completed_at": now,
         })
 
-    def open_dispute(self, deal_id: UUID, reason: str, opened_by: UUID):
-        """Open dispute on deal"""
-        self.db.query(models.EscrowDeal).filter(
-            models.EscrowDeal.id == deal_id
+    def cancel(self, deal_id: UUID) -> int:
+        """Transition CREATED → CANCELLED. Returns rows affected."""
+        now = datetime.now(timezone.utc)
+        return self.db.query(models.EscrowDeal).filter(
+            models.EscrowDeal.id == deal_id,
+            models.EscrowDeal.status == EscrowStatus.CREATED,
         ).update({
-            "status": models.EscrowStatus.DISPUTED,
-            "disputed_at": datetime.now(timezone.utc),
-            "disputed_by": opened_by,
-            "dispute_reason": reason
+            "status": EscrowStatus.CANCELLED,
+            "cancelled_at": now,
         })
 
-    def arbitrate(self, deal_id: UUID, decision: str, arbiter_signature: str):
-        """Arbiter makes decision"""
-        updates = {
-            "arbiter_decision": decision,
-            "arbiter_signature": arbiter_signature
-        }
+    def expire(self, deal_id: UUID) -> int:
+        """Transition CREATED/ACCEPTED → EXPIRED. Returns rows affected."""
+        now = datetime.now(timezone.utc)
+        return self.db.query(models.EscrowDeal).filter(
+            models.EscrowDeal.id == deal_id,
+            models.EscrowDeal.status.in_([
+                EscrowStatus.CREATED,
+                EscrowStatus.ACCEPTED,
+            ]),
+        ).update({
+            "status": EscrowStatus.EXPIRED,
+            "completed_at": now,
+        })
 
-        if decision == 'release':
-            updates["status"] = models.EscrowStatus.COMPLETED
-            updates["completed_at"] = datetime.now(timezone.utc)
-        elif decision == 'refund':
-            updates["status"] = models.EscrowStatus.REFUNDED
-            updates["completed_at"] = datetime.now(timezone.utc)
-
-        self.db.query(models.EscrowDeal).filter(
-            models.EscrowDeal.id == deal_id
-        ).update(updates)
+    def get_pending_expiry(self) -> List[models.EscrowDeal]:
+        """Get escrows that have passed their deadline and need auto-resolution."""
+        now = datetime.now(timezone.utc)
+        return self.db.query(models.EscrowDeal).filter(
+            models.EscrowDeal.status.in_([
+                EscrowStatus.CREATED,
+                EscrowStatus.ACCEPTED,
+                EscrowStatus.DELIVERED,
+            ]),
+            models.EscrowDeal.expires_at <= now,
+        ).all()

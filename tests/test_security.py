@@ -236,6 +236,6 @@ class TestDisabledEndpoints:
         r = client.post("/v2/payments/send", json={})
         assert r.status_code == 501
 
-    def test_escrow_returns_501(self, client):
-        r = client.post("/v2/escrow/create", json={})
-        assert r.status_code == 501
+    def test_escrow_requires_auth(self, client):
+        r = client.post("/v2/escrow", json={})
+        assert r.status_code == 401
