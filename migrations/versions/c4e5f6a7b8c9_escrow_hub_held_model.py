@@ -7,7 +7,6 @@ Create Date: 2026-03-19
 """
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 revision = "c4e5f6a7b8c9"
 down_revision = "a1b2c3d4e5f6"
@@ -21,17 +20,14 @@ def upgrade() -> None:
 
     if is_pg:
         # --- Enum migration (PostgreSQL) ---
-        # Create new enum with desired values
         op.execute(
             "CREATE TYPE escrowstatus_new AS ENUM "
             "('created', 'accepted', 'delivered', 'completed', 'cancelled', 'expired')"
         )
-        # Migrate existing rows (escrow was never used in prod, but be safe)
         op.execute("UPDATE escrow_deals SET status = 'created' WHERE status = 'pending'")
         op.execute(
             "DELETE FROM escrow_deals WHERE status IN ('funded', 'disputed', 'refunded')"
         )
-        # Swap types via text cast
         op.execute(
             "ALTER TABLE escrow_deals "
             "ALTER COLUMN status TYPE VARCHAR USING status::text"
@@ -47,28 +43,42 @@ def upgrade() -> None:
             "ALTER COLUMN status SET DEFAULT 'created'"
         )
 
-    # --- Drop columns ---
-    for col in [
-        "arbiter_id",
-        "arbiter_fee_percent",
-        "arbiter_fee_amount",
-        "arbiter_decision",
-        "arbiter_signature",
-        "disputed_by",
-        "disputed_at",
-        "dispute_reason",
-        "multisig_address",
-        "deposit_tx_hash",
-        "release_tx_hash",
-        "funded_at",
-        "timeout_hours",
-        "platform_fee_percent",
-        "platform_fee_amount",
-    ]:
-        try:
-            op.drop_column("escrow_deals", col)
-        except Exception:
-            pass  # Column may not exist in some environments
+        # --- Drop columns with CASCADE to remove FK constraints/indexes ---
+        # Using raw SQL with CASCADE handles FK constraints automatically
+        _drop_cols = [
+            "arbiter_id",
+            "arbiter_fee_percent",
+            "arbiter_fee_amount",
+            "arbiter_decision",
+            "arbiter_signature",
+            "disputed_by",
+            "disputed_at",
+            "dispute_reason",
+            "multisig_address",
+            "deposit_tx_hash",
+            "release_tx_hash",
+            "funded_at",
+            "timeout_hours",
+            "platform_fee_percent",
+            "platform_fee_amount",
+        ]
+        for col in _drop_cols:
+            op.execute(
+                f"ALTER TABLE escrow_deals DROP COLUMN IF EXISTS {col} CASCADE"
+            )
+    else:
+        # SQLite: just drop columns (no FK/enum issues)
+        for col in [
+            "arbiter_id", "arbiter_fee_percent", "arbiter_fee_amount",
+            "arbiter_decision", "arbiter_signature", "disputed_by",
+            "disputed_at", "dispute_reason", "multisig_address",
+            "deposit_tx_hash", "release_tx_hash", "funded_at",
+            "timeout_hours", "platform_fee_percent", "platform_fee_amount",
+        ]:
+            try:
+                op.drop_column("escrow_deals", col)
+            except Exception:
+                pass
 
     # --- Add new columns ---
     op.add_column(
@@ -121,28 +131,26 @@ def upgrade() -> None:
     )
 
     # Index for the background auto-resolution task
-    op.create_index(
-        "ix_escrow_deals_status_expires",
-        "escrow_deals",
-        ["status", "expires_at"],
-    )
+    if is_pg:
+        op.execute(
+            "CREATE INDEX IF NOT EXISTS ix_escrow_deals_status_expires "
+            "ON escrow_deals (status, expires_at)"
+        )
+    else:
+        op.create_index(
+            "ix_escrow_deals_status_expires",
+            "escrow_deals",
+            ["status", "expires_at"],
+        )
 
 
 def downgrade() -> None:
     op.drop_index("ix_escrow_deals_status_expires", table_name="escrow_deals")
 
     for col in [
-        "fee_percent",
-        "fee_amount",
-        "accept_timeout_hours",
-        "delivery_timeout_hours",
-        "review_timeout_hours",
-        "accept_deadline",
-        "delivery_deadline",
-        "review_deadline",
-        "accepted_at",
-        "delivered_at",
-        "release_amount",
-        "cancelled_at",
+        "fee_percent", "fee_amount",
+        "accept_timeout_hours", "delivery_timeout_hours", "review_timeout_hours",
+        "accept_deadline", "delivery_deadline", "review_deadline",
+        "accepted_at", "delivered_at", "release_amount", "cancelled_at",
     ]:
         op.drop_column("escrow_deals", col)
