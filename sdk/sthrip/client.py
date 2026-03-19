@@ -396,7 +396,7 @@ class Sthrip(object):
 
     # -- Escrow API ---------------------------------------------------------
 
-    def escrow_create(self, seller_agent_name, amount, description="", delivery_hours=48, review_hours=24, accept_hours=24):
+    def escrow_create(self, seller_agent_name, amount, description="", delivery_hours=48, review_hours=24, accept_hours=24, milestones=None):
         """Create a new escrow.
 
         Parameters
@@ -413,6 +413,9 @@ class Sthrip(object):
             Hours buyer has to review after delivery.
         accept_hours : int
             Hours seller has to accept the escrow.
+        milestones : list of dict, optional
+            Milestone definitions.  Each dict should have ``amount`` (required)
+            and optionally ``description``, ``delivery_hours``, ``review_hours``.
 
         Returns
         -------
@@ -427,6 +430,16 @@ class Sthrip(object):
             "delivery_timeout_hours": delivery_hours,
             "review_timeout_hours": review_hours,
         }
+        if milestones is not None:
+            payload["milestones"] = [
+                {
+                    "description": m.get("description", ""),
+                    "amount": str(m["amount"]),
+                    "delivery_timeout_hours": m.get("delivery_hours", 48),
+                    "review_timeout_hours": m.get("review_hours", 24),
+                }
+                for m in milestones
+            ]
         return self._raw_post("/v2/escrow", json_body=payload)
 
     def escrow_accept(self, escrow_id):
@@ -449,6 +462,44 @@ class Sthrip(object):
         """
         payload = {"release_amount": str(amount)}
         return self._raw_post("/v2/escrow/{}/release".format(escrow_id), json_body=payload)
+
+    def escrow_milestone_deliver(self, escrow_id, milestone):
+        """Seller marks milestone N as delivered.
+
+        Parameters
+        ----------
+        escrow_id : str
+            The escrow UUID.
+        milestone : int
+            Milestone sequence number (1-based).
+
+        Returns
+        -------
+        dict
+            Milestone delivery receipt including ``review_deadline``.
+        """
+        return self._raw_post("/v2/escrow/{}/milestones/{}/deliver".format(escrow_id, milestone))
+
+    def escrow_milestone_release(self, escrow_id, milestone, amount):
+        """Buyer releases funds for milestone N.
+
+        Parameters
+        ----------
+        escrow_id : str
+            The escrow UUID.
+        milestone : int
+            Milestone sequence number (1-based).
+        amount : float
+            Amount to release for this milestone.
+
+        Returns
+        -------
+        dict
+            Milestone release receipt including ``released_to_seller``, ``fee``,
+            ``seller_received``, ``deal_status``.
+        """
+        payload = {"release_amount": str(amount)}
+        return self._raw_post("/v2/escrow/{}/milestones/{}/release".format(escrow_id, milestone), json_body=payload)
 
     def escrow_cancel(self, escrow_id):
         """Cancel escrow before seller accepts (buyer)."""

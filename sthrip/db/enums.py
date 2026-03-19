@@ -59,6 +59,16 @@ class EscrowStatus(str, _PyEnum):
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+    PARTIALLY_COMPLETED = "partially_completed"
+
+
+class MilestoneStatus(str, _PyEnum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    DELIVERED = "delivered"
+    COMPLETED = "completed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
 
 
 class ChannelStatus(str, _PyEnum):
@@ -108,4 +118,5 @@ __all__ = [
     "HubRouteStatus",
     "FeeCollectionStatus",
     "WithdrawalStatus",
+    "MilestoneStatus",
 ]

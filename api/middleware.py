@@ -119,10 +119,10 @@ def configure_middleware(app: FastAPI) -> None:
     )
     _DOCS_CSP = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com; "
-        "img-src 'self' data: https://cdn.jsdelivr.net; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.redoc.ly; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.redoc.ly https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com https://cdn.redoc.ly; "
+        "img-src 'self' data: https://cdn.jsdelivr.net https://cdn.redoc.ly; "
         "connect-src 'self'; "
         "frame-ancestors 'none'"
     )

@@ -14,6 +14,7 @@ from uuid import UUID
 
 from ..db.repository import BalanceRepository
 from ..wallet import MoneroWalletRPC
+from .wallet_cache import WalletRPCCache
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -52,7 +53,8 @@ class WalletService:
         db_session_factory: Callable,
         account_index: int = 0,
     ):
-        self.wallet = wallet_rpc
+        self.wallet = WalletRPCCache(wallet_rpc)
+        self._raw_rpc = wallet_rpc
         self._db_session_factory = db_session_factory
         self._account_index = account_index
         self._hub_addr_cache = None

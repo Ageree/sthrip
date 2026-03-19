@@ -30,6 +30,7 @@ from ._repo_base import _MAX_QUERY_LIMIT
 from .agent_repo import AgentRepository, _get_hmac_secret
 from .transaction_repo import TransactionRepository
 from .escrow_repo import EscrowRepository
+from .milestone_repo import MilestoneRepository
 from .channel_repo import ChannelRepository
 from .webhook_repo import WebhookRepository
 from .reputation_repo import ReputationRepository
@@ -43,6 +44,7 @@ __all__ = [
     "AgentRepository",
     "TransactionRepository",
     "EscrowRepository",
+    "MilestoneRepository",
     "ChannelRepository",
     "WebhookRepository",
     "ReputationRepository",

@@ -15,6 +15,7 @@ from api.deps import get_current_agent
 from api.schemas import (
     EscrowCreateRequest,
     EscrowReleaseRequest,
+    MilestoneReleaseRequest,
 )
 
 logger = logging.getLogger("sthrip")
@@ -56,6 +57,17 @@ async def create_escrow(
         if seller.id == agent.id:
             raise HTTPException(status_code=400, detail="Cannot create escrow with yourself")
         try:
+            milestones_data = None
+            if req.milestones:
+                milestones_data = [
+                    {
+                        "description": m.description,
+                        "amount": m.amount,
+                        "delivery_timeout_hours": m.delivery_timeout_hours,
+                        "review_timeout_hours": m.review_timeout_hours,
+                    }
+                    for m in req.milestones
+                ]
             result = _svc.create_escrow(
                 db=db, buyer_id=agent.id, seller_id=seller.id,
                 amount=req.amount, description=req.description,
@@ -63,6 +75,7 @@ async def create_escrow(
                 delivery_timeout_hours=req.delivery_timeout_hours,
                 review_timeout_hours=req.review_timeout_hours,
                 buyer_tier=agent.tier.value,
+                milestones=milestones_data,
             )
         except (LookupError, PermissionError, ValueError) as exc:
             _handle_service_error(exc)
@@ -217,6 +230,93 @@ async def cancel_escrow(
     }
 
 
+@router.post("/{escrow_id}/milestones/{milestone_seq}/deliver")
+async def deliver_milestone(
+    escrow_id: UUID,
+    milestone_seq: int,
+    background_tasks: BackgroundTasks,
+    agent: Agent = Depends(get_current_agent),
+):
+    """Seller marks a specific milestone as delivered."""
+    with get_db() as db:
+        try:
+            result = _svc.deliver_milestone(
+                db=db, escrow_id=escrow_id,
+                milestone_seq=milestone_seq, seller_id=agent.id,
+            )
+        except (LookupError, PermissionError, ValueError) as exc:
+            _handle_service_error(exc)
+
+    ms_status = result.get("status", "delivered")
+    background_tasks.add_task(
+        queue_webhook, result.get("buyer_id", ""), "escrow.milestone.delivered", {
+            "escrow_id": result["escrow_id"],
+            "milestone_sequence": result["milestone_sequence"],
+            "milestone_status": ms_status,
+            "review_deadline": result["review_deadline"],
+        },
+    )
+    return {
+        "escrow_id": result["escrow_id"],
+        "milestone_sequence": result["milestone_sequence"],
+        "milestone_status": ms_status,
+        "review_deadline": result["review_deadline"],
+    }
+
+
+@router.post("/{escrow_id}/milestones/{milestone_seq}/release")
+async def release_milestone(
+    escrow_id: UUID,
+    milestone_seq: int,
+    req: MilestoneReleaseRequest,
+    background_tasks: BackgroundTasks,
+    agent: Agent = Depends(get_current_agent),
+):
+    """Buyer releases funds for a specific milestone."""
+    with get_db() as db:
+        try:
+            result = _svc.release_milestone(
+                db=db, escrow_id=escrow_id,
+                milestone_seq=milestone_seq, buyer_id=agent.id,
+                release_amount=req.release_amount,
+            )
+        except (LookupError, PermissionError, ValueError) as exc:
+            _handle_service_error(exc)
+
+    webhook_payload = {
+        "escrow_id": result["escrow_id"],
+        "milestone_sequence": result["milestone_sequence"],
+        "released_to_seller": result["released_to_seller"],
+        "fee": result["fee"],
+        "deal_status": result["deal_status"],
+    }
+    background_tasks.add_task(
+        queue_webhook, result.get("buyer_id", ""), "escrow.milestone.completed",
+        webhook_payload,
+    )
+    background_tasks.add_task(
+        queue_webhook, result.get("seller_id", ""), "escrow.milestone.completed",
+        webhook_payload,
+    )
+    return result
+
+
+@router.get("/{escrow_id}/milestones")
+async def get_milestones(
+    escrow_id: UUID,
+    agent: Agent = Depends(get_current_agent),
+):
+    """Get milestones for a multi-milestone escrow."""
+    with get_db() as db:
+        try:
+            milestones = _svc.get_milestones(
+                db=db, escrow_id=escrow_id, agent_id=agent.id,
+            )
+        except (LookupError, PermissionError, ValueError) as exc:
+            _handle_service_error(exc)
+    return {"milestones": milestones}
+
+
 @router.get("/{escrow_id}")
 async def get_escrow(
     escrow_id: UUID,
@@ -228,6 +328,15 @@ async def get_escrow(
             result = _svc.get_escrow(db=db, escrow_id=escrow_id, agent_id=agent.id)
         except (LookupError, PermissionError) as exc:
             _handle_service_error(exc)
+        # Include milestones for multi-milestone deals
+        if result.get("is_multi_milestone"):
+            try:
+                milestones = _svc.get_milestones(
+                    db=db, escrow_id=escrow_id, agent_id=agent.id,
+                )
+                result = {**result, "milestones": milestones}
+            except (LookupError, ValueError):
+                pass
     return result
 
 

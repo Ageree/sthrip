@@ -4,7 +4,7 @@ import re
 from decimal import Decimal
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from sthrip.services.url_validator import validate_url_target, SSRFBlockedError
 
@@ -186,6 +186,14 @@ class HubPaymentRequest(BaseModel):
     urgency: str = Field(default="normal", pattern=r"^(normal|urgent)$")
 
 
+class MilestoneDefinition(BaseModel):
+    """Definition of a single milestone within a multi-milestone escrow."""
+    description: str = Field(..., min_length=1, max_length=500)
+    amount: Decimal = Field(..., gt=Decimal("0"), le=Decimal("10000"))
+    delivery_timeout_hours: int = Field(..., ge=1, le=720)
+    review_timeout_hours: int = Field(..., ge=1, le=168)
+
+
 class EscrowCreateRequest(BaseModel):
     seller_agent_name: str = Field(..., min_length=1, max_length=255, pattern=r"^[a-zA-Z0-9_-]+$")
     amount: Decimal = Field(..., ge=Decimal("0.001"), le=Decimal("10000"))
@@ -193,6 +201,21 @@ class EscrowCreateRequest(BaseModel):
     accept_timeout_hours: int = Field(default=24, ge=1, le=168)
     delivery_timeout_hours: int = Field(default=48, ge=1, le=720)
     review_timeout_hours: int = Field(default=24, ge=1, le=168)
+    milestones: Optional[List[MilestoneDefinition]] = Field(
+        default=None, min_length=1, max_length=10,
+    )
+
+    @model_validator(mode="after")
+    def validate_milestone_amounts(self) -> "EscrowCreateRequest":
+        if self.milestones is None:
+            return self
+        total = sum(m.amount for m in self.milestones)
+        if total != self.amount:
+            raise ValueError(
+                f"Sum of milestone amounts ({total}) must equal "
+                f"the deal amount ({self.amount})"
+            )
+        return self
 
 
 class EscrowCreateResponse(BaseModel):
@@ -218,6 +241,10 @@ class EscrowDeliverResponse(BaseModel):
 
 
 class EscrowReleaseRequest(BaseModel):
+    release_amount: Decimal = Field(..., ge=Decimal("0"), le=Decimal("10000"))
+
+
+class MilestoneReleaseRequest(BaseModel):
     release_amount: Decimal = Field(..., ge=Decimal("0"), le=Decimal("10000"))
 
 
@@ -258,6 +285,49 @@ class EscrowListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class MilestoneReleaseRequest(BaseModel):
+    """Request body for releasing a specific milestone."""
+    release_amount: Decimal = Field(..., ge=Decimal("0"), le=Decimal("10000"))
+
+
+class MilestoneResponse(BaseModel):
+    """Response model for a single escrow milestone."""
+    sequence: int
+    description: str
+    amount: str
+    status: str
+    delivery_timeout_hours: int
+    review_timeout_hours: int
+    delivery_deadline: Optional[str] = None
+    review_deadline: Optional[str] = None
+    release_amount: Optional[str] = None
+    fee_amount: Optional[str] = None
+    activated_at: Optional[str] = None
+    delivered_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+class MilestoneDeliverResponse(BaseModel):
+    """Response after marking a milestone as delivered."""
+    escrow_id: str
+    milestone_sequence: int
+    status: str
+    review_deadline: str
+
+
+class MilestoneReleaseResponse(BaseModel):
+    """Response after releasing funds for a milestone."""
+    escrow_id: str
+    milestone_sequence: int
+    status: str
+    released_to_seller: str
+    fee: str
+    seller_received: str
+    deal_status: str
+    deal_total_released: str
+    deal_total_fees: str
 
 
 class DepositRequest(BaseModel):

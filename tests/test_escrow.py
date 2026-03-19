@@ -27,7 +27,7 @@ from sqlalchemy.pool import StaticPool
 from sthrip.db.models import (
     Base, Agent, AgentReputation, AgentBalance,
     HubRoute, FeeCollection, PendingWithdrawal, Transaction,
-    EscrowDeal, EscrowStatus,
+    EscrowDeal, EscrowMilestone, EscrowStatus,
 )
 from sthrip.services.escrow_service import EscrowService
 
@@ -44,6 +44,7 @@ _ESCROW_TEST_TABLES = [
     PendingWithdrawal.__table__,
     Transaction.__table__,
     EscrowDeal.__table__,
+    EscrowMilestone.__table__,
 ]
 
 # Modules where get_db must be patched (includes escrow router + service deps).

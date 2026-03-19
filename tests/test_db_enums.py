@@ -204,10 +204,11 @@ class TestEscrowStatus:
         assert EscrowStatus.COMPLETED.value == "completed"
         assert EscrowStatus.CANCELLED.value == "cancelled"
         assert EscrowStatus.EXPIRED.value == "expired"
+        assert EscrowStatus.PARTIALLY_COMPLETED.value == "partially_completed"
 
     def test_member_count(self):
         from sthrip.db.enums import EscrowStatus
-        assert len(EscrowStatus) == 6
+        assert len(EscrowStatus) == 7
 
 
 # ---------------------------------------------------------------------------

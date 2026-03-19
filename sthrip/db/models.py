@@ -26,6 +26,7 @@ from sthrip.db.enums import (  # noqa: F401  (re-exported for backward compat)
     TransactionStatus,
     PaymentType,
     EscrowStatus,
+    MilestoneStatus,
     ChannelStatus,
     WebhookStatus,
     HubRouteStatus,
@@ -201,8 +202,15 @@ class EscrowDeal(Base):
     delivery_deadline = Column(DateTime(timezone=True), nullable=True)
     review_deadline = Column(DateTime(timezone=True), nullable=True)
 
-    # Release
+    # Release (single-milestone)
     release_amount = Column(Numeric(20, 12), nullable=True)
+
+    # Multi-milestone
+    is_multi_milestone = Column(Boolean, default=False)
+    milestone_count = Column(Integer, default=1)
+    current_milestone = Column(Integer, default=1)
+    total_released = Column(Numeric(20, 12), default=Decimal('0'))
+    total_fees = Column(Numeric(20, 12), default=Decimal('0'))
 
     status = Column(SQLEnum(EscrowStatus), default=EscrowStatus.CREATED)
 
@@ -219,6 +227,52 @@ class EscrowDeal(Base):
     # Relationships
     buyer = relationship("Agent", foreign_keys=[buyer_id], back_populates="escrow_deals_as_buyer")
     seller = relationship("Agent", foreign_keys=[seller_id], back_populates="escrow_deals_as_seller")
+    milestones = relationship("EscrowMilestone", back_populates="escrow",
+                              order_by="EscrowMilestone.sequence",
+                              cascade="all, delete-orphan")
+
+
+class EscrowMilestone(Base):
+    """Individual milestone within a multi-milestone escrow deal."""
+    __tablename__ = "escrow_milestones"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    escrow_id = Column(UUID(as_uuid=True), ForeignKey("escrow_deals.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence = Column(Integer, nullable=False)
+
+    # Terms
+    description = Column(Text, nullable=False)
+    amount = Column(Numeric(20, 12), nullable=False)
+
+    # Per-milestone timeouts (hours)
+    delivery_timeout_hours = Column(Integer, nullable=False)
+    review_timeout_hours = Column(Integer, nullable=False)
+
+    # Deadlines (set when milestone becomes ACTIVE / DELIVERED)
+    delivery_deadline = Column(DateTime(timezone=True), nullable=True)
+    review_deadline = Column(DateTime(timezone=True), nullable=True)
+
+    # Release
+    release_amount = Column(Numeric(20, 12), nullable=True)
+    fee_amount = Column(Numeric(20, 12), default=Decimal('0'))
+
+    status = Column(SQLEnum(MilestoneStatus), default=MilestoneStatus.PENDING)
+
+    # Timestamps
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    escrow = relationship("EscrowDeal", back_populates="milestones")
+
+    __table_args__ = (
+        UniqueConstraint("escrow_id", "sequence", name="uq_milestone_sequence"),
+        CheckConstraint("sequence >= 1 AND sequence <= 10", name="ck_milestone_sequence_range"),
+        CheckConstraint("amount > 0", name="ck_milestone_amount_positive"),
+    )
 
 
 class PaymentChannel(Base):

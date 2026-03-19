@@ -62,6 +62,34 @@ def escrow_release(
     print(format_success(data))
 
 
+@app.command("milestone-deliver")
+@run_command
+def milestone_deliver(
+    escrow_id: str = typer.Argument(..., help="Escrow ID"),
+    milestone: int = typer.Argument(..., help="Milestone sequence number"),
+):
+    """Mark a milestone as delivered (seller)."""
+    client = make_client()
+    data = client.post(f"/v2/escrow/{escrow_id}/milestones/{milestone}/deliver")
+    print(format_success(data))
+
+
+@app.command("milestone-release")
+@run_command
+def milestone_release(
+    escrow_id: str = typer.Argument(..., help="Escrow ID"),
+    milestone: int = typer.Argument(..., help="Milestone sequence number"),
+    amount: str = typer.Argument(..., help="Amount to release"),
+):
+    """Release funds for a milestone (buyer)."""
+    client = make_client()
+    data = client.post(
+        f"/v2/escrow/{escrow_id}/milestones/{milestone}/release",
+        json={"release_amount": amount},
+    )
+    print(format_success(data))
+
+
 @app.command("escrow-cancel")
 @run_command
 def escrow_cancel(
