@@ -197,12 +197,7 @@ def _run_database_migrations():
             create_tables()
     except Exception as e:
         if settings.environment != "dev":
-            import sys, traceback
-            msg = f"DATABASE MIGRATION FAILED: {e}"
-            logger.critical(msg, exc_info=True)
-            print(f"FATAL: {msg}", file=sys.stderr, flush=True)
-            traceback.print_exc(file=sys.stderr)
-            sys.stderr.flush()
+            logger.critical("DATABASE MIGRATION FAILED: %s", e, exc_info=True)
             raise SystemExit(f"Migration failed in production: {e}")
         else:
             logger.warning("Non-production: falling back to create_tables()")
