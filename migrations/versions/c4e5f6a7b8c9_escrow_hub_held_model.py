@@ -26,14 +26,17 @@ def upgrade() -> None:
             "CREATE TYPE escrowstatus_new AS ENUM "
             "('created', 'accepted', 'delivered', 'completed', 'cancelled', 'expired')"
         )
-        op.execute("UPDATE escrow_deals SET status = 'created' WHERE status = 'pending'")
-        op.execute(
-            "DELETE FROM escrow_deals WHERE status IN ('funded', 'disputed', 'refunded')"
-        )
+        # First convert column to VARCHAR so we can use string comparisons
         op.execute(
             "ALTER TABLE escrow_deals "
             "ALTER COLUMN status TYPE VARCHAR USING status::text"
         )
+        # Now remap old values to new ones
+        op.execute("UPDATE escrow_deals SET status = 'created' WHERE status = 'pending'")
+        op.execute(
+            "DELETE FROM escrow_deals WHERE status IN ('funded', 'disputed', 'refunded')"
+        )
+        # Drop old enum, rename new one, convert back
         op.execute("DROP TYPE IF EXISTS escrowstatus")
         op.execute("ALTER TYPE escrowstatus_new RENAME TO escrowstatus")
         op.execute(
