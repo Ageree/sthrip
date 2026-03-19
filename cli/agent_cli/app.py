@@ -9,3 +9,4 @@ from cli.agent_cli.commands import me as _me  # noqa: F401
 from cli.agent_cli.commands import keys as _keys  # noqa: F401
 from cli.agent_cli.commands import webhooks as _webhooks  # noqa: F401
 from cli.agent_cli.commands import health as _health  # noqa: F401
+from cli.agent_cli.commands import escrow as _escrow  # noqa: F401
