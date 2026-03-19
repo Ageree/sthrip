@@ -1,4 +1,4 @@
-"""MCP server setup — creates FastMCP instance, registers all tools."""
+"""MCP server setup — creates FastMCP instance, registers all 19 tools."""
 
 import os
 
@@ -8,6 +8,7 @@ from .auth import load_api_key
 from .client import SthripClient
 from .tools.balance import register_balance_tools
 from .tools.discovery import register_discovery_tools
+from .tools.escrow import register_escrow_tools
 from .tools.payments import register_payment_tools
 from .tools.registration import register_registration_tools
 
@@ -29,9 +30,10 @@ def create_server() -> FastMCP:
     mcp = FastMCP(
         "Sthrip",
         instructions=(
-            "Sthrip enables AI agents to discover other agents and "
-            "make anonymous XMR payments. Discovery tools work without "
-            "authentication. Payment and balance tools require an API key "
+            "Sthrip enables AI agents to discover other agents, "
+            "make anonymous XMR payments, and create escrow deals. "
+            "Discovery tools work without authentication. Payment, "
+            "balance, and escrow tools require an API key "
             "(set STHRIP_API_KEY or use the register_agent tool)."
         ),
     )
@@ -40,5 +42,6 @@ def create_server() -> FastMCP:
     register_registration_tools(mcp, client)
     register_payment_tools(mcp, client)
     register_balance_tools(mcp, client)
+    register_escrow_tools(mcp, client)
 
     return mcp

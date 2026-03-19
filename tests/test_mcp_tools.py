@@ -1,4 +1,4 @@
-"""Tests for sthrip_mcp tools — all 12 tools via mocked client."""
+"""Tests for sthrip_mcp tools — all 19 tools via mocked client."""
 
 import json
 from unittest.mock import AsyncMock, patch
@@ -12,6 +12,7 @@ from integrations.sthrip_mcp.auth import AuthError
 from integrations.sthrip_mcp.client import SthripClient
 from integrations.sthrip_mcp.tools.balance import register_balance_tools
 from integrations.sthrip_mcp.tools.discovery import register_discovery_tools
+from integrations.sthrip_mcp.tools.escrow import register_escrow_tools
 from integrations.sthrip_mcp.tools.payments import register_payment_tools
 from integrations.sthrip_mcp.tools.registration import register_registration_tools
 
@@ -40,6 +41,29 @@ def mock_client():
     client.get_balance = AsyncMock(return_value={"available": 1.0, "pending": 0.0})
     client.deposit = AsyncMock(return_value={"deposit_address": "5xxx"})
     client.withdraw = AsyncMock(return_value={"status": "pending", "tx_hash": "abc"})
+    # Escrow
+    client.escrow_create = AsyncMock(return_value={
+        "escrow_id": "esc-1", "status": "pending", "amount": 1.0,
+        "seller_agent_name": "seller", "description": "test deal",
+    })
+    client.escrow_accept = AsyncMock(return_value={
+        "escrow_id": "esc-1", "status": "accepted",
+    })
+    client.escrow_deliver = AsyncMock(return_value={
+        "escrow_id": "esc-1", "status": "delivered",
+    })
+    client.escrow_release = AsyncMock(return_value={
+        "escrow_id": "esc-1", "status": "released", "release_amount": 1.0,
+    })
+    client.escrow_cancel = AsyncMock(return_value={
+        "escrow_id": "esc-1", "status": "cancelled",
+    })
+    client.escrow_get = AsyncMock(return_value={
+        "escrow_id": "esc-1", "status": "pending", "amount": 1.0,
+    })
+    client.escrow_list = AsyncMock(return_value=[
+        {"escrow_id": "esc-1", "status": "pending"},
+    ])
     return client
 
 
@@ -53,6 +77,14 @@ def unauthenticated_client():
     client.register_agent = AsyncMock(return_value={
         "agent_id": "uuid-1", "agent_name": "new", "api_key": "sk_new", "tier": "free",
     })
+    # Escrow (will fail auth before reaching these)
+    client.escrow_create = AsyncMock(return_value={})
+    client.escrow_accept = AsyncMock(return_value={})
+    client.escrow_deliver = AsyncMock(return_value={})
+    client.escrow_release = AsyncMock(return_value={})
+    client.escrow_cancel = AsyncMock(return_value={})
+    client.escrow_get = AsyncMock(return_value={})
+    client.escrow_list = AsyncMock(return_value=[])
     return client
 
 
@@ -63,6 +95,7 @@ def _build_mcp_with_tools(client):
     register_registration_tools(mcp, client)
     register_payment_tools(mcp, client)
     register_balance_tools(mcp, client)
+    register_escrow_tools(mcp, client)
     return mcp
 
 
@@ -262,9 +295,122 @@ class TestBalanceTools:
                     await tool_fn()
 
 
+class TestEscrowTools:
+    @pytest.mark.asyncio
+    async def test_escrow_create(self, mock_client):
+        mcp = _build_mcp_with_tools(mock_client)
+        tool_fn = None
+        for tool in mcp._tool_manager._tools.values():
+            if tool.name == "escrow_create":
+                tool_fn = tool.fn
+                break
+        result = await tool_fn(
+            seller_agent_name="seller", amount=1.0, description="test deal",
+        )
+        data = json.loads(result)
+        assert data["escrow_id"] == "esc-1"
+        assert data["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_escrow_accept(self, mock_client):
+        mcp = _build_mcp_with_tools(mock_client)
+        tool_fn = None
+        for tool in mcp._tool_manager._tools.values():
+            if tool.name == "escrow_accept":
+                tool_fn = tool.fn
+                break
+        result = await tool_fn(escrow_id="esc-1")
+        data = json.loads(result)
+        assert data["status"] == "accepted"
+
+    @pytest.mark.asyncio
+    async def test_escrow_deliver(self, mock_client):
+        mcp = _build_mcp_with_tools(mock_client)
+        tool_fn = None
+        for tool in mcp._tool_manager._tools.values():
+            if tool.name == "escrow_deliver":
+                tool_fn = tool.fn
+                break
+        result = await tool_fn(escrow_id="esc-1")
+        data = json.loads(result)
+        assert data["status"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_escrow_release(self, mock_client):
+        mcp = _build_mcp_with_tools(mock_client)
+        tool_fn = None
+        for tool in mcp._tool_manager._tools.values():
+            if tool.name == "escrow_release":
+                tool_fn = tool.fn
+                break
+        result = await tool_fn(escrow_id="esc-1", release_amount=1.0)
+        data = json.loads(result)
+        assert data["status"] == "released"
+        assert data["release_amount"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_escrow_cancel(self, mock_client):
+        mcp = _build_mcp_with_tools(mock_client)
+        tool_fn = None
+        for tool in mcp._tool_manager._tools.values():
+            if tool.name == "escrow_cancel":
+                tool_fn = tool.fn
+                break
+        result = await tool_fn(escrow_id="esc-1")
+        data = json.loads(result)
+        assert data["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_escrow_get(self, mock_client):
+        mcp = _build_mcp_with_tools(mock_client)
+        tool_fn = None
+        for tool in mcp._tool_manager._tools.values():
+            if tool.name == "escrow_get":
+                tool_fn = tool.fn
+                break
+        result = await tool_fn(escrow_id="esc-1")
+        data = json.loads(result)
+        assert data["escrow_id"] == "esc-1"
+
+    @pytest.mark.asyncio
+    async def test_escrow_list(self, mock_client):
+        mcp = _build_mcp_with_tools(mock_client)
+        tool_fn = None
+        for tool in mcp._tool_manager._tools.values():
+            if tool.name == "escrow_list":
+                tool_fn = tool.fn
+                break
+        result = await tool_fn(role="buyer", limit=10, offset=0)
+        data = json.loads(result)
+        assert len(data) == 1
+        assert data[0]["escrow_id"] == "esc-1"
+
+    @pytest.mark.asyncio
+    async def test_escrow_tools_require_auth(self, unauthenticated_client):
+        mcp = _build_mcp_with_tools(unauthenticated_client)
+        auth_tools = {
+            "escrow_create": {"seller_agent_name": "s", "amount": 1.0, "description": "d"},
+            "escrow_accept": {"escrow_id": "esc-1"},
+            "escrow_deliver": {"escrow_id": "esc-1"},
+            "escrow_release": {"escrow_id": "esc-1", "release_amount": 1.0},
+            "escrow_cancel": {"escrow_id": "esc-1"},
+            "escrow_get": {"escrow_id": "esc-1"},
+            "escrow_list": {},
+        }
+        for tool_name, kwargs in auth_tools.items():
+            tool_fn = None
+            for tool in mcp._tool_manager._tools.values():
+                if tool.name == tool_name:
+                    tool_fn = tool.fn
+                    break
+            assert tool_fn is not None, f"Tool {tool_name} not found"
+            with pytest.raises(AuthError):
+                await tool_fn(**kwargs)
+
+
 class TestServerCreation:
-    def test_create_server_registers_12_tools(self):
-        """Verify all 12 tools are registered."""
+    def test_create_server_registers_19_tools(self):
+        """Verify all 19 tools are registered."""
         from integrations.sthrip_mcp.server import create_server
 
         with patch.dict("os.environ", {"STHRIP_API_URL": "https://test.com"}, clear=False):
@@ -276,5 +422,7 @@ class TestServerCreation:
             "register_agent", "get_my_profile", "update_settings",
             "send_payment", "get_payment_status", "get_payment_history",
             "get_balance", "deposit", "withdraw",
+            "escrow_create", "escrow_accept", "escrow_deliver",
+            "escrow_release", "escrow_cancel", "escrow_get", "escrow_list",
         ])
         assert tool_names == expected

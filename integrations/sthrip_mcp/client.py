@@ -226,3 +226,84 @@ class SthripClient:
             headers=_idempotency_headers(),
         )
         return await _handle_response(resp)
+
+    # --- Escrow (auth required) ---
+
+    async def escrow_create(
+        self,
+        seller_agent_name: str,
+        amount: float,
+        description: str,
+        accept_timeout_hours: int = 24,
+        delivery_timeout_hours: int = 48,
+        review_timeout_hours: int = 24,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "seller_agent_name": seller_agent_name,
+            "amount": amount,
+            "description": description,
+            "accept_timeout_hours": accept_timeout_hours,
+            "delivery_timeout_hours": delivery_timeout_hours,
+            "review_timeout_hours": review_timeout_hours,
+        }
+        resp = await self._client().post(
+            "/v2/escrow",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def escrow_accept(self, escrow_id: str) -> Dict[str, Any]:
+        resp = await self._client().post(
+            f"/v2/escrow/{escrow_id}/accept",
+            json={},
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def escrow_deliver(self, escrow_id: str) -> Dict[str, Any]:
+        resp = await self._client().post(
+            f"/v2/escrow/{escrow_id}/deliver",
+            json={},
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def escrow_release(
+        self,
+        escrow_id: str,
+        release_amount: float,
+    ) -> Dict[str, Any]:
+        resp = await self._client().post(
+            f"/v2/escrow/{escrow_id}/release",
+            json={"release_amount": release_amount},
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def escrow_cancel(self, escrow_id: str) -> Dict[str, Any]:
+        resp = await self._client().post(
+            f"/v2/escrow/{escrow_id}/cancel",
+            json={},
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def escrow_get(self, escrow_id: str) -> Dict[str, Any]:
+        resp = await self._client().get(f"/v2/escrow/{escrow_id}")
+        return await _handle_response(resp)
+
+    async def escrow_list(
+        self,
+        role: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if role:
+            params["role"] = role
+        if status:
+            params["status"] = status
+        resp = await self._client().get("/v2/escrow", params=params)
+        return await _handle_response(resp)
