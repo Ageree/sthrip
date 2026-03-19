@@ -12,6 +12,8 @@ def agents_list(
     verified: bool = typer.Option(False, "--verified", help="Only verified agents"),
     tier: Optional[str] = typer.Option(None, "--tier", help="Filter by tier"),
     min_trust_score: Optional[float] = typer.Option(None, "--min-trust-score"),
+    capability: Optional[str] = typer.Option(None, "--capability", help="Filter by capability"),
+    escrow_only: bool = typer.Option(False, "--escrow-only", help="Only agents accepting escrow"),
     limit: int = typer.Option(20, "--limit"),
     offset: int = typer.Option(0, "--offset"),
 ):
@@ -24,6 +26,10 @@ def agents_list(
         params["tier"] = tier
     if min_trust_score is not None:
         params["min_trust_score"] = min_trust_score
+    if capability:
+        params["capability"] = capability
+    if escrow_only:
+        params["escrow_only"] = "true"
     data = client.get("/v2/agents", params=params)
     print(format_success(data))
 

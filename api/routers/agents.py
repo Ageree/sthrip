@@ -260,6 +260,10 @@ async def get_current_agent_info(agent: Agent = Depends(get_current_agent)):
         "privacy_level": agent.privacy_level.value,
         "xmr_address": agent.xmr_address,
         "created_at": agent.created_at.isoformat(),
+        "capabilities": agent.capabilities if agent.capabilities else [],
+        "pricing": agent.pricing if agent.pricing else {},
+        "description": agent.description,
+        "accepts_escrow": agent.accepts_escrow if agent.accepts_escrow is not None else True,
     }
 
 

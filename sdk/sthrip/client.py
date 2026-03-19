@@ -27,7 +27,7 @@ from .exceptions import (
     StrhipError,
 )
 
-_VERSION = "0.2.0"
+_VERSION = "0.2.1"
 _USER_AGENT = "sthrip-sdk/{}".format(_VERSION)
 _DEFAULT_API_URL = "https://sthrip-api-production.up.railway.app"
 _REQUEST_TIMEOUT = 30  # seconds
