@@ -22,6 +22,30 @@
     </div>
 </div>
 
+<h2 class="text-xl font-bold text-gray-800 mb-4">Escrow</h2>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Total Escrows</p>
+        <p class="text-3xl font-bold text-indigo-600 mt-1">{{ stats.total_escrows }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Active</p>
+        <p class="text-3xl font-bold text-yellow-600 mt-1">{{ stats.active_escrows }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Completed</p>
+        <p class="text-3xl font-bold text-green-600 mt-1">{{ stats.completed_escrows }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Escrow Volume (XMR)</p>
+        <p class="text-3xl font-bold text-blue-600 mt-1">{{ stats.escrow_volume }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Fee Revenue (XMR)</p>
+        <p class="text-3xl font-bold text-purple-600 mt-1">{{ stats.escrow_fee_revenue }}</p>
+    </div>
+</div>
+
 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div class="bg-white rounded-lg shadow p-6">
         <h2 class="text-lg font-semibold text-gray-700 mb-3">Agents by Tier</h2>
@@ -42,6 +66,7 @@
             <li><a href="/admin/agents" class="text-indigo-600 hover:underline">Manage Agents</a></li>
             <li><a href="/admin/transactions" class="text-indigo-600 hover:underline">View Transactions</a></li>
             <li><a href="/admin/balances" class="text-indigo-600 hover:underline">View Balances</a></li>
+            <li><a href="/admin/escrows" class="text-indigo-600 hover:underline">View Escrow Deals</a></li>
             <li><a href="/docs" class="text-indigo-600 hover:underline">API Documentation</a></li>
         </ul>
     </div>

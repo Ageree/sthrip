@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Escrow {{ deal.id | string | truncate(13, True, "...") }}{% endblock %}
+{% block content %}
+<div class="flex items-center gap-3 mb-6">
+    <a href="/admin/escrows" class="text-indigo-600 hover:underline text-sm">&larr; Back</a>
+    <h1 class="text-2xl font-bold text-gray-800">Escrow Deal</h1>
+    {% set st = deal.status.value if deal.status else "" %}
+    {% if st == "created" %}
+        <span class="inline-block px-2 py-0.5 bg-yellow-100 text-yellow-800 rounded-full text-xs font-medium">Created</span>
+    {% elif st == "accepted" %}
+        <span class="inline-block px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full text-xs font-medium">Accepted</span>
+    {% elif st == "delivered" %}
+        <span class="inline-block px-2 py-0.5 bg-purple-100 text-purple-800 rounded-full text-xs font-medium">Delivered</span>
+    {% elif st == "completed" %}
+        <span class="inline-block px-2 py-0.5 bg-green-100 text-green-800 rounded-full text-xs font-medium">Completed</span>
+    {% elif st == "cancelled" %}
+        <span class="inline-block px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full text-xs font-medium">Cancelled</span>
+    {% elif st == "expired" %}
+        <span class="inline-block px-2 py-0.5 bg-red-100 text-red-800 rounded-full text-xs font-medium">Expired</span>
+    {% endif %}
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Amount</p>
+        <p class="text-2xl font-bold text-indigo-600 mt-1">{{ deal.amount }} {{ deal.token }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Fee Amount</p>
+        <p class="text-2xl font-bold text-yellow-600 mt-1">{{ deal.fee_amount }} {{ deal.token }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Release Amount</p>
+        <p class="text-2xl font-bold text-green-600 mt-1">{{ deal.release_amount if deal.release_amount else "---" }}{% if deal.release_amount %} {{ deal.token }}{% endif %}</p>
+    </div>
+</div>
+
+<!-- Participants -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-3">Participants</h2>
+    <dl class="grid grid-cols-2 gap-4 text-sm">
+        <div>
+            <dt class="text-gray-500">Buyer</dt>
+            <dd>
+                {% if buyer %}
+                    <a href="/admin/agents/{{ deal.buyer_id }}" class="text-indigo-600 hover:underline font-medium">{{ buyer.agent_name }}</a>
+                    <span class="text-gray-400 font-mono text-xs ml-1">({{ deal.buyer_id | string | truncate(13, True, "...") }})</span>
+                {% else %}
+                    <span class="font-mono text-gray-800">{{ deal.buyer_id }}</span>
+                {% endif %}
+            </dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Seller</dt>
+            <dd>
+                {% if seller %}
+                    <a href="/admin/agents/{{ deal.seller_id }}" class="text-indigo-600 hover:underline font-medium">{{ seller.agent_name }}</a>
+                    <span class="text-gray-400 font-mono text-xs ml-1">({{ deal.seller_id | string | truncate(13, True, "...") }})</span>
+                {% else %}
+                    <span class="font-mono text-gray-800">{{ deal.seller_id }}</span>
+                {% endif %}
+            </dd>
+        </div>
+    </dl>
+</div>
+
+<!-- Deal Details -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-3">Deal Details</h2>
+    <dl class="grid grid-cols-2 gap-4 text-sm">
+        <div>
+            <dt class="text-gray-500">Deal ID</dt>
+            <dd class="font-mono text-gray-800">{{ deal.id }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Deal Hash</dt>
+            <dd class="font-mono text-gray-800 text-xs break-all">{{ deal.deal_hash }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Status</dt>
+            <dd class="capitalize">{{ st }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Token</dt>
+            <dd>{{ deal.token }}</dd>
+        </div>
+        {% if deal.description %}
+        <div class="col-span-2">
+            <dt class="text-gray-500">Description</dt>
+            <dd class="text-gray-800">{{ deal.description }}</dd>
+        </div>
+        {% endif %}
+        {% if deal.deal_metadata %}
+        <div class="col-span-2">
+            <dt class="text-gray-500">Metadata</dt>
+            <dd class="font-mono text-xs text-gray-700 bg-gray-50 p-2 rounded break-all">{{ deal.deal_metadata }}</dd>
+        </div>
+        {% endif %}
+    </dl>
+</div>
+
+<!-- Fee Breakdown -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-3">Fee Breakdown</h2>
+    <dl class="grid grid-cols-3 gap-4 text-sm">
+        <div>
+            <dt class="text-gray-500">Fee Percent</dt>
+            <dd class="font-mono text-gray-800">{{ deal.fee_percent }}%</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Fee Amount</dt>
+            <dd class="font-mono text-gray-800">{{ deal.fee_amount }} {{ deal.token }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Release Amount</dt>
+            <dd class="font-mono text-gray-800">{{ deal.release_amount if deal.release_amount else "---" }}{% if deal.release_amount %} {{ deal.token }}{% endif %}</dd>
+        </div>
+    </dl>
+</div>
+
+<!-- Timeouts & Deadlines -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-3">Timeouts &amp; Deadlines</h2>
+    <dl class="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+        <div>
+            <dt class="text-gray-500">Accept Timeout</dt>
+            <dd class="text-gray-800">{{ deal.accept_timeout_hours }}h</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Delivery Timeout</dt>
+            <dd class="text-gray-800">{{ deal.delivery_timeout_hours }}h</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Review Timeout</dt>
+            <dd class="text-gray-800">{{ deal.review_timeout_hours }}h</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Accept Deadline</dt>
+            <dd class="text-gray-800">{{ deal.accept_deadline.strftime('%Y-%m-%d %H:%M UTC') if deal.accept_deadline else "---" }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Delivery Deadline</dt>
+            <dd class="text-gray-800">{{ deal.delivery_deadline.strftime('%Y-%m-%d %H:%M UTC') if deal.delivery_deadline else "---" }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Review Deadline</dt>
+            <dd class="text-gray-800">{{ deal.review_deadline.strftime('%Y-%m-%d %H:%M UTC') if deal.review_deadline else "---" }}</dd>
+        </div>
+    </dl>
+</div>
+
+<!-- Timeline -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-3">Timeline</h2>
+    <div class="relative">
+        <div class="absolute left-4 top-0 bottom-0 w-0.5 bg-gray-200"></div>
+        <div class="space-y-6">
+            <!-- Created -->
+            <div class="relative flex items-start gap-4 pl-10">
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-yellow-400 border-2 border-white shadow"></div>
+                <div>
+                    <p class="text-sm font-medium text-gray-800">Created</p>
+                    <p class="text-xs text-gray-500">{{ deal.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') if deal.created_at else "---" }}</p>
+                </div>
+            </div>
+
+            <!-- Accepted -->
+            <div class="relative flex items-start gap-4 pl-10">
+                {% if deal.accepted_at %}
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-blue-400 border-2 border-white shadow"></div>
+                {% else %}
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-gray-300 border-2 border-white shadow"></div>
+                {% endif %}
+                <div>
+                    <p class="text-sm font-medium {{ 'text-gray-800' if deal.accepted_at else 'text-gray-400' }}">Accepted</p>
+                    <p class="text-xs text-gray-500">{{ deal.accepted_at.strftime('%Y-%m-%d %H:%M:%S UTC') if deal.accepted_at else "---" }}</p>
+                </div>
+            </div>
+
+            <!-- Delivered -->
+            <div class="relative flex items-start gap-4 pl-10">
+                {% if deal.delivered_at %}
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-purple-400 border-2 border-white shadow"></div>
+                {% else %}
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-gray-300 border-2 border-white shadow"></div>
+                {% endif %}
+                <div>
+                    <p class="text-sm font-medium {{ 'text-gray-800' if deal.delivered_at else 'text-gray-400' }}">Delivered</p>
+                    <p class="text-xs text-gray-500">{{ deal.delivered_at.strftime('%Y-%m-%d %H:%M:%S UTC') if deal.delivered_at else "---" }}</p>
+                </div>
+            </div>
+
+            <!-- Completed / Cancelled -->
+            {% if deal.completed_at %}
+            <div class="relative flex items-start gap-4 pl-10">
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-green-400 border-2 border-white shadow"></div>
+                <div>
+                    <p class="text-sm font-medium text-gray-800">Completed</p>
+                    <p class="text-xs text-gray-500">{{ deal.completed_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</p>
+                </div>
+            </div>
+            {% elif deal.cancelled_at %}
+            <div class="relative flex items-start gap-4 pl-10">
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-gray-400 border-2 border-white shadow"></div>
+                <div>
+                    <p class="text-sm font-medium text-gray-800">Cancelled</p>
+                    <p class="text-xs text-gray-500">{{ deal.cancelled_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</p>
+                </div>
+            </div>
+            {% elif deal.expires_at %}
+            <div class="relative flex items-start gap-4 pl-10">
+                {% if st == "expired" %}
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-red-400 border-2 border-white shadow"></div>
+                {% else %}
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-gray-300 border-2 border-white shadow"></div>
+                {% endif %}
+                <div>
+                    <p class="text-sm font-medium {{ 'text-red-700' if st == 'expired' else 'text-gray-400' }}">{{ "Expired" if st == "expired" else "Expires" }}</p>
+                    <p class="text-xs text-gray-500">{{ deal.expires_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</p>
+                </div>
+            </div>
+            {% else %}
+            <div class="relative flex items-start gap-4 pl-10">
+                <div class="absolute left-2.5 w-3 h-3 rounded-full bg-gray-300 border-2 border-white shadow"></div>
+                <div>
+                    <p class="text-sm font-medium text-gray-400">Pending resolution</p>
+                    <p class="text-xs text-gray-500">---</p>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

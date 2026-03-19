@@ -4,6 +4,7 @@ import hmac
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -15,7 +16,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from sthrip.db.database import get_db
-from sthrip.db.models import Agent, AgentBalance, AgentReputation, HubRoute, AgentTier, HubRouteStatus
+from sthrip.db.models import Agent, AgentBalance, AgentReputation, HubRoute, AgentTier, HubRouteStatus, EscrowDeal, EscrowStatus
 from sthrip.config import get_settings
 from sthrip.utils import escape_ilike
 from api.helpers import get_client_ip
@@ -87,6 +88,36 @@ def _serialize_hub_route(tx: HubRoute) -> dict:
         "status": tx.status,
         "created_at": tx.created_at,
     }
+
+def _serialize_escrow(deal: "EscrowDeal") -> dict:
+    """Convert EscrowDeal ORM instance to a plain dict."""
+    return {
+        "id": deal.id,
+        "deal_hash": deal.deal_hash,
+        "buyer_id": deal.buyer_id,
+        "seller_id": deal.seller_id,
+        "amount": deal.amount,
+        "token": deal.token,
+        "description": deal.description,
+        "fee_percent": deal.fee_percent,
+        "fee_amount": deal.fee_amount,
+        "release_amount": deal.release_amount,
+        "status": deal.status,
+        "accept_timeout_hours": deal.accept_timeout_hours,
+        "delivery_timeout_hours": deal.delivery_timeout_hours,
+        "review_timeout_hours": deal.review_timeout_hours,
+        "accept_deadline": deal.accept_deadline,
+        "delivery_deadline": deal.delivery_deadline,
+        "review_deadline": deal.review_deadline,
+        "deal_metadata": deal.deal_metadata,
+        "created_at": deal.created_at,
+        "accepted_at": deal.accepted_at,
+        "delivered_at": deal.delivered_at,
+        "completed_at": deal.completed_at,
+        "cancelled_at": deal.cancelled_at,
+        "expires_at": deal.expires_at,
+    }
+
 
 _SESSION_TTL = 8 * 3600  # 8 hours
 _session_logger = logging.getLogger("sthrip.admin_sessions")
@@ -233,12 +264,38 @@ async def overview(request: Request):
             Agent.last_seen_at >= cutoff
         ).scalar() or 0
 
+        # Escrow stats (graceful if table doesn't exist yet)
+        total_escrows = active_escrows = completed_escrows = 0
+        escrow_volume = escrow_fee_revenue = Decimal("0")
+        try:
+            _active_statuses = [EscrowStatus.CREATED, EscrowStatus.ACCEPTED, EscrowStatus.DELIVERED]
+            total_escrows = db.query(func.count(EscrowDeal.id)).scalar() or 0
+            active_escrows = db.query(func.count(EscrowDeal.id)).filter(
+                EscrowDeal.status.in_(_active_statuses)
+            ).scalar() or 0
+            completed_escrows = db.query(func.count(EscrowDeal.id)).filter(
+                EscrowDeal.status == EscrowStatus.COMPLETED
+            ).scalar() or 0
+            escrow_volume = db.query(
+                func.coalesce(func.sum(EscrowDeal.amount), 0)
+            ).scalar()
+            escrow_fee_revenue = db.query(
+                func.coalesce(func.sum(EscrowDeal.fee_amount), 0)
+            ).filter(EscrowDeal.status == EscrowStatus.COMPLETED).scalar()
+        except Exception:
+            pass
+
     stats = {
         "total_agents": total_agents,
         "active_24h": active_24h,
         "total_transactions": total_transactions,
         "total_volume": f"{total_volume:.4f}",
         "by_tier": by_tier,
+        "total_escrows": total_escrows,
+        "active_escrows": active_escrows,
+        "completed_escrows": completed_escrows,
+        "escrow_volume": f"{escrow_volume:.4f}",
+        "escrow_fee_revenue": f"{escrow_fee_revenue:.4f}",
     }
     return templates.TemplateResponse(request, "overview.html", {"stats": stats})
 
@@ -409,6 +466,92 @@ async def balances_list(
         "page": page,
         "total": total,
         "total_pages": (total + per_page - 1) // per_page,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ESCROW PAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/escrows", response_class=HTMLResponse)
+async def escrows_list(
+    request: Request,
+    status: str = Query(default="", max_length=20),
+    page: int = Query(default=1, ge=1),
+):
+    """List all escrow deals with optional status filter."""
+    _require_auth(request)
+    per_page = 100
+    offset = (page - 1) * per_page
+
+    valid_statuses = {s.value for s in EscrowStatus}
+    if status and status not in valid_statuses:
+        status = ""
+
+    with get_db() as db:
+        query = db.query(EscrowDeal)
+        if status:
+            query = query.filter(EscrowDeal.status == status)
+        total = query.count()
+        deals = query.order_by(EscrowDeal.created_at.desc()).offset(offset).limit(per_page).all()
+
+        # Resolve agent names for buyers and sellers
+        agent_ids = set()
+        for deal in deals:
+            agent_ids.add(deal.buyer_id)
+            agent_ids.add(deal.seller_id)
+        agent_ids.discard(None)
+        agents_map = {}
+        if agent_ids:
+            for a in db.query(Agent).filter(Agent.id.in_(agent_ids)).all():
+                agents_map[a.id] = _serialize_agent(a)
+
+        deal_rows = [
+            {
+                "deal": _serialize_escrow(deal),
+                "buyer": agents_map.get(deal.buyer_id),
+                "seller": agents_map.get(deal.seller_id),
+            }
+            for deal in deals
+        ]
+
+    return templates.TemplateResponse(request, "escrows.html", {
+        "escrows": deal_rows,
+        "status": status,
+        "page": page,
+        "total": total,
+        "total_pages": (total + per_page - 1) // per_page,
+    })
+
+
+@router.get("/escrows/{deal_id}", response_class=HTMLResponse)
+async def escrow_detail(request: Request, deal_id: str):
+    """Show escrow deal detail page."""
+    _require_auth(request)
+
+    import uuid as _uuid
+    try:
+        parsed_id = _uuid.UUID(deal_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Escrow deal not found")
+
+    with get_db() as db:
+        deal = db.query(EscrowDeal).filter(EscrowDeal.id == parsed_id).first()
+        if not deal:
+            raise HTTPException(status_code=404, detail="Escrow deal not found")
+
+        deal_data = _serialize_escrow(deal)
+        buyer_data = _serialize_agent(
+            db.query(Agent).filter(Agent.id == deal.buyer_id).first()
+        ) if deal.buyer_id else None
+        seller_data = _serialize_agent(
+            db.query(Agent).filter(Agent.id == deal.seller_id).first()
+        ) if deal.seller_id else None
+
+    return templates.TemplateResponse(request, "escrow_detail.html", {
+        "deal": deal_data,
+        "buyer": buyer_data,
+        "seller": seller_data,
     })
 
 
