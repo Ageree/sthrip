@@ -320,7 +320,7 @@ class TestHappyPath:
         assert released["status"] == "completed"
 
         fee = Decimal(released["fee"])
-        expected_fee = Decimal("1.0") * Decimal("0.001")
+        expected_fee = Decimal("1.0") * Decimal("0.01")
         assert fee == expected_fee
 
         seller_received = Decimal(released["seller_received"])
@@ -362,7 +362,7 @@ class TestPartialRelease:
         assert released["status"] == "completed"
 
         fee = Decimal(released["fee"])
-        expected_fee = Decimal("0.7") * Decimal("0.001")
+        expected_fee = Decimal("0.7") * Decimal("0.01")
         assert fee == expected_fee
 
         seller_received = Decimal(released["seller_received"])
@@ -986,7 +986,7 @@ class TestResolveExpired:
         deal = db.query(EscrowDeal).filter(EscrowDeal.id == escrow_id).first()
         assert deal.status == EscrowStatus.COMPLETED
 
-        fee = Decimal("1") * Decimal("0.001")
+        fee = Decimal("1") * Decimal("0.01")
         expected_seller_balance = Decimal("1") - fee
 
         assert self._get_balance_available(db, seller.id) == expected_seller_balance

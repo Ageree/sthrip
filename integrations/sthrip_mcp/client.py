@@ -307,3 +307,118 @@ class SthripClient:
             params["status"] = status
         resp = await self._client().get("/v2/escrow", params=params)
         return await _handle_response(resp)
+
+    # --- Spending Policy (auth required) ---
+
+    async def set_spending_policy(
+        self,
+        max_per_tx: Optional[float] = None,
+        max_daily: Optional[float] = None,
+        allowed_recipients: Optional[list] = None,
+        require_confirmation_above: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        if max_per_tx is not None:
+            body["max_per_tx"] = max_per_tx
+        if max_daily is not None:
+            body["max_daily"] = max_daily
+        if allowed_recipients is not None:
+            body["allowed_recipients"] = allowed_recipients
+        if require_confirmation_above is not None:
+            body["require_confirmation_above"] = require_confirmation_above
+        resp = await self._client().put("/v2/me/spending-policy", json=body)
+        return await _handle_response(resp)
+
+    async def get_spending_policy(self) -> Dict[str, Any]:
+        resp = await self._client().get("/v2/me/spending-policy")
+        return await _handle_response(resp)
+
+    # --- Encrypted Messaging (auth required) ---
+
+    async def register_encryption_key(
+        self,
+        public_key: str,
+    ) -> Dict[str, Any]:
+        resp = await self._client().put(
+            "/v2/me/encryption-key",
+            json={"public_key": public_key},
+        )
+        return await _handle_response(resp)
+
+    async def get_agent_public_key(
+        self,
+        agent_id: str,
+    ) -> Dict[str, Any]:
+        resp = await self._client().get(f"/v2/agents/{agent_id}/public-key")
+        return await _handle_response(resp)
+
+    async def send_message(
+        self,
+        to_agent_id: str,
+        ciphertext: str,
+        nonce: str,
+        ephemeral_public_key: str,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "to_agent_id": to_agent_id,
+            "ciphertext": ciphertext,
+            "nonce": nonce,
+            "ephemeral_public_key": ephemeral_public_key,
+        }
+        resp = await self._client().post(
+            "/v2/messages/send",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def get_messages(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        resp = await self._client().get("/v2/messages/inbox", params=params)
+        return await _handle_response(resp)
+
+    # --- ZK Reputation (auth required for generate, public for verify) ---
+
+    async def generate_reputation_proof(
+        self,
+        claim_type: str,
+        threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"claim_type": claim_type}
+        if threshold is not None:
+            body["threshold"] = threshold
+        resp = await self._client().post(
+            "/v2/me/reputation-proof",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def verify_reputation_proof(
+        self,
+        proof: str,
+        claim_type: str,
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "proof": proof,
+            "claim_type": claim_type,
+        }
+        if agent_id is not None:
+            body["agent_id"] = agent_id
+        resp = await self._client().post("/v2/verify-reputation", json=body)
+        return await _handle_response(resp)
+
+    # --- PoW Registration (no auth required) ---
+
+    async def get_pow_challenge(self) -> Dict[str, Any]:
+        resp = await self._client().post(
+            "/v2/agents/register/challenge",
+            json={},
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)

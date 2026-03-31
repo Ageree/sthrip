@@ -16,7 +16,7 @@ from contextlib import contextmanager
 
 from sthrip.db.models import (
     Base, Agent, AgentReputation, AgentBalance, HubRoute, FeeCollection,
-    PendingWithdrawal,
+    PendingWithdrawal, SpendingPolicy,
 )
 
 _TEST_TABLES = [
@@ -26,6 +26,7 @@ _TEST_TABLES = [
     HubRoute.__table__,
     FeeCollection.__table__,
     PendingWithdrawal.__table__,
+    SpendingPolicy.__table__,
 ]
 
 _VALID_STAGENET_ADDR = "5" + "a" * 94

@@ -459,7 +459,7 @@ class TestMultiMilestoneHappyPath:
         - Verify deal completed, verify balances
         """
         client, buyer_key, seller_key = buyer_seller
-        fee_pct = Decimal("0.001")
+        fee_pct = Decimal("0.01")
 
         # Create
         created = _create_milestone_escrow(
@@ -501,8 +501,8 @@ class TestMultiMilestoneHappyPath:
 
         # Calculate expected balances:
         # Total released to seller: 0.3 + 0.3 + 0.3 = 0.9
-        # Total fees: 0.9 * 0.001 = 0.0009
-        # Seller received: 0.9 - 0.0009 = 0.8991
+        # Total fees: 0.9 * 0.01 = 0.009
+        # Seller received: 0.9 - 0.009 = 0.891
         # Buyer refund from milestone 2 partial: 0.4 - 0.3 = 0.1
         # Buyer final: 10 - 1.0 + 0.1 = 9.1
         total_released = Decimal("0.3") + Decimal("0.3") + Decimal("0.3")
@@ -666,7 +666,7 @@ class TestMilestonePartialRelease:
     def test_partial_release_splits_correctly(self, buyer_seller):
         """Partial release: seller gets partial, buyer gets remainder."""
         client, buyer_key, seller_key = buyer_seller
-        fee_pct = Decimal("0.001")
+        fee_pct = Decimal("0.01")
         created = _create_milestone_escrow(
             client, buyer_key, "seller-agent", 1.0, _THREE_MILESTONES,
         )
@@ -884,7 +884,7 @@ class TestMilestoneExpiry:
         svc, db = svc_session
         buyer, seller = self._create_agent_pair(db)
         self._create_balance(db, buyer.id, Decimal("5"))
-        fee_pct = Decimal("0.001")
+        fee_pct = Decimal("0.01")
 
         result = svc.create_escrow(
             db, buyer.id, seller.id, Decimal("1"),
@@ -982,7 +982,7 @@ class TestMilestoneExpiry:
         svc, db = svc_session
         buyer, seller = self._create_agent_pair(db)
         self._create_balance(db, buyer.id, Decimal("5"))
-        fee_pct = Decimal("0.001")
+        fee_pct = Decimal("0.01")
 
         result = svc.create_escrow(
             db, buyer.id, seller.id, Decimal("1"),
@@ -1069,7 +1069,7 @@ class TestBackwardCompatibility:
         data = r.json()
         assert data["status"] == "completed"
 
-        fee = Decimal("1.0") * Decimal("0.001")
+        fee = Decimal("1.0") * Decimal("0.01")
         assert Decimal(data["seller_received"]) == Decimal("1.0") - fee
         assert Decimal(data["refunded_to_buyer"]) == Decimal("0")
 

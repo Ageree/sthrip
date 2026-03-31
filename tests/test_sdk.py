@@ -1143,3 +1143,476 @@ class TestHandleResponse:
         client.balance()
         called_url = mock_session.request.call_args[0][1]
         assert called_url == "https://custom.api.test/v2/balance"
+
+
+# ===========================================================================
+# 17. Session ID tests
+# ===========================================================================
+
+class TestSessionId:
+
+    def test_session_id_generated(self):
+        """Every client instance gets a unique session UUID."""
+        client, _ = _build_client()
+        assert client._session_id is not None
+        # Validate it is a valid UUID (will raise ValueError if not)
+        import uuid as _uuid
+        _uuid.UUID(client._session_id)
+
+    def test_session_id_unique_per_instance(self):
+        c1, _ = _build_client()
+        c2, _ = _build_client()
+        assert c1._session_id != c2._session_id
+
+    def test_session_header_sent_on_requests(self):
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(200, {"available": "0"})
+        client.balance()
+        headers = mock_session.request.call_args[1]["headers"]
+        assert "X-Sthrip-Session" in headers
+        assert headers["X-Sthrip-Session"] == client._session_id
+
+    def test_session_spent_starts_at_zero(self):
+        from decimal import Decimal
+        client, _ = _build_client()
+        assert client._session_spent == Decimal("0")
+
+
+# ===========================================================================
+# 18. would_exceed() tests
+# ===========================================================================
+
+class TestWouldExceed:
+
+    def test_would_exceed_max_per_tx_returns_true(self):
+        """Returns True when amount exceeds max_per_tx."""
+        client, _ = _build_client()
+        from decimal import Decimal
+        client._max_per_tx = Decimal("1.0")
+        assert client.would_exceed(1.5) is True
+
+    def test_would_exceed_max_per_tx_returns_false_at_limit(self):
+        client, _ = _build_client()
+        from decimal import Decimal
+        client._max_per_tx = Decimal("1.0")
+        assert client.would_exceed(1.0) is False
+
+    def test_would_exceed_max_per_tx_returns_false_below_limit(self):
+        client, _ = _build_client()
+        from decimal import Decimal
+        client._max_per_tx = Decimal("1.0")
+        assert client.would_exceed(0.5) is False
+
+    def test_would_exceed_session_returns_true(self):
+        """Returns True when session total would be exceeded."""
+        client, _ = _build_client()
+        from decimal import Decimal
+        client._max_per_session = Decimal("5.0")
+        client._session_spent = Decimal("4.0")
+        assert client.would_exceed(1.5) is True
+
+    def test_would_exceed_session_returns_false_at_limit(self):
+        client, _ = _build_client()
+        from decimal import Decimal
+        client._max_per_session = Decimal("5.0")
+        client._session_spent = Decimal("4.0")
+        assert client.would_exceed(1.0) is False
+
+    def test_would_exceed_session_returns_false_below_limit(self):
+        client, _ = _build_client()
+        from decimal import Decimal
+        client._max_per_session = Decimal("5.0")
+        client._session_spent = Decimal("2.0")
+        assert client.would_exceed(1.0) is False
+
+    def test_would_exceed_no_limits_returns_false(self):
+        """Returns False when no limits are configured."""
+        client, _ = _build_client()
+        client._max_per_tx = None
+        client._max_per_session = None
+        assert client.would_exceed(1000.0) is False
+
+    def test_would_exceed_both_tx_and_session(self):
+        """Returns True if either limit is exceeded (tx limit first)."""
+        client, _ = _build_client()
+        from decimal import Decimal
+        client._max_per_tx = Decimal("0.5")
+        client._max_per_session = Decimal("100.0")
+        assert client.would_exceed(0.6) is True
+
+
+# ===========================================================================
+# 19. Spending policy sync tests
+# ===========================================================================
+
+class TestSpendingPolicySync:
+
+    def test_spending_policy_synced_on_init(self):
+        """When policy params are set, PUT /v2/me/spending-policy is called."""
+        with patch("sthrip_sdk.client.load_credentials", return_value=None), \
+             patch.object(Sthrip, "_auto_register", return_value="k"), \
+             patch.dict(os.environ, {"STHRIP_API_KEY": "k"}, clear=False):
+            client = Sthrip(
+                api_key="k",
+                api_url="https://api.test",
+                max_per_tx=1.0,
+                daily_limit=10.0,
+            )
+
+        mock_session = MagicMock()
+        # The sync already ran during __init__, so we test it directly
+        client._session = mock_session
+        mock_session.request.return_value = _make_response(200, {"status": "ok"})
+        client._sync_spending_policy()
+
+        call_args = mock_session.request.call_args
+        assert call_args[0][0] == "PUT"
+        assert call_args[0][1].endswith("/v2/me/spending-policy")
+        body = call_args[1]["json"]
+        assert body["max_per_tx"] == "1.0"
+        assert body["daily_limit"] == "10.0"
+
+    def test_spending_policy_not_synced_without_params(self):
+        """No HTTP call when no policy params are set."""
+        client, mock_session = _build_client()
+        client._max_per_tx = None
+        client._max_per_session = None
+        client._daily_limit = None
+        client._allowed_agents = None
+        client._require_escrow_above = None
+        client._sync_spending_policy()
+        mock_session.request.assert_not_called()
+
+    def test_spending_policy_sync_includes_allowed_agents(self):
+        client, mock_session = _build_client()
+        client._allowed_agents = ["agent-*", "trusted-bot"]
+        mock_session.request.return_value = _make_response(200, {"status": "ok"})
+        client._sync_spending_policy()
+        body = mock_session.request.call_args[1]["json"]
+        assert body["allowed_agents"] == ["agent-*", "trusted-bot"]
+
+    def test_spending_policy_sync_graceful_on_error(self):
+        """Sync should not raise even if the server returns an error."""
+        client, mock_session = _build_client()
+        from decimal import Decimal
+        client._max_per_tx = Decimal("1.0")
+        mock_session.request.return_value = _make_response(
+            500, {"detail": "Internal Server Error"}
+        )
+        # Should not raise
+        client._sync_spending_policy()
+
+    def test_set_spending_policy_method(self):
+        """set_spending_policy calls PUT and updates local state."""
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(200, {
+            "max_per_tx": "2.0", "is_active": True,
+        })
+        result = client.set_spending_policy(max_per_tx=2.0)
+        call_args = mock_session.request.call_args
+        assert call_args[0][0] == "PUT"
+        assert call_args[0][1].endswith("/v2/me/spending-policy")
+        from decimal import Decimal
+        assert client._max_per_tx == Decimal("2.0")
+
+    def test_get_spending_policy_method(self):
+        client, mock_session = _build_client()
+        policy = {"max_per_tx": "1.0", "daily_limit": "10.0", "is_active": True}
+        mock_session.request.return_value = _make_response(200, policy)
+        result = client.get_spending_policy()
+        assert result == policy
+        call_args = mock_session.request.call_args
+        assert call_args[0][0] == "GET"
+        assert call_args[0][1].endswith("/v2/me/spending-policy")
+
+
+# ===========================================================================
+# 20. Pay with session tracking tests
+# ===========================================================================
+
+class TestPayWithSessionTracking:
+
+    def _receipt(self):
+        return {
+            "payment_id": "pay-001",
+            "to_agent": "alice",
+            "amount": "0.05",
+            "status": "completed",
+        }
+
+    def test_pay_increments_session_spent(self):
+        from decimal import Decimal
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(200, self._receipt())
+        client.pay("alice", 0.05)
+        assert client._session_spent == Decimal("0.05")
+
+    def test_pay_increments_session_spent_cumulatively(self):
+        from decimal import Decimal
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(200, self._receipt())
+        client.pay("alice", 0.05)
+        client.pay("alice", 0.10)
+        assert client._session_spent == Decimal("0.15")
+
+    def test_pay_blocked_by_would_exceed(self):
+        from decimal import Decimal
+        client, mock_session = _build_client()
+        client._max_per_tx = Decimal("0.01")
+        with pytest.raises(PaymentError, match="spending policy"):
+            client.pay("alice", 0.05)
+        # Session spent should NOT increment on blocked payment
+        assert client._session_spent == Decimal("0")
+
+    def test_pay_blocked_by_session_limit(self):
+        from decimal import Decimal
+        client, mock_session = _build_client()
+        client._max_per_session = Decimal("0.10")
+        mock_session.request.return_value = _make_response(200, self._receipt())
+        client.pay("alice", 0.05)
+        client.pay("alice", 0.04)
+        # Next one would bring total to 0.10 which equals limit, but 0.05 would exceed
+        with pytest.raises(PaymentError, match="spending policy"):
+            client.pay("alice", 0.05)
+        assert client._session_spent == Decimal("0.09")
+
+
+# ===========================================================================
+# 21. Encryption key registration tests
+# ===========================================================================
+
+class TestRegisterEncryptionKey:
+
+    def test_register_encryption_key_calls_put(self):
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(200, {
+            "status": "ok", "public_key": "base64key==",
+        })
+        result = client.register_encryption_key("base64key==")
+        call_args = mock_session.request.call_args
+        assert call_args[0][0] == "PUT"
+        assert call_args[0][1].endswith("/v2/me/encryption-key")
+        body = call_args[1]["json"]
+        assert body["public_key"] == "base64key=="
+        assert result["status"] == "ok"
+
+    def test_register_encryption_key_sends_auth(self):
+        client, mock_session = _build_client(api_key="my-key")
+        mock_session.request.return_value = _make_response(200, {"status": "ok"})
+        client.register_encryption_key("pk==")
+        headers = mock_session.request.call_args[1]["headers"]
+        assert headers["Authorization"] == "Bearer my-key"
+
+
+# ===========================================================================
+# 22. Get agent public key tests
+# ===========================================================================
+
+class TestGetAgentPublicKey:
+
+    def test_get_agent_public_key_calls_correct_endpoint(self):
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(200, {
+            "agent_id": "abc-123", "public_key": "pk==",
+        })
+        result = client.get_agent_public_key("abc-123")
+        call_args = mock_session.request.call_args
+        assert call_args[0][0] == "GET"
+        assert call_args[0][1].endswith("/v2/agents/abc-123/public-key")
+        assert result["public_key"] == "pk=="
+
+    def test_get_agent_public_key_raises_on_404(self):
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(
+            404, {"detail": "Agent not found"}
+        )
+        with pytest.raises(AgentNotFound):
+            client.get_agent_public_key("nonexistent-id")
+
+
+# ===========================================================================
+# 23. Send message tests
+# ===========================================================================
+
+class TestSendMessage:
+
+    def test_send_message_calls_post(self):
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(201, {
+            "status": "sent",
+            "message_id": "msg-001",
+            "expires_at": "2026-04-01T00:00:00",
+        })
+        result = client.send_message(
+            to_agent_id="agent-456",
+            ciphertext="encrypted-data==",
+            nonce="nonce-b64==",
+            sender_public_key="sender-pk==",
+        )
+        call_args = mock_session.request.call_args
+        assert call_args[0][0] == "POST"
+        assert call_args[0][1].endswith("/v2/messages/send")
+        body = call_args[1]["json"]
+        assert body["to_agent_id"] == "agent-456"
+        assert body["ciphertext"] == "encrypted-data=="
+        assert body["nonce"] == "nonce-b64=="
+        assert body["sender_public_key"] == "sender-pk=="
+        assert "payment_id" not in body
+        assert result["message_id"] == "msg-001"
+
+    def test_send_message_with_payment_id(self):
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(201, {
+            "status": "sent", "message_id": "msg-002", "expires_at": "2026-04-01T00:00:00",
+        })
+        client.send_message(
+            to_agent_id="agent-456",
+            ciphertext="ct==",
+            nonce="n==",
+            sender_public_key="pk==",
+            payment_id="pay-123",
+        )
+        body = mock_session.request.call_args[1]["json"]
+        assert body["payment_id"] == "pay-123"
+
+    def test_send_message_sends_auth(self):
+        client, mock_session = _build_client(api_key="msg-token")
+        mock_session.request.return_value = _make_response(201, {
+            "status": "sent", "message_id": "m", "expires_at": "t",
+        })
+        client.send_message("a", "ct", "n", "pk")
+        headers = mock_session.request.call_args[1]["headers"]
+        assert headers["Authorization"] == "Bearer msg-token"
+
+
+# ===========================================================================
+# 24. Get messages tests
+# ===========================================================================
+
+class TestGetMessages:
+
+    def test_get_messages_calls_inbox(self):
+        client, mock_session = _build_client()
+        inbox = {
+            "messages": [{"id": "m1", "ciphertext": "ct=="}],
+            "count": 1,
+        }
+        mock_session.request.return_value = _make_response(200, inbox)
+        result = client.get_messages()
+        call_args = mock_session.request.call_args
+        assert call_args[0][0] == "GET"
+        assert call_args[0][1].endswith("/v2/messages/inbox")
+        assert result["count"] == 1
+        assert len(result["messages"]) == 1
+
+    def test_get_messages_sends_auth(self):
+        client, mock_session = _build_client(api_key="inbox-key")
+        mock_session.request.return_value = _make_response(200, {"messages": [], "count": 0})
+        client.get_messages()
+        headers = mock_session.request.call_args[1]["headers"]
+        assert headers["Authorization"] == "Bearer inbox-key"
+
+    def test_get_messages_empty_inbox(self):
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(200, {"messages": [], "count": 0})
+        result = client.get_messages()
+        assert result["count"] == 0
+        assert result["messages"] == []
+
+
+# ===========================================================================
+# 25. PoW integration verification tests
+# ===========================================================================
+
+class TestPowIntegration:
+
+    def test_solve_pow_challenge_method_exists(self):
+        """Verify _solve_pow_challenge is present on the client."""
+        client, _ = _build_client()
+        assert hasattr(client, "_solve_pow_challenge")
+        assert callable(client._solve_pow_challenge)
+
+    def test_solve_pow_returns_dict_on_success(self):
+        """PoW solver returns a proof dict when the challenge endpoint works."""
+        client, mock_session = _build_client()
+        challenge_resp = _make_response(200, {
+            "nonce": "test-nonce-abc",
+            "difficulty_bits": 1,  # very easy for test speed
+            "expires_at": "2026-12-31T00:00:00Z",
+        })
+        mock_session.request.return_value = challenge_resp
+        result = client._solve_pow_challenge()
+        assert result is not None
+        assert result["nonce"] == "test-nonce-abc"
+        assert result["difficulty_bits"] == 1
+        assert "solution" in result
+
+    def test_solve_pow_returns_none_on_failure(self):
+        """PoW solver returns None when challenge endpoint fails."""
+        client, mock_session = _build_client()
+        mock_session.request.side_effect = Exception("server down")
+        result = client._solve_pow_challenge()
+        assert result is None
+
+    def test_auto_register_sends_pow_proof(self):
+        """Auto-registration includes pow_challenge when available."""
+        client, mock_session = _build_client()
+        pow_proof = {
+            "nonce": "n", "difficulty_bits": 1,
+            "expires_at": "2026-12-31T00:00:00Z", "solution": "42",
+        }
+        reg_response = _make_response(200, {
+            "api_key": "k", "agent_id": "i", "agent_name": "n",
+        })
+        mock_session.request.return_value = reg_response
+
+        with patch.object(client, "_solve_pow_challenge", return_value=pow_proof), \
+             patch("sthrip_sdk.client.save_credentials"), \
+             patch("sthrip_sdk.client._generate_agent_name", return_value="n"):
+            client._auto_register()
+
+        body = mock_session.request.call_args[1]["json"]
+        assert body["pow_challenge"] == pow_proof
+
+
+# ===========================================================================
+# 26. Version tests
+# ===========================================================================
+
+class TestVersion:
+
+    def test_version_is_0_3_0(self):
+        from sthrip_sdk.client import _VERSION
+        assert _VERSION == "0.3.0"
+
+    def test_user_agent_contains_version(self):
+        from sthrip_sdk.client import _USER_AGENT
+        assert "0.3.0" in _USER_AGENT
+
+
+# ===========================================================================
+# 27. _raw_put tests
+# ===========================================================================
+
+class TestRawPut:
+
+    def test_raw_put_sends_put_method(self):
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(200, {"ok": True})
+        client._raw_put("/v2/test", json_body={"key": "value"})
+        call_args = mock_session.request.call_args
+        assert call_args[0][0] == "PUT"
+
+    def test_raw_put_sends_json_body(self):
+        client, mock_session = _build_client()
+        mock_session.request.return_value = _make_response(200, {"ok": True})
+        client._raw_put("/v2/test", json_body={"key": "value"})
+        body = mock_session.request.call_args[1]["json"]
+        assert body == {"key": "value"}
+
+    def test_raw_put_sends_auth_by_default(self):
+        client, mock_session = _build_client(api_key="put-key")
+        mock_session.request.return_value = _make_response(200, {"ok": True})
+        client._raw_put("/v2/test")
+        headers = mock_session.request.call_args[1]["headers"]
+        assert headers["Authorization"] == "Bearer put-key"

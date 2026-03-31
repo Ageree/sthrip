@@ -13,34 +13,37 @@ class TestFeeCalculation:
 
     def test_hub_routing_base_fee(self):
         result = self.collector.calculate_hub_routing_fee(Decimal("10.0"))
-        assert result["fee_amount"] == Decimal("0.01")
-        assert result["fee_percent"] == Decimal("0.001")
+        assert result["fee_amount"] == Decimal("0.1")
+        assert result["fee_percent"] == Decimal("0.01")
         assert result["recipient_receives"] == Decimal("10.0")
-        assert result["total_deduction"] == Decimal("10.01")
+        assert result["total_deduction"] == Decimal("10.1")
 
     def test_hub_routing_min_fee(self):
         result = self.collector.calculate_hub_routing_fee(Decimal("0.001"))
         assert result["fee_amount"] == Decimal("0.0001")
 
     def test_hub_routing_no_cap(self):
-        """Fee is always 0.1% with no practical cap."""
+        """Fee is always 1% with no practical cap."""
         result = self.collector.calculate_hub_routing_fee(Decimal("5000.0"))
-        assert result["fee_amount"] == Decimal("5.0")
+        assert result["fee_amount"] == Decimal("50.0")
 
-    def test_premium_tier_discount(self):
+    def test_premium_tier_no_discount(self):
+        """Flat 1% — no tier discounts."""
         normal = self.collector.calculate_hub_routing_fee(Decimal("100.0"), from_agent_tier="free")
         premium = self.collector.calculate_hub_routing_fee(Decimal("100.0"), from_agent_tier="premium")
-        assert premium["fee_amount"] == normal["fee_amount"] * Decimal("0.5")
+        assert premium["fee_amount"] == normal["fee_amount"]
 
-    def test_verified_tier_discount(self):
+    def test_verified_tier_no_discount(self):
+        """Flat 1% — no tier discounts."""
         normal = self.collector.calculate_hub_routing_fee(Decimal("100.0"), from_agent_tier="free")
         verified = self.collector.calculate_hub_routing_fee(Decimal("100.0"), from_agent_tier="verified")
-        assert verified["fee_amount"] == normal["fee_amount"] * Decimal("0.75")
+        assert verified["fee_amount"] == normal["fee_amount"]
 
-    def test_urgent_doubles_fee(self):
+    def test_urgency_ignored(self):
+        """Flat 1% — no urgency premium."""
         normal = self.collector.calculate_hub_routing_fee(Decimal("100.0"))
         urgent = self.collector.calculate_hub_routing_fee(Decimal("100.0"), urgency="urgent")
-        assert urgent["fee_amount"] == normal["fee_amount"] * Decimal("2.0")
+        assert urgent["fee_amount"] == normal["fee_amount"]
 
     def test_zero_amount_fee_capped_at_amount(self):
         """Fee for zero amount must be zero (fee cannot exceed payment amount)."""
@@ -49,7 +52,7 @@ class TestFeeCalculation:
 
     def test_fee_config_values(self):
         hub = DEFAULT_FEES[FeeType.HUB_ROUTING]
-        assert hub.percent == Decimal("0.001")
+        assert hub.percent == Decimal("0.01")
         assert hub.min_fee == Decimal("0.0001")
         assert hub.max_fee == Decimal("999999999")
 
@@ -70,19 +73,21 @@ class TestEscrowFeeCalculation:
     def test_escrow_fee_basic(self):
         result = self.collector.calculate_escrow_fee(Decimal("10.0"))
         assert result["escrow_amount"] == Decimal("10.0")
-        assert result["fee_amount"] == Decimal("0.01")  # 0.1% of 10
-        assert result["fee_percent"] == Decimal("0.001")
+        assert result["fee_amount"] == Decimal("0.1")  # 1% of 10
+        assert result["fee_percent"] == Decimal("0.01")
         assert result["tier_discount"] == "free"
-        assert result["seller_receives"] == Decimal("9.99")
+        assert result["seller_receives"] == Decimal("9.9")
 
-    def test_escrow_fee_premium_tier(self):
+    def test_escrow_fee_premium_no_discount(self):
+        """Flat 1% — no tier discounts."""
         result = self.collector.calculate_escrow_fee(Decimal("10.0"), from_agent_tier="premium")
-        assert result["fee_amount"] == Decimal("0.005")  # 50% discount
+        assert result["fee_amount"] == Decimal("0.1")  # No discount
         assert result["tier_discount"] == "premium"
 
-    def test_escrow_fee_verified_tier(self):
+    def test_escrow_fee_verified_no_discount(self):
+        """Flat 1% — no tier discounts."""
         result = self.collector.calculate_escrow_fee(Decimal("10.0"), from_agent_tier="verified")
-        assert result["fee_amount"] == Decimal("0.0075")  # 25% discount
+        assert result["fee_amount"] == Decimal("0.1")  # No discount
         assert result["tier_discount"] == "verified"
 
     def test_escrow_fee_min_applied(self):
@@ -91,7 +96,7 @@ class TestEscrowFeeCalculation:
 
     def test_escrow_fee_config(self):
         config = DEFAULT_FEES[FeeType.ESCROW]
-        assert config.percent == Decimal("0.001")
+        assert config.percent == Decimal("0.01")
         assert config.min_fee == Decimal("0.0001")
         assert config.max_fee == Decimal("999999999")
 

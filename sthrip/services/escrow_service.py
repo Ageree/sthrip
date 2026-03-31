@@ -2,8 +2,7 @@
 Hub-held escrow service.
 
 Flow: CREATED -> ACCEPTED -> DELIVERED -> COMPLETED (or EXPIRED / CANCELLED).
-Fee: 0.1% of released amount only.
-Tier fee multipliers: premium 0.5x (50% discount), verified 0.75x (25% discount).
+Fee: 1% flat on all releases. No tier discounts.
 Partial release: buyer specifies release_amount in [0, escrow.amount].
 """
 
@@ -31,15 +30,7 @@ from sthrip.services.webhook_service import queue_webhook
 
 logger = logging.getLogger("sthrip.escrow")
 
-_DEFAULT_FEE_PERCENT = Decimal("0.001")
-
-# Fee multiplier per tier (NOT the discount itself).
-# premium: pays 50% of base fee (50% discount)
-# verified: pays 75% of base fee (25% discount)
-_TIER_FEE_MULTIPLIERS = {
-    "premium": Decimal("0.5"),
-    "verified": Decimal("0.75"),
-}
+_DEFAULT_FEE_PERCENT = Decimal("0.01")  # 1% flat, no tier discounts
 
 
 def _now() -> datetime:
@@ -116,8 +107,8 @@ def _milestone_to_dict(ms: EscrowMilestone) -> dict:
 
 
 def _compute_fee_percent(buyer_tier: str) -> Decimal:
-    multiplier = _TIER_FEE_MULTIPLIERS.get(buyer_tier, Decimal("1"))
-    return _DEFAULT_FEE_PERCENT * multiplier
+    """Flat 1% fee — tier parameter kept for backward compat but ignored."""
+    return _DEFAULT_FEE_PERCENT
 
 
 def _generate_deal_hash(

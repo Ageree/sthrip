@@ -9,6 +9,22 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sthrip.services.url_validator import validate_url_target, SSRFBlockedError
 
 
+class POWChallengeResponse(BaseModel):
+    """Proof-of-work challenge returned by POST /v2/agents/register/challenge."""
+    algorithm: str
+    difficulty_bits: int
+    nonce: str
+    expires_at: str
+
+
+class POWSubmission(BaseModel):
+    """Inline PoW proof attached to a registration request."""
+    nonce: str
+    difficulty_bits: int
+    expires_at: str
+    solution: str
+
+
 class AgentRegistration(BaseModel):
     agent_name: str = Field(..., min_length=3, max_length=255, pattern=r"^[a-zA-Z0-9_-]+$")
     webhook_url: Optional[str] = None
@@ -22,6 +38,9 @@ class AgentRegistration(BaseModel):
     pricing: Optional[Dict[str, str]] = None
     description: Optional[str] = Field(default=None, max_length=500)
     accepts_escrow: Optional[bool] = None
+
+    # Proof-of-work (optional for backward compat; can be made mandatory later)
+    pow_challenge: Optional[POWSubmission] = None
 
     @field_validator("webhook_url")
     @classmethod
@@ -204,6 +223,11 @@ class EscrowCreateRequest(BaseModel):
     milestones: Optional[List[MilestoneDefinition]] = Field(
         default=None, min_length=1, max_length=10,
     )
+    mode: Optional[str] = Field(
+        default="hub-held",
+        pattern=r"^(hub-held|multisig)$",
+        description="Escrow mode: hub-held (default) or multisig (2-of-3)",
+    )
 
     @model_validator(mode="after")
     def validate_milestone_amounts(self) -> "EscrowCreateRequest":
@@ -214,6 +238,14 @@ class EscrowCreateRequest(BaseModel):
             raise ValueError(
                 f"Sum of milestone amounts ({total}) must equal "
                 f"the deal amount ({self.amount})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_multisig_no_milestones(self) -> "EscrowCreateRequest":
+        if self.mode == "multisig" and self.milestones is not None:
+            raise ValueError(
+                "Multisig escrow does not support milestones"
             )
         return self
 
@@ -463,3 +495,228 @@ class WithdrawRequest(BaseModel):
     @classmethod
     def validate_address(cls, v: str) -> str:
         return validate_monero_address(v)
+
+
+# ---------------------------------------------------------------------------
+# Spending policy schemas
+# ---------------------------------------------------------------------------
+
+class SpendingPolicyRequest(BaseModel):
+    """Upsert body for PUT /v2/me/spending-policy."""
+    max_per_tx: Optional[Decimal] = Field(default=None, ge=0, le=100000)
+    max_per_session: Optional[Decimal] = Field(default=None, ge=0, le=100000)
+    daily_limit: Optional[Decimal] = Field(default=None, ge=0, le=1000000)
+    allowed_agents: Optional[List[str]] = Field(default=None, max_length=50)
+    blocked_agents: Optional[List[str]] = Field(default=None, max_length=50)
+    require_escrow_above: Optional[Decimal] = Field(default=None, ge=0, le=100000)
+
+    @field_validator("allowed_agents", "blocked_agents")
+    @classmethod
+    def validate_glob_patterns(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        for pat in v:
+            if not pat or len(pat) > 100:
+                raise ValueError("Each pattern must be 1-100 characters")
+        return v
+
+
+class SpendingPolicyResponse(BaseModel):
+    """Response body for GET /v2/me/spending-policy."""
+    max_per_tx: Optional[str] = None
+    max_per_session: Optional[str] = None
+    daily_limit: Optional[str] = None
+    allowed_agents: Optional[List[str]] = None
+    blocked_agents: Optional[List[str]] = None
+    require_escrow_above: Optional[str] = None
+    is_active: bool = True
+
+
+class SpendingStatusResponse(BaseModel):
+    """Response body for GET /v2/me/spending-status (future endpoint)."""
+    daily_spent: Optional[str] = None
+    daily_limit: Optional[str] = None
+    daily_remaining: Optional[str] = None
+    session_spent: Optional[str] = None
+    session_limit: Optional[str] = None
+    session_remaining: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Webhook endpoint schemas
+# ---------------------------------------------------------------------------
+
+class WebhookEndpointCreate(BaseModel):
+    """Request body for registering a new webhook endpoint."""
+    url: str = Field(..., min_length=10, max_length=2048)
+    event_filters: Optional[List[str]] = Field(
+        default=None,
+        max_length=20,
+        description="Event patterns to subscribe to (e.g. ['payment.*', 'escrow.*']). null = all events.",
+    )
+    description: Optional[str] = Field(default=None, max_length=256)
+
+    @field_validator("url")
+    @classmethod
+    def validate_webhook_endpoint_url(cls, v: str) -> str:
+        try:
+            validate_url_target(v)
+        except SSRFBlockedError as e:
+            raise ValueError(f"Webhook URL blocked: {e}")
+        return v
+
+    @field_validator("event_filters")
+    @classmethod
+    def validate_event_filters(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        for pattern in v:
+            if not pattern or len(pattern) > 100:
+                raise ValueError("Each event filter must be 1-100 characters")
+        return v
+
+
+class WebhookEndpointResponse(BaseModel):
+    """Public representation of a webhook endpoint (no secret)."""
+    id: str
+    url: str
+    description: Optional[str] = None
+    event_filters: Optional[List[str]] = None
+    is_active: bool
+    failure_count: int
+    created_at: str
+
+
+class WebhookEndpointCreateResponse(WebhookEndpointResponse):
+    """Response returned on create/rotate -- includes the plaintext secret."""
+    secret: str
+
+
+# ---------------------------------------------------------------------------
+# ZK Reputation Proof schemas (Task 7)
+# ---------------------------------------------------------------------------
+
+class ReputationProofRequest(BaseModel):
+    """Request body for generating a ZK reputation proof."""
+    threshold: int = Field(..., ge=0, le=100, description="Minimum trust score to prove")
+
+
+class ReputationProofResponse(BaseModel):
+    """Response containing the commitment and proof payload."""
+    commitment: str
+    proof: str
+    threshold: int
+
+
+class ReputationVerifyRequest(BaseModel):
+    """Request body for verifying a ZK reputation proof."""
+    commitment: str = Field(..., min_length=1, max_length=256)
+    proof: str = Field(..., min_length=1, description="Base64-encoded proof payload")
+    threshold: int = Field(..., ge=0, le=100)
+
+
+class ReputationVerifyResponse(BaseModel):
+    """Result of ZK reputation proof verification."""
+    valid: bool
+
+
+# ---------------------------------------------------------------------------
+# E2E Encrypted Messaging schemas
+# ---------------------------------------------------------------------------
+
+class EncryptionKeyRequest(BaseModel):
+    """Request body for registering an agent's Curve25519 public key."""
+    public_key: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Base64-encoded Curve25519 public key (32 bytes)",
+    )
+
+
+class MessageSendRequest(BaseModel):
+    """Request body for sending an encrypted message via the hub relay."""
+    to_agent_id: str = Field(..., min_length=1, max_length=64)
+    ciphertext: str = Field(..., min_length=1, description="Base64-encoded NaCl Box ciphertext")
+    nonce: str = Field(..., min_length=1, max_length=64, description="Base64-encoded 24-byte nonce")
+    sender_public_key: str = Field(..., min_length=1, max_length=64, description="Base64-encoded Curve25519 public key")
+    payment_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class MessageResponse(BaseModel):
+    """A single relayed encrypted message."""
+    id: str
+    from_agent_id: str
+    ciphertext: str
+    nonce: str
+    sender_public_key: str
+    payment_id: Optional[str] = None
+    created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Multisig Escrow schemas (Task 9)
+# ---------------------------------------------------------------------------
+
+class MultisigRoundRequest(BaseModel):
+    """Submit key exchange data for a multisig setup round."""
+    participant: str = Field(
+        ...,
+        pattern=r"^(buyer|seller|hub)$",
+        description="Participant role: buyer, seller, or hub",
+    )
+    round_number: int = Field(..., ge=1, le=3)
+    multisig_info: str = Field(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="Multisig info string from wallet RPC",
+    )
+
+
+class MultisigStateResponse(BaseModel):
+    """Current state of a multisig escrow."""
+    id: str
+    escrow_deal_id: str
+    state: str
+    fee_collected: str
+    funded_amount: Optional[str] = None
+    multisig_address: Optional[str] = None
+    timeout_at: Optional[str] = None
+    created_at: Optional[str] = None
+    buyer_wallet_id: Optional[str] = None
+    seller_wallet_id: Optional[str] = None
+    hub_wallet_id: Optional[str] = None
+    release_initiator: Optional[str] = None
+    dispute_reason: Optional[str] = None
+    disputed_by: Optional[str] = None
+
+
+class CosignRequest(BaseModel):
+    """Cosign a partially-signed release transaction."""
+    signer: str = Field(
+        ...,
+        pattern=r"^(buyer|seller|hub)$",
+        description="Participant role cosigning the release",
+    )
+    signed_tx: str = Field(
+        ...,
+        min_length=1,
+        max_length=100000,
+        description="Fully-signed transaction hex",
+    )
+
+
+class DisputeRequest(BaseModel):
+    """Raise a dispute on a multisig escrow."""
+    disputer: str = Field(
+        ...,
+        pattern=r"^(buyer|seller|hub)$",
+        description="Participant raising the dispute",
+    )
+    reason: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="Reason for dispute",
+    )

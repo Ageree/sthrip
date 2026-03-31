@@ -32,6 +32,7 @@ from sthrip.db.enums import (  # noqa: F401  (re-exported for backward compat)
     HubRouteStatus,
     FeeCollectionStatus,
     WithdrawalStatus,
+    MultisigState,
 )
 
 
@@ -79,6 +80,9 @@ class Agent(Base):
     description = Column(Text, nullable=True)  # max 500 chars, enforced at API layer
     accepts_escrow = Column(Boolean, default=True)
 
+    # E2E Encrypted Messaging
+    encryption_public_key = Column(Text, nullable=True)  # base64-encoded Curve25519 public key
+
     # Status
     is_active = Column(Boolean, default=True)
     last_seen_at = Column(DateTime(timezone=True), nullable=True)
@@ -125,9 +129,13 @@ class AgentReputation(Base):
     
     # Raw data
     raw_data = Column(JSON, default=dict)
-    
+
+    # ZK reputation proofs (Task 7)
+    reputation_commitment = Column(Text, nullable=True)   # serialized Pedersen commitment
+    reputation_blinding = Column(Text, nullable=True)      # blinding factor (private, never exposed via API)
+
     calculated_at = Column(DateTime(timezone=True), default=func.now())
-    
+
     # Relationships
     agent = relationship("Agent", back_populates="reputation")
 
@@ -486,4 +494,166 @@ class AgentBalance(Base):
         UniqueConstraint("agent_id", "token", name="uq_agent_balance"),
         CheckConstraint("available >= 0", name="ck_balance_available_non_negative"),
         CheckConstraint("pending >= 0", name="ck_balance_pending_non_negative"),
+    )
+
+
+class SpendingPolicy(Base):
+    """Per-agent spending controls and limits."""
+    __tablename__ = "spending_policies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    # Per-transaction cap
+    max_per_tx = Column(Numeric(20, 8), nullable=True)
+
+    # Per-session cap (rolling window)
+    max_per_session = Column(Numeric(20, 8), nullable=True)
+
+    # Daily spending limit (rolling 24 h window)
+    daily_limit = Column(Numeric(20, 8), nullable=True)
+
+    # Recipient allow/block lists (fnmatch glob patterns)
+    allowed_agents = Column(JSON, nullable=True)   # e.g. ["research-*"]
+    blocked_agents = Column(JSON, nullable=True)
+
+    # Auto-require escrow above this amount
+    require_escrow_above = Column(Numeric(20, 8), nullable=True)
+
+    is_active = Column(Boolean, default=True)
+
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+
+    # Relationships
+    agent = relationship("Agent", backref="spending_policy", uselist=False)
+
+
+class WebhookEndpoint(Base):
+    """Self-service webhook endpoint registration for agents."""
+    __tablename__ = "webhook_endpoints"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    url = Column(String(2048), nullable=False)
+    description = Column(String(256), nullable=True)
+    secret_encrypted = Column(Text, nullable=False)
+    event_filters = Column(JSON, nullable=True)  # ["payment.*", "escrow.*"] or null=all
+    is_active = Column(Boolean, default=True)
+    failure_count = Column(Integer, default=0)
+    disabled_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+
+    # Relationships
+    agent = relationship("Agent", backref="webhook_endpoints")
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "url", name="uq_agent_webhook_url"),
+    )
+
+
+class MessageRelay(Base):
+    """Ephemeral encrypted message relay. Hub stores ciphertext temporarily, never plaintext."""
+    __tablename__ = "message_relays"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    from_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    to_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    payment_id = Column(String(64), nullable=True)
+    ciphertext = Column(Text, nullable=False)  # base64-encoded NaCl Box ciphertext
+    nonce = Column(String(64), nullable=False)  # base64-encoded nonce
+    sender_public_key = Column(String(64), nullable=False)  # base64-encoded
+    size_bytes = Column(Integer, nullable=False)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+
+class MultisigEscrow(Base):
+    """2-of-3 Monero multisig escrow deal."""
+    __tablename__ = "multisig_escrows"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    escrow_deal_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("escrow_deals.id"),
+        nullable=False,
+        unique=True,
+    )
+    multisig_address = Column(String(255), nullable=True)
+
+    # Wallet IDs for each participant (assigned during setup)
+    buyer_wallet_id = Column(String(255), nullable=True)
+    seller_wallet_id = Column(String(255), nullable=True)
+    hub_wallet_id = Column(String(255), nullable=True)
+
+    # State machine: setup_round_1 -> setup_round_2 -> setup_round_3 -> funded -> active -> ...
+    state = Column(String(50), default="setup_round_1")
+
+    # Fee collected upfront (1% of deal amount)
+    fee_collected = Column(Numeric(20, 8), default=Decimal("0"))
+
+    # Amount that enters the multisig wallet (deal amount minus fee)
+    funded_amount = Column(Numeric(20, 8), nullable=True)
+    funded_tx_hash = Column(String(255), nullable=True)
+
+    # Release tracking
+    release_tx_hex = Column(Text, nullable=True)
+    release_initiator = Column(String(20), nullable=True)
+
+    # Dispute
+    dispute_reason = Column(Text, nullable=True)
+    disputed_by = Column(String(20), nullable=True)
+
+    timeout_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+
+    # Relationships
+    escrow_deal = relationship("EscrowDeal", backref="multisig_escrow", uselist=False)
+    rounds = relationship(
+        "MultisigRound",
+        back_populates="multisig_escrow",
+        cascade="all, delete-orphan",
+        order_by="MultisigRound.round_number",
+    )
+
+
+class MultisigRound(Base):
+    """Key exchange round data for multisig setup."""
+    __tablename__ = "multisig_rounds"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    multisig_escrow_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("multisig_escrows.id"),
+        nullable=False,
+        index=True,
+    )
+    round_number = Column(Integer, nullable=False)
+    participant = Column(String(20), nullable=False)  # "buyer", "seller", "hub"
+    multisig_info = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+    # Relationships
+    multisig_escrow = relationship("MultisigEscrow", back_populates="rounds")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "multisig_escrow_id", "round_number", "participant",
+            name="uq_multisig_round_participant",
+        ),
     )

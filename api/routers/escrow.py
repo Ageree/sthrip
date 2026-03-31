@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from sthrip.db.database import get_db
 from sthrip.db.models import Agent
 from sthrip.services.escrow_service import EscrowService
+from sthrip.services.multisig_coordinator import MultisigCoordinator
 from sthrip.services.webhook_service import queue_webhook
 from api.deps import get_current_agent
 from api.schemas import (
@@ -22,6 +23,7 @@ logger = logging.getLogger("sthrip")
 router = APIRouter(prefix="/v2/escrow", tags=["escrow"])
 
 _svc = EscrowService()
+_multisig = MultisigCoordinator()
 
 
 def _handle_service_error(exc: Exception):
@@ -51,11 +53,44 @@ async def create_escrow(
     background_tasks: BackgroundTasks,
     agent: Agent = Depends(get_current_agent),
 ):
-    """Create a new escrow deal. The authenticated agent becomes the buyer."""
+    """Create a new escrow deal. The authenticated agent becomes the buyer.
+
+    Supports two modes:
+      - hub-held (default): funds locked in hub wallet, hub controls release.
+      - multisig: 2-of-3 Monero multisig wallet (buyer, seller, hub).
+    """
     with get_db() as db:
         seller = _lookup_active_seller(db, req.seller_agent_name)
         if seller.id == agent.id:
             raise HTTPException(status_code=400, detail="Cannot create escrow with yourself")
+
+        mode = req.mode or "hub-held"
+
+        if mode == "multisig":
+            # Delegate to MultisigCoordinator
+            try:
+                result = _multisig.create(
+                    db=db, buyer_id=agent.id, seller_id=seller.id,
+                    amount=req.amount, description=req.description,
+                    accept_timeout_hours=req.accept_timeout_hours,
+                    delivery_timeout_hours=req.delivery_timeout_hours,
+                    review_timeout_hours=req.review_timeout_hours,
+                    buyer_tier=agent.tier.value,
+                )
+            except (LookupError, PermissionError, ValueError) as exc:
+                _handle_service_error(exc)
+
+            return {
+                "escrow_id": result["escrow_deal_id"],
+                "multisig_escrow_id": result["id"],
+                "mode": "multisig",
+                "state": result["state"],
+                "fee_collected": result["fee_collected"],
+                "funded_amount": result["funded_amount"],
+                "timeout_at": result["timeout_at"],
+            }
+
+        # Default: hub-held mode
         try:
             milestones_data = None
             if req.milestones:

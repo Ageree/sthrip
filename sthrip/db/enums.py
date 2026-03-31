@@ -106,6 +106,18 @@ class WithdrawalStatus(str, _PyEnum):
     NEEDS_REVIEW = "needs_review"
 
 
+class MultisigState(str, _PyEnum):
+    SETUP_ROUND_1 = "setup_round_1"
+    SETUP_ROUND_2 = "setup_round_2"
+    SETUP_ROUND_3 = "setup_round_3"
+    FUNDED = "funded"
+    ACTIVE = "active"
+    RELEASING = "releasing"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    DISPUTED = "disputed"
+
+
 __all__ = [
     "PrivacyLevel",
     "AgentTier",
@@ -119,4 +131,5 @@ __all__ = [
     "FeeCollectionStatus",
     "WithdrawalStatus",
     "MilestoneStatus",
+    "MultisigState",
 ]

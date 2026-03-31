@@ -38,7 +38,7 @@ from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 from api.middleware import configure_middleware
 from api.helpers import get_hub_mode, get_wallet_service, create_deposit_monitor
 from api.docs import setup_docs
-from api.routers import health, agents, payments, balance, webhooks, admin, wellknown, escrow
+from api.routers import health, agents, payments, balance, webhooks, admin, wellknown, escrow, spending_policy, webhook_endpoints, messages, reputation, multisig_escrow
 from api.admin_ui.views import setup_admin_ui
 from sthrip.config import get_settings
 
@@ -396,7 +396,7 @@ def create_app() -> FastAPI:
         # Disable default docs — custom docs served via api.docs
         docs_url=None,
         redoc_url=None,
-        openapi_url=None,
+        openapi_url="/openapi.json",
     )
 
     @application.exception_handler(RateLimitExceeded)
@@ -434,6 +434,11 @@ def create_app() -> FastAPI:
     application.include_router(balance.router)
     application.include_router(webhooks.router)
     application.include_router(admin.router)
+    application.include_router(spending_policy.router)
+    application.include_router(webhook_endpoints.router)
+    application.include_router(messages.router)
+    application.include_router(reputation.router)
+    application.include_router(multisig_escrow.router)
     setup_admin_ui(application)
 
     # Custom branded docs — available in all environments

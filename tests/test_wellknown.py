@@ -54,7 +54,7 @@ class TestAgentPaymentsDiscovery:
 
     def test_version(self, client):
         resp = client.get("/.well-known/agent-payments.json")
-        assert resp.json()["version"] == "2.0.0"
+        assert resp.json()["version"] == "3.0.0"
 
     def test_supported_tokens(self, client):
         resp = client.get("/.well-known/agent-payments.json")
@@ -62,7 +62,7 @@ class TestAgentPaymentsDiscovery:
 
     def test_fee_percent(self, client):
         resp = client.get("/.well-known/agent-payments.json")
-        assert resp.json()["fee_percent"] == "0.1"
+        assert resp.json()["fee_percent"] == "1"
 
     def test_min_confirmations(self, client):
         resp = client.get("/.well-known/agent-payments.json")

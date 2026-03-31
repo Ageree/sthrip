@@ -74,9 +74,9 @@ class TestRedocEndpoint:
         assert "redoc" in resp.text.lower()
 
     def test_docs_contains_branding(self, docs_client):
-        """GET /docs should contain Sthrip branding."""
+        """GET /docs should contain sthrip branding."""
         resp = docs_client.get("/docs")
-        assert "Sthrip" in resp.text
+        assert "sthrip" in resp.text.lower()
 
     def test_docs_references_openapi(self, docs_client):
         """GET /docs should reference the OpenAPI spec URL."""

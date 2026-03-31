@@ -111,8 +111,8 @@ class TestMinFeeExceedsPayment:
         collector = FeeCollector()
         result = collector.calculate_hub_routing_fee(Decimal("10.0"))
 
-        # 0.1% of 10.0 = 0.01 XMR (above min_fee of 0.0001)
-        assert result["fee_amount"] == Decimal("10.0") * Decimal("0.001")
+        # 1% of 10.0 = 0.1 XMR (above min_fee of 0.0001)
+        assert result["fee_amount"] == Decimal("10.0") * Decimal("0.01")
 
 
 # ── Task 16: Admin verify_agent must validate UUID ─────────────────────

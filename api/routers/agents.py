@@ -16,8 +16,9 @@ from api.deps import get_current_agent, get_db_session
 from api.helpers import get_client_ip
 from api.schemas import (
     AgentRegistration, AgentResponse, AgentProfileResponse, AgentSettingsUpdate,
-    AgentMarketplaceResponse,
+    AgentMarketplaceResponse, POWChallengeResponse,
 )
+from sthrip.services.pow_service import get_pow_service
 from sthrip.db.enums import PrivacyLevel
 from sthrip.db.repository import AgentRepository
 
@@ -64,6 +65,29 @@ def _check_ip_rate_limit(
 router = APIRouter(tags=["agents"])
 
 
+@router.post(
+    "/v2/agents/register/challenge",
+    response_model=POWChallengeResponse,
+)
+async def get_registration_challenge(request: Request):
+    """Return a proof-of-work challenge that must be solved before registration.
+
+    The challenge contains a random nonce and a difficulty target.  The
+    client must find a counter ``c`` such that
+    ``sha256(nonce + ":" + c)`` has at least ``difficulty_bits`` leading
+    zero bits.  Include the solved challenge as ``pow_challenge`` in the
+    registration request body.
+    """
+    _check_ip_rate_limit(
+        request, "pow_challenge", per_ip_limit=30, global_limit=500,
+        window_seconds=60, detail="Challenge rate limit exceeded",
+    )
+
+    pow_svc = get_pow_service()
+    challenge = pow_svc.create_challenge()
+    return POWChallengeResponse(**challenge)
+
+
 @router.post("/v2/agents/register", response_model=AgentResponse, status_code=201)
 async def register_agent(reg: AgentRegistration, request: Request):
     """Register new agent"""
@@ -71,6 +95,20 @@ async def register_agent(reg: AgentRegistration, request: Request):
         request, "register", per_ip_limit=5, global_limit=100,
         window_seconds=3600, detail="Registration rate limit exceeded",
     )
+
+    # Verify proof-of-work if provided
+    if reg.pow_challenge is not None:
+        pow_svc = get_pow_service()
+        challenge_dict = {
+            "nonce": reg.pow_challenge.nonce,
+            "difficulty_bits": reg.pow_challenge.difficulty_bits,
+            "expires_at": reg.pow_challenge.expires_at,
+        }
+        if not pow_svc.verify(challenge_dict, reg.pow_challenge.solution):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid or expired proof-of-work solution",
+            )
 
     registry = get_registry()
     try:

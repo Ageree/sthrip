@@ -37,6 +37,7 @@ from .reputation_repo import ReputationRepository
 from .balance_repo import BalanceRepository
 from .pending_withdrawal_repo import PendingWithdrawalRepository
 from .system_state_repo import SystemStateRepository
+from .multisig_repo import MultisigEscrowRepository
 
 __all__ = [
     "_MAX_QUERY_LIMIT",
@@ -51,4 +52,5 @@ __all__ = [
     "BalanceRepository",
     "PendingWithdrawalRepository",
     "SystemStateRepository",
+    "MultisigEscrowRepository",
 ]

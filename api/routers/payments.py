@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends, Header, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, Depends, Header, BackgroundTasks, Query, Request
 
 from sthrip.db.database import get_db
 from sthrip.db.models import Agent, HubRoute
@@ -17,6 +17,8 @@ from sthrip.services.idempotency import get_idempotency_store
 from sthrip.services.webhook_service import queue_webhook
 from sthrip.services.audit_logger import log_event as audit_log
 from sthrip.services.metrics import hub_payments_total
+from sthrip.db.spending_policy_repo import SpendingPolicyRepository
+from sthrip.services.spending_policy_service import SpendingPolicyService, PolicyViolation
 from api.deps import get_current_agent, get_fee_collector_dep, get_idempotency_store_dep
 from api.schemas import HubPaymentRequest
 
@@ -179,14 +181,30 @@ def _build_hub_payment_response(route, recipient, amount, fee_info, total_deduct
     }
 
 
+def _get_redis_client(request: Request):
+    """Extract the Redis client from the rate limiter, with fallback to None."""
+    try:
+        limiter = request.app.state.rate_limiter
+        return getattr(limiter, "redis", None)
+    except AttributeError:
+        try:
+            from sthrip.services.rate_limiter import get_rate_limiter
+            limiter = get_rate_limiter()
+            return getattr(limiter, "redis", None)
+        except Exception:
+            return None
+
+
 @router.post("/hub-routing")
 async def send_hub_routed_payment(
     req: HubPaymentRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     agent: Agent = Depends(get_current_agent),
     fee_collector=Depends(get_fee_collector_dep),
     idempotency_store=Depends(get_idempotency_store_dep),
     idempotency_key: Optional[str] = Header(None, min_length=8, max_length=255),
+    x_sthrip_session: Optional[str] = Header(None),
 ):
     """Send payment via hub routing"""
     store = idempotency_store if idempotency_key else None
@@ -199,6 +217,30 @@ async def send_hub_routed_payment(
         amount = req.amount
 
         with get_db() as db:
+            # --- Spending policy enforcement ---
+            sp_repo = SpendingPolicyRepository(db)
+            spending_policy = sp_repo.get_by_agent_id(agent.id)
+            if spending_policy is not None:
+                redis_client = _get_redis_client(request)
+                policy_svc = SpendingPolicyService(redis_client=redis_client)
+                session_id = x_sthrip_session or "default"
+                try:
+                    policy_svc.validate(
+                        spending_policy,
+                        amount,
+                        req.to_agent_name,
+                        session_id,
+                    )
+                except PolicyViolation as pv:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "spending_policy_violation",
+                            "field": pv.field,
+                            "message": pv.message,
+                        },
+                    )
+
             # Validate recipient IN THE SAME session as the transfer to
             # prevent race between lookup and deactivation (HIGH-1 fix).
             recipient_agent = _validate_recipient_in_session(db, req.to_agent_name)

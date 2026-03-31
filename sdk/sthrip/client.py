@@ -7,12 +7,25 @@ Usage::
     s = Sthrip()                       # auto-registers if no key found
     print(s.balance())
     s.pay("other-agent", 0.05, memo="thanks")
+
+    # With spending policies:
+    s = Sthrip(max_per_tx=1.0, daily_limit=10.0)
+    if s.would_exceed(5.0):
+        print("Would exceed policy")
+
+    # Encrypted messaging:
+    s.register_encryption_key(public_key_b64)
+    s.send_message(to_agent_id, ciphertext, nonce, sender_pk)
+    messages = s.get_messages()
 """
 
+import hashlib
 import os
 import platform
 import secrets
 import socket
+import uuid
+from decimal import Decimal
 
 import requests
 
@@ -27,7 +40,7 @@ from .exceptions import (
     StrhipError,
 )
 
-_VERSION = "0.2.1"
+_VERSION = "0.3.0"
 _USER_AGENT = "sthrip-sdk/{}".format(_VERSION)
 _DEFAULT_API_URL = "https://sthrip-api-production.up.railway.app"
 _REQUEST_TIMEOUT = 30  # seconds
@@ -98,13 +111,49 @@ class Sthrip(object):
     api_url : str, optional
         Base URL of the Sthrip API.  Defaults to the env var
         ``STHRIP_API_URL`` or the production endpoint.
+    max_per_session : float or Decimal, optional
+        Maximum total spend allowed in this SDK session.
+    max_per_tx : float or Decimal, optional
+        Maximum spend per individual transaction.
+    daily_limit : float or Decimal, optional
+        Maximum daily spend limit.
+    allowed_agents : list of str, optional
+        Glob patterns for agents this client may pay.
+    require_escrow_above : float or Decimal, optional
+        Require escrow for payments above this amount.
     """
 
-    def __init__(self, api_key=None, api_url=None):
-        # type: (str, str) -> None
+    def __init__(
+        self,
+        api_key=None,
+        api_url=None,
+        max_per_session=None,
+        max_per_tx=None,
+        daily_limit=None,
+        allowed_agents=None,
+        require_escrow_above=None,
+    ):
+        # type: (str, str, ..., ..., ..., list, ...) -> None
         self._api_url = _resolve_api_url(api_url)
         self._session = self._build_session()
+
+        # Session tracking
+        self._session_id = str(uuid.uuid4())
+        self._session_spent = Decimal("0")
+
+        # Spending policy (local copy)
+        self._max_per_session = Decimal(str(max_per_session)) if max_per_session is not None else None
+        self._max_per_tx = Decimal(str(max_per_tx)) if max_per_tx is not None else None
+        self._daily_limit = Decimal(str(daily_limit)) if daily_limit is not None else None
+        self._allowed_agents = list(allowed_agents) if allowed_agents is not None else None
+        self._require_escrow_above = (
+            Decimal(str(require_escrow_above)) if require_escrow_above is not None else None
+        )
+
         self._api_key = self._resolve_api_key(api_key)
+
+        # Sync spending policy to server if any policy params were set
+        self._sync_spending_policy()
 
     # -- key resolution -----------------------------------------------------
 
@@ -128,11 +177,49 @@ class Sthrip(object):
         # 4. Auto-register
         return self._auto_register()
 
+    def _sync_spending_policy(self):
+        # type: () -> None
+        """Push local spending policy to the server if any params were set."""
+        payload = {}
+        if self._max_per_tx is not None:
+            payload["max_per_tx"] = str(self._max_per_tx)
+        if self._max_per_session is not None:
+            payload["max_per_session"] = str(self._max_per_session)
+        if self._daily_limit is not None:
+            payload["daily_limit"] = str(self._daily_limit)
+        if self._allowed_agents is not None:
+            payload["allowed_agents"] = self._allowed_agents
+        if self._require_escrow_above is not None:
+            payload["require_escrow_above"] = str(self._require_escrow_above)
+
+        if not payload:
+            return
+
+        try:
+            self._raw_put("/v2/me/spending-policy", json_body=payload)
+        except StrhipError:
+            # Server may not support spending policies yet -- degrade gracefully
+            pass
+
     def _auto_register(self):
         # type: () -> str
-        """Register a new agent and persist the credentials."""
+        """Register a new agent and persist the credentials.
+
+        Fetches a proof-of-work challenge from the server, solves it
+        locally, and submits the solution along with the registration
+        payload.
+        """
         agent_name = _generate_agent_name()
-        payload = {"agent_name": agent_name, "privacy_level": "medium"}
+
+        # Fetch and solve PoW challenge
+        pow_proof = self._solve_pow_challenge()
+
+        payload = {
+            "agent_name": agent_name,
+            "privacy_level": "medium",
+        }
+        if pow_proof is not None:
+            payload["pow_challenge"] = pow_proof
 
         data = self._raw_post(
             "/v2/agents/register",
@@ -149,6 +236,41 @@ class Sthrip(object):
 
         return data["api_key"]
 
+    def _solve_pow_challenge(self):
+        # type: () -> dict
+        """Fetch a PoW challenge from the server and solve it.
+
+        Returns a dict ready to embed as ``pow_challenge`` in the
+        registration payload, or None if the challenge endpoint is
+        unavailable or returns an unexpected response (graceful
+        degradation for older servers).
+        """
+        try:
+            challenge = self._raw_post(
+                "/v2/agents/register/challenge",
+                authenticated=False,
+            )
+            nonce = challenge["nonce"]
+            difficulty_bits = int(challenge["difficulty_bits"])
+            expires_at = challenge["expires_at"]
+        except Exception:
+            # Server may not support PoW yet -- degrade gracefully
+            return None
+
+        counter = 0
+        while True:
+            candidate = "{}:{}".format(nonce, counter)
+            digest = hashlib.sha256(candidate.encode()).hexdigest()
+            bits = bin(int(digest, 16))[2:].zfill(256)
+            if bits[:difficulty_bits] == "0" * difficulty_bits:
+                return {
+                    "nonce": nonce,
+                    "difficulty_bits": difficulty_bits,
+                    "expires_at": expires_at,
+                    "solution": str(counter),
+                }
+            counter += 1
+
     # -- HTTP layer ---------------------------------------------------------
 
     def _build_session(self):
@@ -163,7 +285,10 @@ class Sthrip(object):
     def _headers(self, authenticated):
         # type: (bool) -> dict
         """Return a *new* headers dict -- never mutates the session."""
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "X-Sthrip-Session": self._session_id,
+        }
         if authenticated:
             headers["Authorization"] = "Bearer {}".format(self._api_key)
         return headers
@@ -218,6 +343,10 @@ class Sthrip(object):
         # type: (str, dict, bool) -> dict
         return self._raw_request("PATCH", path, json_body=json_body, authenticated=authenticated)
 
+    def _raw_put(self, path, json_body=None, authenticated=True):
+        # type: (str, dict, bool) -> dict
+        return self._raw_request("PUT", path, json_body=json_body, authenticated=authenticated)
+
     # -- Public API ---------------------------------------------------------
 
     def deposit_address(self):
@@ -228,6 +357,22 @@ class Sthrip(object):
         """
         data = self._raw_post("/v2/balance/deposit", json_body={})
         return data["deposit_address"]
+
+    def would_exceed(self, amount):
+        # type: (float) -> bool
+        """Client-side pre-flight check against local policy copy.
+
+        Returns ``True`` if making a payment of *amount* would exceed
+        the per-transaction or per-session spending limit configured
+        on this client instance.  Returns ``False`` when no relevant
+        limits are configured.
+        """
+        amount_d = Decimal(str(amount))
+        if self._max_per_tx is not None and amount_d > self._max_per_tx:
+            return True
+        if self._max_per_session is not None and self._session_spent + amount_d > self._max_per_session:
+            return True
+        return False
 
     def pay(self, agent_name, amount, memo=None):
         # type: (str, float, str) -> dict
@@ -246,7 +391,18 @@ class Sthrip(object):
         -------
         dict
             Full payment receipt from the API.
+
+        Raises
+        ------
+        PaymentError
+            If the payment would exceed a local spending policy.
         """
+        if self.would_exceed(amount):
+            raise PaymentError(
+                "Payment of {} would exceed spending policy".format(amount),
+                status_code=403,
+            )
+
         payload = {
             "to_agent_name": agent_name,
             "amount": str(amount),
@@ -255,7 +411,11 @@ class Sthrip(object):
         if memo is not None:
             payload["memo"] = memo
 
-        return self._raw_post("/v2/payments/hub-routing", json_body=payload)
+        result = self._raw_post("/v2/payments/hub-routing", json_body=payload)
+
+        # Track cumulative session spending on success
+        self._session_spent = self._session_spent + Decimal(str(amount))
+        return result
 
     def balance(self):
         # type: () -> dict
@@ -529,3 +689,150 @@ class Sthrip(object):
         if status is not None:
             params["status"] = status
         return self._raw_get("/v2/escrow", params=params)
+
+    # -- Spending Policy API ------------------------------------------------
+
+    def set_spending_policy(
+        self,
+        max_per_tx=None,
+        max_per_session=None,
+        daily_limit=None,
+        allowed_agents=None,
+        require_escrow_above=None,
+    ):
+        """Create or replace the spending policy for this agent.
+
+        Parameters
+        ----------
+        max_per_tx : float or Decimal, optional
+            Maximum per-transaction amount.
+        max_per_session : float or Decimal, optional
+            Maximum cumulative spend per session.
+        daily_limit : float or Decimal, optional
+            Maximum daily spend.
+        allowed_agents : list of str, optional
+            Glob patterns for permitted recipient agents.
+        require_escrow_above : float or Decimal, optional
+            Require escrow for amounts above this threshold.
+
+        Returns
+        -------
+        dict
+            Server response with the saved policy.
+        """
+        payload = {}
+        if max_per_tx is not None:
+            payload["max_per_tx"] = str(max_per_tx)
+            self._max_per_tx = Decimal(str(max_per_tx))
+        if max_per_session is not None:
+            payload["max_per_session"] = str(max_per_session)
+            self._max_per_session = Decimal(str(max_per_session))
+        if daily_limit is not None:
+            payload["daily_limit"] = str(daily_limit)
+            self._daily_limit = Decimal(str(daily_limit))
+        if allowed_agents is not None:
+            payload["allowed_agents"] = list(allowed_agents)
+            self._allowed_agents = list(allowed_agents)
+        if require_escrow_above is not None:
+            payload["require_escrow_above"] = str(require_escrow_above)
+            self._require_escrow_above = Decimal(str(require_escrow_above))
+
+        if not payload:
+            return {"message": "No policy fields to update"}
+
+        return self._raw_put("/v2/me/spending-policy", json_body=payload)
+
+    def get_spending_policy(self):
+        """Retrieve the current spending policy for this agent.
+
+        Returns
+        -------
+        dict
+            The spending policy fields currently set on the server.
+        """
+        return self._raw_get("/v2/me/spending-policy")
+
+    # -- Messaging API ------------------------------------------------------
+
+    def register_encryption_key(self, public_key_b64):
+        # type: (str) -> dict
+        """Register this agent's Curve25519 public key for encrypted messaging.
+
+        Parameters
+        ----------
+        public_key_b64 : str
+            Base64-encoded Curve25519 public key.
+
+        Returns
+        -------
+        dict
+            Confirmation with the stored public key.
+        """
+        return self._raw_put(
+            "/v2/me/encryption-key",
+            json_body={"public_key": public_key_b64},
+        )
+
+    def get_agent_public_key(self, agent_id):
+        # type: (str) -> dict
+        """Get another agent's encryption public key.
+
+        Parameters
+        ----------
+        agent_id : str
+            UUID of the target agent.
+
+        Returns
+        -------
+        dict
+            Contains ``agent_id`` and ``public_key``.
+        """
+        return self._raw_get("/v2/agents/{}/public-key".format(agent_id))
+
+    def send_message(self, to_agent_id, ciphertext, nonce, sender_public_key, payment_id=None):
+        # type: (str, str, str, str, str) -> dict
+        """Send an encrypted message to another agent.
+
+        The hub only relays ciphertext -- it never sees the plaintext.
+
+        Parameters
+        ----------
+        to_agent_id : str
+            UUID of the recipient agent.
+        ciphertext : str
+            Base64-encoded ciphertext.
+        nonce : str
+            Base64-encoded nonce used for encryption.
+        sender_public_key : str
+            Base64-encoded sender's Curve25519 public key.
+        payment_id : str, optional
+            Payment UUID to attach to the message.
+
+        Returns
+        -------
+        dict
+            Confirmation with ``message_id`` and ``expires_at``.
+        """
+        payload = {
+            "to_agent_id": to_agent_id,
+            "ciphertext": ciphertext,
+            "nonce": nonce,
+            "sender_public_key": sender_public_key,
+        }
+        if payment_id is not None:
+            payload["payment_id"] = payment_id
+        return self._raw_post("/v2/messages/send", json_body=payload)
+
+    def get_messages(self):
+        # type: () -> dict
+        """Fetch pending encrypted messages from the inbox.
+
+        Messages are marked as delivered upon retrieval and will not
+        be returned again.
+
+        Returns
+        -------
+        dict
+            Contains ``messages`` (list) and ``count`` (int).
+        """
+        return self._raw_get("/v2/messages/inbox")

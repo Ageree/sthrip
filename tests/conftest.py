@@ -18,6 +18,8 @@ from sqlalchemy.pool import StaticPool
 from sthrip.db.models import (
     Base, Agent, AgentReputation, AgentBalance,
     HubRoute, FeeCollection, PendingWithdrawal, Transaction,
+    SpendingPolicy, WebhookEndpoint, MessageRelay,
+    EscrowDeal, EscrowMilestone, MultisigEscrow, MultisigRound,
 )
 
 # Stable Fernet key for tests (base64url-encoded 32-byte key).
@@ -32,6 +34,13 @@ _COMMON_TEST_TABLES = [
     FeeCollection.__table__,
     PendingWithdrawal.__table__,
     Transaction.__table__,
+    SpendingPolicy.__table__,
+    WebhookEndpoint.__table__,
+    MessageRelay.__table__,
+    EscrowDeal.__table__,
+    EscrowMilestone.__table__,
+    MultisigEscrow.__table__,
+    MultisigRound.__table__,
 ]
 
 # Modules where get_db must be patched.
@@ -47,6 +56,12 @@ _GET_DB_MODULES = [
     "api.routers.payments",
     "api.routers.balance",
     "api.routers.webhooks",
+    "api.routers.spending_policy",
+    "api.routers.webhook_endpoints",
+    "api.routers.reputation",
+    "api.routers.messages",
+    "api.routers.multisig_escrow",
+    "api.routers.escrow",
 ]
 
 # Modules where get_rate_limiter must be patched.

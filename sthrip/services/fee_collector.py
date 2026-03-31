@@ -43,21 +43,21 @@ class FeeConfig:
 DEFAULT_FEES: Dict[FeeType, FeeConfig] = {
     FeeType.HUB_ROUTING: FeeConfig(
         fee_type=FeeType.HUB_ROUTING,
-        percent=Decimal("0.001"),  # 0.1%
+        percent=Decimal("0.01"),  # 1%
         fixed_amount=Decimal("0"),
         min_fee=Decimal("0.0001"),  # Minimum 0.0001 XMR
         max_fee=Decimal("999999999")  # No practical cap
     ),
     FeeType.ESCROW: FeeConfig(
         fee_type=FeeType.ESCROW,
-        percent=Decimal("0.001"),  # 0.1% (same as hub routing)
+        percent=Decimal("0.01"),  # 1%
         fixed_amount=Decimal("0"),
         min_fee=Decimal("0.0001"),
         max_fee=Decimal("999999999")
     ),
     FeeType.CROSS_CHAIN: FeeConfig(
         fee_type=FeeType.CROSS_CHAIN,
-        percent=Decimal("0.005"),  # 0.5%
+        percent=Decimal("0.01"),  # 1%
         fixed_amount=Decimal("0"),
         min_fee=Decimal("0.0001"),
         max_fee=Decimal("5.0")
@@ -78,9 +78,9 @@ class FeeCollector:
     
     Fee Model:
     - P2P Direct: 0% (free)
-    - Hub Routing: 0.1% (for speed)
-    - Escrow: 1% (for protection)
-    - Cross-chain: 0.5%
+    - Hub Routing: 1% flat
+    - Escrow: 1% flat
+    - Cross-chain: 1% flat
     - API calls: $0.001 per call
     """
     
@@ -107,19 +107,9 @@ class FeeCollector:
         """
         config = DEFAULT_FEES[FeeType.HUB_ROUTING]
         
-        # Base fee calculation
+        # Flat 1% fee — no tier discounts, no urgency premium
         fee_percent = config.percent
-        
-        # Tier discounts
-        if from_agent_tier == "premium":
-            fee_percent = fee_percent * Decimal("0.5")  # 50% off
-        elif from_agent_tier == "verified":
-            fee_percent = fee_percent * Decimal("0.75")  # 25% off
-        
-        # Urgency premium
-        if urgency == "urgent":
-            fee_percent = fee_percent * Decimal("2.0")
-        
+
         # Calculate fee
         fee_amount = amount * fee_percent
         
@@ -146,11 +136,8 @@ class FeeCollector:
         """Calculate escrow fee (0.1%, same structure as hub routing, with tier discounts)."""
         config = DEFAULT_FEES[FeeType.ESCROW]
 
+        # Flat 1% fee — no tier discounts
         fee_percent = config.percent
-        if from_agent_tier == "premium":
-            fee_percent = fee_percent * Decimal("0.5")
-        elif from_agent_tier == "verified":
-            fee_percent = fee_percent * Decimal("0.75")
 
         fee_amount = amount * fee_percent
         fee_amount = max(fee_amount, config.min_fee)
