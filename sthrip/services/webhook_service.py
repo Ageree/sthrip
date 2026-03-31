@@ -1,6 +1,6 @@
 """
 Reliable webhook delivery service
-Retries with exponential backoff
+Retries with exponential backoff, fan-out to multiple registered endpoints
 """
 
 import json
@@ -10,15 +10,18 @@ import hmac
 import asyncio
 import logging
 import aiohttp
+from fnmatch import fnmatch
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("sthrip.webhook")
 from typing import Dict, Optional, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..db.database import get_db
 from ..db.repository import WebhookRepository, AgentRepository
-from ..db.models import WebhookEvent, WebhookStatus
+from ..db.webhook_endpoint_repo import WebhookEndpointRepository
+from ..db.models import WebhookEvent, WebhookStatus, WebhookEndpoint
+from ..crypto import decrypt_value
 from .url_validator import validate_url_target, resolve_and_validate, SSRFBlockedError
 
 @dataclass
@@ -28,6 +31,25 @@ class WebhookResult:
     response_code: Optional[int] = None
     response_body: Optional[str] = None
     error: Optional[str] = None
+
+
+@dataclass
+class EndpointDeliveryResult:
+    """Result for a single endpoint delivery within a fan-out."""
+    endpoint_url: str
+    success: bool
+    response_code: Optional[int] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class FanoutResult:
+    """Aggregate result for fan-out delivery to multiple endpoints."""
+    success: bool
+    total_endpoints: int = 0
+    successful: int = 0
+    failed: int = 0
+    endpoint_results: List[EndpointDeliveryResult] = field(default_factory=list)
 
 
 class WebhookService:
@@ -208,13 +230,27 @@ class WebhookService:
             event = repo.create_event(agent_id, event_type, full_payload)
             return str(event.id)
     
+    @staticmethod
+    def _matches_event_filter(event_type: str, event_filters: Optional[List[str]]) -> bool:
+        """Check if an event type matches the endpoint's filter patterns.
+
+        If event_filters is None or empty, all events match (no filtering).
+        Otherwise, each filter is matched via fnmatch glob semantics
+        (e.g., "payment.*" matches "payment.received").
+        """
+        if not event_filters:
+            return True
+        return any(fnmatch(event_type, pattern) for pattern in event_filters)
+
+    _MAX_ENDPOINT_FAILURES = 10
+
     async def process_event(self, event_id: str) -> WebhookResult:
-        """Process single webhook event.
+        """Process single webhook event with fan-out to registered endpoints.
 
         Split into 3 phases so the DB session is NOT held during the HTTP call:
-        1. Read event + agent config with FOR UPDATE lock (short-lived session)
-        2. HTTP call (no DB session)
-        3. Write result, guarded by a status re-check (short-lived session)
+        1. Read event + agent config + registered endpoints (short-lived session)
+        2. HTTP calls to all matching endpoints concurrently (no DB session)
+        3. Write event result + update per-endpoint failure counters (short-lived session)
 
         The FOR UPDATE lock in Phase 1 prevents two concurrent workers from both
         reading the same event as 'pending' and both attempting delivery (TOCTOU).
@@ -222,10 +258,20 @@ class WebhookService:
         unavailable (e.g. SQLite in tests) and another worker slipped through,
         we skip writing rather than double-marking delivered or overwriting a retry.
         """
-        # Phase 1: Read event and agent config with exclusive row lock
+        import uuid as _uuid
+
+        # Normalize event_id to UUID for SQLAlchemy UUID columns
+        if isinstance(event_id, str):
+            try:
+                event_id = _uuid.UUID(event_id)
+            except ValueError:
+                return WebhookResult(success=False, error="Invalid event_id format")
+
+        # Phase 1: Read event, agent config, and registered endpoints
         with get_db() as db:
             webhook_repo = WebhookRepository(db)
             agent_repo = AgentRepository(db)
+            endpoint_repo = WebhookEndpointRepository(db)
 
             event = webhook_repo.get_by_id_for_update(event_id)
 
@@ -234,60 +280,157 @@ class WebhookService:
 
             # Get agent webhook config
             agent = agent_repo.get_by_id(event.agent_id)
-
-            if not agent or not agent.webhook_url:
-                # No webhook configured, mark as delivered
-                webhook_repo.mark_delivered(event_id, 0, "No webhook URL configured")
+            if not agent:
+                webhook_repo.mark_delivered(event_id, 0, "Agent not found")
                 return WebhookResult(success=True)
 
-            # Capture what we need before closing session
-            webhook_url = agent.webhook_url
-            decrypted_secret = agent_repo.get_webhook_secret(agent.id)
-            event_payload = event.payload
+            # Capture legacy single-URL config (backward compat)
+            legacy_url = agent.webhook_url
+            legacy_secret = (
+                agent_repo.get_webhook_secret(agent.id) if legacy_url else None
+            )
 
-        # Phase 2: Send webhook (no DB session held)
-        result = await self._send_webhook(
-            url=webhook_url,
-            payload=event_payload,
-            secret=decrypted_secret,
+            # Gather registered endpoints: active, under failure threshold, matching event type
+            registered_endpoints = endpoint_repo.list_by_agent(agent.id)
+            delivery_targets: List[Dict] = []
+
+            for ep in registered_endpoints:
+                if not ep.is_active:
+                    continue
+                if ep.failure_count >= self._MAX_ENDPOINT_FAILURES:
+                    continue
+                if not self._matches_event_filter(event.event_type, ep.event_filters):
+                    continue
+                try:
+                    ep_secret = decrypt_value(ep.secret_encrypted)
+                except Exception:
+                    logger.error(
+                        "Failed to decrypt secret for endpoint %s (agent %s), skipping",
+                        ep.id, agent.id,
+                    )
+                    continue
+                delivery_targets.append({
+                    "endpoint_id": ep.id,
+                    "url": ep.url,
+                    "secret": ep_secret,
+                    "is_legacy": False,
+                })
+
+            # Add legacy URL if present (only when it is not already covered by a registered endpoint)
+            registered_urls = {t["url"] for t in delivery_targets}
+            if legacy_url and legacy_url not in registered_urls:
+                delivery_targets.append({
+                    "endpoint_id": None,
+                    "url": legacy_url,
+                    "secret": legacy_secret,
+                    "is_legacy": True,
+                })
+
+            # If nothing to deliver to, mark as delivered
+            if not delivery_targets:
+                webhook_repo.mark_delivered(event_id, 0, "No webhook targets configured")
+                return WebhookResult(success=True)
+
+            event_payload = event.payload
+            event_type = event.event_type
+
+        # Phase 2: Deliver to all targets concurrently (no DB session held)
+        semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_WEBHOOKS)
+
+        async def _deliver_one(target: Dict) -> Dict:
+            async with semaphore:
+                result = await self._send_webhook(
+                    url=target["url"],
+                    payload=event_payload,
+                    secret=target["secret"],
+                )
+                return {
+                    "endpoint_id": target["endpoint_id"],
+                    "url": target["url"],
+                    "is_legacy": target["is_legacy"],
+                    "result": result,
+                }
+
+        delivery_outcomes = await asyncio.gather(
+            *[_deliver_one(t) for t in delivery_targets],
+            return_exceptions=True,
         )
 
-        # Phase 3: Write result (short-lived session)
-        # Re-fetch event status to guard against a concurrent worker having already
-        # processed this event while our HTTP call was in-flight.
+        # Separate successes and failures
+        any_success = False
+        all_failed = True
+        endpoint_updates: List[Dict] = []
+
+        for outcome in delivery_outcomes:
+            if isinstance(outcome, Exception):
+                logger.error("Unexpected error in fan-out delivery: %s", outcome)
+                continue
+            result = outcome["result"]
+            if result.success:
+                any_success = True
+                all_failed = False
+            if outcome["endpoint_id"] is not None:
+                endpoint_updates.append({
+                    "endpoint_id": outcome["endpoint_id"],
+                    "success": result.success,
+                })
+
+        # Phase 3: Write results (short-lived session)
         with get_db() as db:
             webhook_repo = WebhookRepository(db)
             current_event = webhook_repo.get_by_id(event_id)
 
             if current_event is None:
-                # Row deleted between Phase 1 and Phase 3; nothing to update.
                 logger.warning(
                     "process_event: event %s disappeared before Phase 3 write",
                     event_id,
                 )
-                return result
+                return WebhookResult(success=any_success)
 
             active_statuses = {WebhookStatus.PENDING, WebhookStatus.RETRYING}
             if current_event.status not in active_statuses:
-                # Another worker already moved this event to a terminal state.
                 logger.info(
                     "process_event: skipping Phase 3 write for event %s "
                     "(status is already '%s')",
                     event_id,
                     current_event.status,
                 )
-                return result
+                return WebhookResult(success=any_success)
 
-            if result.success:
-                webhook_repo.mark_delivered(
-                    event_id,
-                    result.response_code or 200,
-                    result.response_body or "",
-                )
+            # Mark event based on aggregate result
+            if any_success:
+                webhook_repo.mark_delivered(event_id, 200, "Fan-out delivery")
             else:
-                webhook_repo.schedule_retry(event_id, result.error or "Unknown error")
+                first_error = "All endpoints failed"
+                for outcome in delivery_outcomes:
+                    if not isinstance(outcome, Exception) and outcome["result"].error:
+                        first_error = outcome["result"].error
+                        break
+                webhook_repo.schedule_retry(event_id, first_error)
 
-        return result
+            # Update per-endpoint failure counters
+            endpoint_repo = WebhookEndpointRepository(db)
+            now = datetime.now(timezone.utc)
+            for update in endpoint_updates:
+                ep = endpoint_repo.get_by_id(
+                    update["endpoint_id"],
+                    agent_id=current_event.agent_id,
+                )
+                if ep is None:
+                    continue
+                if update["success"]:
+                    ep.failure_count = 0
+                else:
+                    ep.failure_count = ep.failure_count + 1
+                    if ep.failure_count >= self._MAX_ENDPOINT_FAILURES:
+                        ep.is_active = False
+                        ep.disabled_at = now
+                        logger.warning(
+                            "Endpoint %s (url=%s) disabled after %d consecutive failures",
+                            ep.id, ep.url, ep.failure_count,
+                        )
+
+        return WebhookResult(success=any_success)
     
     _MAX_CONCURRENT_WEBHOOKS = 10
 

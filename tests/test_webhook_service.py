@@ -505,11 +505,15 @@ class TestSendWebhookGenericException:
 
 
 class TestProcessEvent:
+    # Valid UUID strings for use as mock event IDs
+    _EVT_UUID = "00000000-0000-4000-8000-000000000001"
+
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.WebhookEndpointRepository")
     @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_event_not_found(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
+    async def test_event_not_found(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_ep_repo_cls, mock_get_db):
         """Returns failure when event_id does not exist."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
@@ -521,22 +525,24 @@ class TestProcessEvent:
         mock_webhook_repo_cls.return_value = mock_webhook_repo
 
         svc = WebhookService()
-        result = await svc.process_event("nonexistent")
+        result = await svc.process_event(self._EVT_UUID)
         assert result.success is False
         assert "not found" in result.error
 
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.WebhookEndpointRepository")
     @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_no_webhook_url_marks_delivered(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
-        """When agent has no webhook_url, event is marked as delivered."""
+    async def test_no_webhook_url_marks_delivered(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_ep_repo_cls, mock_get_db):
+        """When agent has no webhook_url and no registered endpoints, event is marked as delivered."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_event = MagicMock()
         mock_event.agent_id = "agent_1"
+        mock_event.event_type = "payment.received"
         mock_event.payload = {"event_id": "evt_1"}
 
         mock_agent = MagicMock()
@@ -551,16 +557,22 @@ class TestProcessEvent:
         mock_agent_repo.get_by_id.return_value = mock_agent
         mock_agent_repo_cls.return_value = mock_agent_repo
 
+        # No registered endpoints
+        mock_ep_repo = MagicMock()
+        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo_cls.return_value = mock_ep_repo
+
         svc = WebhookService()
-        result = await svc.process_event("evt_1")
+        result = await svc.process_event(self._EVT_UUID)
         assert result.success is True
         mock_webhook_repo.mark_delivered.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.WebhookEndpointRepository")
     @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_successful_delivery(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
+    async def test_successful_delivery(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_ep_repo_cls, mock_get_db):
         """Successful webhook delivery marks event as delivered."""
         from sthrip.db.models import WebhookStatus
 
@@ -576,6 +588,7 @@ class TestProcessEvent:
 
         mock_event = MagicMock()
         mock_event.agent_id = "agent_1"
+        mock_event.event_type = "payment.received"
         mock_event.payload = {"event_id": "evt_1"}
 
         mock_agent = MagicMock()
@@ -589,6 +602,11 @@ class TestProcessEvent:
         mock_agent_repo_instance.get_webhook_secret.return_value = "whsec_plaintext"
         mock_agent_repo_cls.return_value = mock_agent_repo_instance
 
+        # No registered endpoints (legacy-only delivery)
+        mock_ep_repo = MagicMock()
+        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo_cls.return_value = mock_ep_repo
+
         # Phase 1 repo: locking read returns the event
         mock_webhook_repo_phase1 = MagicMock()
         mock_webhook_repo_phase1.get_by_id_for_update.return_value = mock_event
@@ -596,6 +614,7 @@ class TestProcessEvent:
         # Phase 3 repo: status check returns pending so write proceeds
         mock_current_event = MagicMock()
         mock_current_event.status = WebhookStatus.PENDING
+        mock_current_event.agent_id = "agent_1"
         mock_webhook_repo_phase3 = MagicMock()
         mock_webhook_repo_phase3.get_by_id.return_value = mock_current_event
 
@@ -604,16 +623,17 @@ class TestProcessEvent:
         svc = WebhookService()
         with patch.object(svc, "_send_webhook", new_callable=AsyncMock,
                           return_value=WebhookResult(success=True, response_code=200, response_body="OK")):
-            result = await svc.process_event("evt_1")
+            result = await svc.process_event(self._EVT_UUID)
 
         assert result.success is True
         mock_webhook_repo_phase3.mark_delivered.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.WebhookEndpointRepository")
     @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_failed_delivery_schedules_retry(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
+    async def test_failed_delivery_schedules_retry(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_ep_repo_cls, mock_get_db):
         """Failed webhook delivery schedules a retry."""
         from sthrip.db.models import WebhookStatus
 
@@ -629,6 +649,7 @@ class TestProcessEvent:
 
         mock_event = MagicMock()
         mock_event.agent_id = "agent_1"
+        mock_event.event_type = "payment.received"
         mock_event.payload = {"event_id": "evt_1"}
 
         mock_agent = MagicMock()
@@ -642,6 +663,11 @@ class TestProcessEvent:
         mock_agent_repo_instance.get_webhook_secret.return_value = None
         mock_agent_repo_cls.return_value = mock_agent_repo_instance
 
+        # No registered endpoints (legacy-only delivery)
+        mock_ep_repo = MagicMock()
+        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo_cls.return_value = mock_ep_repo
+
         # Phase 1 repo: locking read returns the event
         mock_webhook_repo_phase1 = MagicMock()
         mock_webhook_repo_phase1.get_by_id_for_update.return_value = mock_event
@@ -649,6 +675,7 @@ class TestProcessEvent:
         # Phase 3 repo: status check returns pending so write proceeds
         mock_current_event = MagicMock()
         mock_current_event.status = WebhookStatus.PENDING
+        mock_current_event.agent_id = "agent_1"
         mock_webhook_repo_phase3 = MagicMock()
         mock_webhook_repo_phase3.get_by_id.return_value = mock_current_event
 
@@ -657,7 +684,7 @@ class TestProcessEvent:
         svc = WebhookService()
         with patch.object(svc, "_send_webhook", new_callable=AsyncMock,
                           return_value=WebhookResult(success=False, error="HTTP 500")):
-            result = await svc.process_event("evt_1")
+            result = await svc.process_event(self._EVT_UUID)
 
         assert result.success is False
         mock_webhook_repo_phase3.schedule_retry.assert_called_once()
@@ -754,11 +781,14 @@ class TestProcessEventSessionSplit:
     """Verify that process_event uses separate DB sessions for read and write,
     so the HTTP call happens without holding a DB connection."""
 
+    _EVT_UUID = "00000000-0000-4000-8000-000000000002"
+
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.WebhookEndpointRepository")
     @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_uses_two_separate_sessions(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
+    async def test_uses_two_separate_sessions(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_ep_repo_cls, mock_get_db):
         """get_db() should be called twice: once for read, once for write."""
         mock_db1 = MagicMock()
         mock_db2 = MagicMock()
@@ -782,6 +812,7 @@ class TestProcessEventSessionSplit:
 
         mock_event = MagicMock()
         mock_event.agent_id = "agent_1"
+        mock_event.event_type = "payment.received"
         mock_event.payload = {"event_id": "evt_split"}
 
         mock_agent = MagicMock()
@@ -790,6 +821,11 @@ class TestProcessEventSessionSplit:
 
         from sthrip.db.models import WebhookStatus
 
+        # No registered endpoints
+        mock_ep_repo = MagicMock()
+        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo_cls.return_value = mock_ep_repo
+
         # Phase 1 repo: locking read
         mock_webhook_repo_phase1 = MagicMock()
         mock_webhook_repo_phase1.get_by_id_for_update.return_value = mock_event
@@ -797,6 +833,7 @@ class TestProcessEventSessionSplit:
         # Phase 3 repo: status still pending
         mock_current_event = MagicMock()
         mock_current_event.status = WebhookStatus.PENDING
+        mock_current_event.agent_id = "agent_1"
         mock_webhook_repo_phase3 = MagicMock()
         mock_webhook_repo_phase3.get_by_id.return_value = mock_current_event
 
@@ -810,7 +847,7 @@ class TestProcessEventSessionSplit:
         svc = WebhookService()
         with patch.object(svc, "_send_webhook", new_callable=AsyncMock,
                           return_value=WebhookResult(success=True, response_code=200, response_body="OK")):
-            result = await svc.process_event("evt_split")
+            result = await svc.process_event(self._EVT_UUID)
 
         assert result.success is True
         # get_db was called exactly twice (read + write)
@@ -818,16 +855,18 @@ class TestProcessEventSessionSplit:
 
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.WebhookEndpointRepository")
     @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_no_agent_uses_single_session(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
-        """When agent has no webhook_url, only one session needed (mark_delivered in phase 1)."""
+    async def test_no_agent_uses_single_session(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_ep_repo_cls, mock_get_db):
+        """When agent has no webhook_url and no registered endpoints, only one session needed."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_get_db.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_event = MagicMock()
         mock_event.agent_id = "agent_1"
+        mock_event.event_type = "payment.received"
         mock_event.payload = {"event_id": "evt_1"}
 
         mock_agent = MagicMock()
@@ -842,17 +881,23 @@ class TestProcessEventSessionSplit:
         mock_agent_repo.get_by_id.return_value = mock_agent
         mock_agent_repo_cls.return_value = mock_agent_repo
 
+        # No registered endpoints
+        mock_ep_repo = MagicMock()
+        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo_cls.return_value = mock_ep_repo
+
         svc = WebhookService()
-        result = await svc.process_event("evt_1")
+        result = await svc.process_event(self._EVT_UUID)
         assert result.success is True
         # get_db called only once (no HTTP call, no second session needed)
         assert mock_get_db.call_count == 1
 
     @pytest.mark.asyncio
     @patch("sthrip.services.webhook_service.get_db")
+    @patch("sthrip.services.webhook_service.WebhookEndpointRepository")
     @patch("sthrip.services.webhook_service.AgentRepository")
     @patch("sthrip.services.webhook_service.WebhookRepository")
-    async def test_failed_delivery_writes_retry_in_phase3(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_get_db):
+    async def test_failed_delivery_writes_retry_in_phase3(self, mock_webhook_repo_cls, mock_agent_repo_cls, mock_ep_repo_cls, mock_get_db):
         """Failed delivery should schedule_retry in the second (write) session."""
         from sthrip.db.models import WebhookStatus
 
@@ -878,19 +923,26 @@ class TestProcessEventSessionSplit:
 
         mock_event = MagicMock()
         mock_event.agent_id = "agent_1"
+        mock_event.event_type = "payment.received"
         mock_event.payload = {"event_id": "evt_fail"}
 
         mock_agent = MagicMock()
         mock_agent.webhook_url = "https://example.com/hook"
         mock_agent.id = "agent_1"
 
-        # Phase 1 webhook repo (read) — locking read
+        # No registered endpoints
+        mock_ep_repo = MagicMock()
+        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo_cls.return_value = mock_ep_repo
+
+        # Phase 1 webhook repo (read) -- locking read
         mock_webhook_repo_read = MagicMock()
         mock_webhook_repo_read.get_by_id_for_update.return_value = mock_event
 
-        # Phase 3 webhook repo (write) — status still pending so write proceeds
+        # Phase 3 webhook repo (write) -- status still pending so write proceeds
         mock_current_event = MagicMock()
         mock_current_event.status = WebhookStatus.PENDING
+        mock_current_event.agent_id = "agent_1"
         mock_webhook_repo_write = MagicMock()
         mock_webhook_repo_write.get_by_id.return_value = mock_current_event
 
@@ -905,7 +957,7 @@ class TestProcessEventSessionSplit:
         svc = WebhookService()
         with patch.object(svc, "_send_webhook", new_callable=AsyncMock,
                           return_value=WebhookResult(success=False, error="HTTP 500")):
-            result = await svc.process_event("evt_fail")
+            result = await svc.process_event(self._EVT_UUID)
 
         assert result.success is False
         mock_webhook_repo_write.schedule_retry.assert_called_once()

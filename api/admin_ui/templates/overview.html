@@ -46,6 +46,31 @@
     </div>
 </div>
 
+<h2 class="text-xl font-bold text-gray-800 mb-4">Phase 1-2 Features</h2>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+    <a href="/admin/spending-policies" class="bg-white rounded-lg shadow p-6 hover:shadow-md transition-shadow">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Spending Policies</p>
+        <p class="text-3xl font-bold text-indigo-600 mt-1">{{ stats.spending_policy_count }}</p>
+    </a>
+    <a href="/admin/multisig" class="bg-white rounded-lg shadow p-6 hover:shadow-md transition-shadow">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Multisig Escrows</p>
+        <p class="text-3xl font-bold text-blue-600 mt-1">{{ stats.multisig_count }}</p>
+        <p class="text-xs text-gray-400 mt-1">{{ stats.multisig_active }} active</p>
+    </a>
+    <a href="/admin/messages" class="bg-white rounded-lg shadow p-6 hover:shadow-md transition-shadow">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Messages</p>
+        <p class="text-3xl font-bold text-green-600 mt-1">{{ stats.message_count }}</p>
+        <p class="text-xs text-gray-400 mt-1">{{ stats.message_pending }} pending</p>
+    </a>
+    <a href="/admin/webhook-endpoints" class="bg-white rounded-lg shadow p-6 hover:shadow-md transition-shadow">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Webhook Endpoints</p>
+        <p class="text-3xl font-bold mt-1 {% if stats.webhook_unhealthy > 0 %}text-red-600{% else %}text-purple-600{% endif %}">{{ stats.webhook_endpoint_count }}</p>
+        {% if stats.webhook_unhealthy > 0 %}
+        <p class="text-xs text-red-500 mt-1">{{ stats.webhook_unhealthy }} unhealthy</p>
+        {% endif %}
+    </a>
+</div>
+
 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div class="bg-white rounded-lg shadow p-6">
         <h2 class="text-lg font-semibold text-gray-700 mb-3">Agents by Tier</h2>
@@ -67,6 +92,11 @@
             <li><a href="/admin/transactions" class="text-indigo-600 hover:underline">View Transactions</a></li>
             <li><a href="/admin/balances" class="text-indigo-600 hover:underline">View Balances</a></li>
             <li><a href="/admin/escrows" class="text-indigo-600 hover:underline">View Escrow Deals</a></li>
+            <li><a href="/admin/multisig" class="text-indigo-600 hover:underline">Multisig Escrow Monitor</a></li>
+            <li><a href="/admin/spending-policies" class="text-indigo-600 hover:underline">Spending Policies</a></li>
+            <li><a href="/admin/messages" class="text-indigo-600 hover:underline">Message Relay Stats</a></li>
+            <li><a href="/admin/webhook-endpoints" class="text-indigo-600 hover:underline">Webhook Endpoints</a></li>
+            <li><a href="/admin/pow" class="text-indigo-600 hover:underline">PoW Challenge Stats</a></li>
             <li><a href="/docs" class="text-indigo-600 hover:underline">API Documentation</a></li>
         </ul>
     </div>

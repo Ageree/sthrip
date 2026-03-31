@@ -610,7 +610,7 @@ class ReputationProofResponse(BaseModel):
 
 class ReputationVerifyRequest(BaseModel):
     """Request body for verifying a ZK reputation proof."""
-    commitment: str = Field(..., min_length=1, max_length=256)
+    commitment: str = Field(..., min_length=1, max_length=1024)
     proof: str = Field(..., min_length=1, description="Base64-encoded proof payload")
     threshold: int = Field(..., ge=0, le=100)
 

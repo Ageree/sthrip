@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Message Relay Stats{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-800 mb-6">Message Relay Stats</h1>
+
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Total Messages</p>
+        <p class="text-3xl font-bold text-indigo-600 mt-1">{{ stats.total_messages }}</p>
+        <p class="text-xs text-gray-400 mt-1">{{ stats.messages_24h }} in last 24h</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Delivered</p>
+        <p class="text-3xl font-bold text-green-600 mt-1">{{ stats.delivered }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Pending</p>
+        <p class="text-3xl font-bold text-yellow-600 mt-1">{{ stats.pending }}</p>
+        <p class="text-xs text-gray-400 mt-1">awaiting delivery</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Expired</p>
+        <p class="text-3xl font-bold text-red-600 mt-1">{{ stats.expired }}</p>
+        <p class="text-xs text-gray-400 mt-1">undelivered & expired</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Avg Message Size</p>
+        <p class="text-3xl font-bold text-blue-600 mt-1">{{ stats.avg_size }}</p>
+        <p class="text-xs text-gray-400 mt-1">bytes (ciphertext)</p>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm text-gray-500 uppercase tracking-wide">Delivery Rate</p>
+        {% if stats.total_messages > 0 %}
+        {% set rate = (stats.delivered / stats.total_messages * 100) | round(1) %}
+        <p class="text-3xl font-bold {% if rate >= 90 %}text-green-600{% elif rate >= 70 %}text-yellow-600{% else %}text-red-600{% endif %} mt-1">{{ rate }}%</p>
+        {% else %}
+        <p class="text-3xl font-bold text-gray-400 mt-1">--</p>
+        {% endif %}
+    </div>
+</div>
+
+<h2 class="text-xl font-bold text-gray-800 mb-4">Recent Messages</h2>
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">From</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">To</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Size</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Status</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Created</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for msg in recent %}
+            <tr class="border-t hover:bg-gray-50">
+                <td class="px-4 py-3">
+                    {% if msg.from_agent %}
+                        <span class="text-gray-700">{{ msg.from_agent.agent_name }}</span>
+                    {% else %}
+                        <span class="text-gray-400 text-xs">unknown</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if msg.to_agent %}
+                        <span class="text-gray-700">{{ msg.to_agent.agent_name }}</span>
+                    {% else %}
+                        <span class="text-gray-400 text-xs">unknown</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 text-right font-mono text-gray-500">{{ msg.size_bytes }} B</td>
+                <td class="px-4 py-3">
+                    {% if msg.delivered %}
+                        <span class="inline-block px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">Delivered</span>
+                    {% elif msg.expired %}
+                        <span class="inline-block px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-medium">Expired</span>
+                    {% else %}
+                        <span class="inline-block px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded-full text-xs font-medium">Pending</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 text-gray-500 text-xs">{{ msg.created_at.strftime('%Y-%m-%d %H:%M') if msg.created_at else "" }}</td>
+            </tr>
+        {% endfor %}
+        {% if not recent %}
+            <tr><td colspan="5" class="px-4 py-6 text-center text-gray-400">No messages found</td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

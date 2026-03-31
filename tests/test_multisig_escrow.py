@@ -310,7 +310,14 @@ class TestMultisigCoordinatorUnit:
         """When all 3 participants submit round data, state should advance."""
         mock_wallet = MagicMock()
         mock_wallet.prepare_multisig.return_value = "hub_info"
-        mock_wallet.finalize_multisig.return_value = "final_address"
+        mock_wallet.make_multisig.return_value = {
+            "address": "",
+            "multisig_info": "hub_round2_info",
+        }
+        mock_wallet.exchange_multisig_keys.return_value = {
+            "address": "final_address",
+            "multisig_info": "hub_round3_info",
+        }
         coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
 
         session = ms_session_factory()
@@ -356,6 +363,13 @@ class TestMultisigCoordinatorUnit:
             session.commit()
             assert r1_seller["state_advanced"] is True
             assert r1_seller["state"] == "setup_round_2"
+
+            # Verify make_multisig was called with buyer+seller round-1 infos
+            mock_wallet.make_multisig.assert_called_once_with(
+                multisig_info=["buyer_round1_info", "seller_round1_info"],
+                threshold=2,
+                password="",
+            )
 
         finally:
             session.close()
@@ -491,6 +505,764 @@ class TestMultisigCoordinatorUnit:
                     signer="buyer", signed_tx="signed_data",
                 )
 
+        finally:
+            session.close()
+
+
+# ===========================================================================
+# WALLET RPC INTEGRATION TESTS — verify real RPC calls
+# ===========================================================================
+
+class TestMultisigWalletRPC:
+    """Tests verifying that real wallet RPC methods are called correctly.
+
+    Uses MagicMock for the wallet to assert call signatures without
+    requiring a live Monero daemon.
+    """
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_prepare_multisig_called_on_create(self, _wh, _al, ms_session_factory):
+        """Creating a multisig escrow should call wallet.prepare_multisig()."""
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_prepare_info_abc"
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-buyer-1", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-seller-1", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            coordinator.create(
+                db=session,
+                buyer_id=buyer.id,
+                seller_id=seller.id,
+                amount=Decimal("10"),
+                description="RPC prepare test",
+            )
+            session.commit()
+
+            mock_wallet.prepare_multisig.assert_called_once()
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_prepare_multisig_rpc_error_raises_runtime(
+        self, _wh, _al, ms_session_factory,
+    ):
+        """MoneroRPCError from prepare_multisig should raise RuntimeError."""
+        from sthrip.swaps.xmr.wallet import MoneroRPCError
+
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.side_effect = MoneroRPCError("connection refused")
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-err-buyer", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-err-seller", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            with pytest.raises(RuntimeError, match="prepare hub multisig"):
+                coordinator.create(
+                    db=session,
+                    buyer_id=buyer.id,
+                    seller_id=seller.id,
+                    amount=Decimal("10"),
+                    description="RPC error test",
+                )
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_make_multisig_called_after_round1(self, _wh, _al, ms_session_factory):
+        """Completing round 1 should call wallet.make_multisig(threshold=2)."""
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.make_multisig.return_value = {
+            "address": "",
+            "multisig_info": "hub_r2_info",
+        }
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-mk-buyer", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-mk-seller", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("5"), description="make_multisig test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            # Submit buyer and seller round 1
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=1,
+                multisig_info="buyer_r1",
+            )
+            session.commit()
+
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=1,
+                multisig_info="seller_r1",
+            )
+            session.commit()
+
+            mock_wallet.make_multisig.assert_called_once_with(
+                multisig_info=["buyer_r1", "seller_r1"],
+                threshold=2,
+                password="",
+            )
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_exchange_keys_called_after_round2(self, _wh, _al, ms_session_factory):
+        """Completing round 2 should call wallet.exchange_multisig_keys()."""
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.make_multisig.return_value = {
+            "address": "",
+            "multisig_info": "hub_r2_info",
+        }
+        mock_wallet.exchange_multisig_keys.return_value = {
+            "address": "",
+            "multisig_info": "hub_r3_info",
+        }
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-ex-buyer", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-ex-seller", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("5"), description="exchange keys test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            # Complete round 1 (buyer + seller)
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=1,
+                multisig_info="buyer_r1",
+            )
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=1,
+                multisig_info="seller_r1",
+            )
+            session.commit()
+
+            # Complete round 2 (buyer + seller)
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=2,
+                multisig_info="buyer_r2",
+            )
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=2,
+                multisig_info="seller_r2",
+            )
+            session.commit()
+
+            mock_wallet.exchange_multisig_keys.assert_called_once_with(
+                multisig_info=["buyer_r2", "seller_r2"],
+                password="",
+            )
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_finalize_address_after_round3(self, _wh, _al, ms_session_factory):
+        """Completing round 3 should finalize the multisig address via RPC."""
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.make_multisig.return_value = {
+            "address": "",
+            "multisig_info": "hub_r2_info",
+        }
+        # Round 2 exchange
+        mock_wallet.exchange_multisig_keys.side_effect = [
+            {"address": "", "multisig_info": "hub_r3_info"},
+            # Round 3 finalize — returns the shared address
+            {"address": "5" + "b" * 94, "multisig_info": ""},
+        ]
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-fin-buyer", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-fin-seller", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("5"), description="finalize test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            # Round 1
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=1, multisig_info="b_r1",
+            )
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=1, multisig_info="s_r1",
+            )
+            session.commit()
+
+            # Round 2
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=2, multisig_info="b_r2",
+            )
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=2, multisig_info="s_r2",
+            )
+            session.commit()
+
+            # Round 3
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=3, multisig_info="b_r3",
+            )
+            r3_result = coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=3, multisig_info="s_r3",
+            )
+            session.commit()
+
+            assert r3_result["state"] == "funded"
+            assert r3_result["state_advanced"] is True
+
+            # Verify the finalized address was stored
+            ms_escrow = session.get(MultisigEscrow, ms_id)
+            assert ms_escrow.multisig_address == "5" + "b" * 94
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_hub_auto_submits_next_round(self, _wh, _al, ms_session_factory):
+        """When round 1 completes, hub should auto-submit round 2 data."""
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.make_multisig.return_value = {
+            "address": "",
+            "multisig_info": "hub_auto_r2",
+        }
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-auto-buyer", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-auto-seller", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("5"), description="auto-submit test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            # Complete round 1
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=1, multisig_info="b_r1",
+            )
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=1, multisig_info="s_r1",
+            )
+            session.commit()
+
+            # After round 1 completes, hub should have auto-submitted
+            # round 2 data. Verify by querying round 2 submissions.
+            from sthrip.db.multisig_repo import MultisigEscrowRepository
+            ms_repo = MultisigEscrowRepository(session)
+            r2_count = ms_repo.count_round_submissions(ms_id, 2)
+            assert r2_count == 1  # hub auto-submitted
+
+            r2_rounds = ms_repo.get_rounds(ms_id, 2)
+            assert len(r2_rounds) == 1
+            assert r2_rounds[0].participant == "hub"
+            assert r2_rounds[0].multisig_info == "hub_auto_r2"
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_make_multisig_rpc_error_raises_runtime(
+        self, _wh, _al, ms_session_factory,
+    ):
+        """MoneroRPCError from make_multisig should raise RuntimeError."""
+        from sthrip.swaps.xmr.wallet import MoneroRPCError
+
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.make_multisig.side_effect = MoneroRPCError("timeout")
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-mk-err-b", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-mk-err-s", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("5"), description="make err test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=1, multisig_info="b_r1",
+            )
+            session.commit()
+
+            with pytest.raises(RuntimeError, match="round 1"):
+                coordinator.submit_round(
+                    db=session, escrow_id=ms_id,
+                    participant="seller", round_number=1, multisig_info="s_r1",
+                )
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_release_tx_calls_export_and_transfer(
+        self, _wh, _al, ms_session_factory,
+    ):
+        """initiate_release should call export_multisig_info then transfer."""
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.export_multisig_info.return_value = "export_info"
+        mock_wallet.transfer.return_value = {
+            "tx_hash": "abc123",
+            "tx_key": "key456",
+            "amount": Decimal("9.9"),
+            "fee": Decimal("0.001"),
+        }
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-rel-buyer", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(
+                agent_name="rpc-rel-seller",
+                xmr_address="5" + "c" * 94,
+            )
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("10"), description="release test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            # Advance to funded state
+            ms_escrow = session.get(MultisigEscrow, ms_id)
+            ms_escrow.state = "funded"
+            ms_escrow.multisig_address = "5" + "d" * 94
+            session.commit()
+
+            release_result = coordinator.initiate_release(
+                db=session, escrow_id=ms_id, initiator="buyer",
+            )
+            session.commit()
+
+            assert release_result["state"] == "releasing"
+            assert release_result["partial_tx"] == "abc123"
+
+            mock_wallet.export_multisig_info.assert_called_once()
+            mock_wallet.transfer.assert_called_once()
+
+            # Verify transfer destination is the seller's address
+            call_args = mock_wallet.transfer.call_args
+            destinations = call_args.kwargs.get(
+                "destinations", call_args.args[0] if call_args.args else None
+            )
+            assert len(destinations) == 1
+            assert destinations[0].address == "5" + "c" * 94
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_release_tx_missing_seller_address_raises(
+        self, _wh, _al, ms_session_factory,
+    ):
+        """Release should fail if seller has no XMR address."""
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.export_multisig_info.return_value = "info"
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-noaddr-b", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-noaddr-s", xmr_address=None)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("10"), description="no address test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            ms_escrow = session.get(MultisigEscrow, ms_id)
+            ms_escrow.state = "funded"
+            session.commit()
+
+            with pytest.raises(ValueError, match="seller XMR address is missing"):
+                coordinator.initiate_release(
+                    db=session, escrow_id=ms_id, initiator="buyer",
+                )
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_broadcast_calls_submit_multisig(self, _wh, _al, ms_session_factory):
+        """cosign_release should call wallet.submit_multisig with signed TX."""
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.submit_multisig.return_value = "final_tx_hash_xyz"
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-bc-buyer", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-bc-seller", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("10"), description="broadcast test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            # Advance to releasing state
+            ms_escrow = session.get(MultisigEscrow, ms_id)
+            ms_escrow.state = "releasing"
+            ms_escrow.release_initiator = "buyer"
+            ms_escrow.release_tx_hex = "partial_hex_data"
+            session.commit()
+
+            cosign_result = coordinator.cosign_release(
+                db=session, escrow_id=ms_id,
+                signer="seller", signed_tx="fully_signed_hex",
+            )
+            session.commit()
+
+            assert cosign_result["state"] == "completed"
+            assert cosign_result["tx_hash"] == "final_tx_hash_xyz"
+
+            mock_wallet.submit_multisig.assert_called_once_with("fully_signed_hex")
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_broadcast_rpc_error_raises_runtime(
+        self, _wh, _al, ms_session_factory,
+    ):
+        """MoneroRPCError from submit_multisig should raise RuntimeError."""
+        from sthrip.swaps.xmr.wallet import MoneroRPCError
+
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.submit_multisig.side_effect = MoneroRPCError("network error")
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-bc-err-b", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-bc-err-s", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("10"), description="broadcast err test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            ms_escrow = session.get(MultisigEscrow, ms_id)
+            ms_escrow.state = "releasing"
+            ms_escrow.release_initiator = "buyer"
+            session.commit()
+
+            with pytest.raises(RuntimeError, match="broadcast multisig"):
+                coordinator.cosign_release(
+                    db=session, escrow_id=ms_id,
+                    signer="seller", signed_tx="signed_hex",
+                )
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_stub_mode_no_wallet_works(self, _wh, _al, ms_session_factory):
+        """When wallet_rpc=None, stub behaviour should still work."""
+        coordinator = MultisigCoordinator(wallet_rpc=None)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="stub-buyer", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="stub-seller", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("10"), description="Stub mode test",
+            )
+            session.commit()
+
+            assert result["state"] == "setup_round_1"
+            ms_id = UUID(result["id"])
+
+            # Complete round 1 — stubs should return synthetic data
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=1, multisig_info="b1",
+            )
+            r1_result = coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=1, multisig_info="s1",
+            )
+            session.commit()
+
+            assert r1_result["state"] == "setup_round_2"
+            assert r1_result["state_advanced"] is True
+
+            # Complete round 2
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=2, multisig_info="b2",
+            )
+            r2_result = coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=2, multisig_info="s2",
+            )
+            session.commit()
+            assert r2_result["state"] == "setup_round_3"
+
+            # Complete round 3
+            coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="buyer", round_number=3, multisig_info="b3",
+            )
+            r3_result = coordinator.submit_round(
+                db=session, escrow_id=ms_id,
+                participant="seller", round_number=3, multisig_info="s3",
+            )
+            session.commit()
+            assert r3_result["state"] == "funded"
+
+            # Verify address is a stub
+            ms_escrow = session.get(MultisigEscrow, ms_id)
+            assert ms_escrow.multisig_address.startswith("multisig_address_")
+
+            # Initiate and cosign release in stub mode
+            ms_escrow.state = "funded"
+            session.commit()
+
+            release = coordinator.initiate_release(
+                db=session, escrow_id=ms_id, initiator="hub",
+            )
+            session.commit()
+            assert release["partial_tx"].startswith("partial_tx_")
+
+            cosign = coordinator.cosign_release(
+                db=session, escrow_id=ms_id,
+                signer="seller", signed_tx="stub_signed",
+            )
+            session.commit()
+            assert cosign["state"] == "completed"
+            assert cosign["tx_hash"].startswith("tx_hash_")
+        finally:
+            session.close()
+
+    @patch("sthrip.services.multisig_coordinator.audit_log")
+    @patch("sthrip.services.multisig_coordinator.queue_webhook")
+    def test_finalize_fallback_to_finalize_multisig(
+        self, _wh, _al, ms_session_factory,
+    ):
+        """If exchange_multisig_keys returns no address, fall back to finalize_multisig."""
+        mock_wallet = MagicMock()
+        mock_wallet.prepare_multisig.return_value = "hub_r1"
+        mock_wallet.make_multisig.return_value = {
+            "address": "",
+            "multisig_info": "hub_r2",
+        }
+        mock_wallet.exchange_multisig_keys.side_effect = [
+            # Round 2 call
+            {"address": "", "multisig_info": "hub_r3"},
+            # Round 3 finalize attempt — no address returned
+            {"address": "", "multisig_info": ""},
+        ]
+        mock_wallet.finalize_multisig.return_value = "5" + "f" * 94
+        coordinator = MultisigCoordinator(wallet_rpc=mock_wallet)
+
+        session = ms_session_factory()
+        try:
+            buyer = Agent(agent_name="rpc-fb-buyer", xmr_address=_VALID_XMR_ADDR)
+            seller = Agent(agent_name="rpc-fb-seller", xmr_address=_VALID_XMR_ADDR)
+            session.add_all([buyer, seller])
+            session.flush()
+
+            balance = AgentBalance(
+                agent_id=buyer.id, token="XMR",
+                available=Decimal("100"), total_deposited=Decimal("100"),
+            )
+            session.add(balance)
+            session.flush()
+
+            result = coordinator.create(
+                db=session, buyer_id=buyer.id, seller_id=seller.id,
+                amount=Decimal("5"), description="fallback test",
+            )
+            session.commit()
+            ms_id = UUID(result["id"])
+
+            # Complete all 3 rounds
+            for rnd in (1, 2, 3):
+                coordinator.submit_round(
+                    db=session, escrow_id=ms_id,
+                    participant="buyer", round_number=rnd, multisig_info=f"b{rnd}",
+                )
+                coordinator.submit_round(
+                    db=session, escrow_id=ms_id,
+                    participant="seller", round_number=rnd, multisig_info=f"s{rnd}",
+                )
+                session.commit()
+
+            ms_escrow = session.get(MultisigEscrow, ms_id)
+            assert ms_escrow.multisig_address == "5" + "f" * 94
+
+            # finalize_multisig should have been called as fallback
+            mock_wallet.finalize_multisig.assert_called_once()
         finally:
             session.close()
 

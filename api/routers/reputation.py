@@ -54,8 +54,7 @@ async def generate_reputation_proof(
             # the last commitment was stored
             stored_commitment = reputation.reputation_commitment
             blinding = reputation.reputation_blinding
-            expected = _zk_service._compute_commitment(score, blinding)
-            if stored_commitment != expected:
+            if not _zk_service.verify_commitment(stored_commitment, score, blinding):
                 commitment, blinding = _zk_service.create_commitment(score)
                 reputation.reputation_commitment = commitment
                 reputation.reputation_blinding = blinding

@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Multisig Escrows{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-800 mb-6">Multisig Escrow Monitor</h1>
+
+<form method="get" class="flex gap-4 mb-6">
+    <select name="state" class="border border-gray-300 rounded px-3 py-2">
+        <option value="">All states</option>
+        {% for s in ["setup_round_1", "setup_round_2", "setup_round_3", "funded", "active", "releasing", "completed", "cancelled", "disputed"] %}
+        <option value="{{ s }}" {{ "selected" if state == s else "" }}>{{ s | replace("_", " ") | title }}</option>
+        {% endfor %}
+    </select>
+    <button type="submit" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">Filter</button>
+</form>
+
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Escrow ID</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Buyer</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Seller</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">State</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Fee Collected</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Funded Amount</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Timeout</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Created</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for item in multisigs %}
+            {% set ms = item.ms %}
+            {% set s = ms.state %}
+            <tr class="border-t hover:bg-gray-50
+                {% if s == 'disputed' %} bg-red-50
+                {% elif s in ['setup_round_1', 'setup_round_2', 'setup_round_3'] %} bg-yellow-50
+                {% elif s in ['active', 'funded'] %} bg-green-50
+                {% elif s == 'completed' %} bg-gray-50
+                {% endif %}
+            ">
+                <td class="px-4 py-3 font-mono text-xs">
+                    {% if ms.escrow_deal_id %}
+                    <a href="/admin/escrows/{{ ms.escrow_deal_id }}" class="text-indigo-600 hover:underline">{{ ms.id | string | truncate(13, True, "...") }}</a>
+                    {% else %}
+                    <span class="text-gray-400">{{ ms.id | string | truncate(13, True, "...") }}</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if item.buyer %}
+                        <a href="/admin/agents/{{ item.deal.buyer_id }}" class="text-indigo-600 hover:underline">{{ item.buyer.agent_name }}</a>
+                    {% elif item.deal %}
+                        <span class="text-gray-400 font-mono text-xs">{{ item.deal.buyer_id | string | truncate(13, True, "...") }}</span>
+                    {% else %}
+                        <span class="text-gray-300">--</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if item.seller %}
+                        <a href="/admin/agents/{{ item.deal.seller_id }}" class="text-indigo-600 hover:underline">{{ item.seller.agent_name }}</a>
+                    {% elif item.deal %}
+                        <span class="text-gray-400 font-mono text-xs">{{ item.deal.seller_id | string | truncate(13, True, "...") }}</span>
+                    {% else %}
+                        <span class="text-gray-300">--</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if s == 'disputed' %}
+                        <span class="inline-block px-2 py-0.5 bg-red-100 text-red-800 rounded-full text-xs font-medium">Disputed</span>
+                    {% elif s in ['setup_round_1', 'setup_round_2', 'setup_round_3'] %}
+                        <span class="inline-block px-2 py-0.5 bg-yellow-100 text-yellow-800 rounded-full text-xs font-medium">{{ s | replace("_", " ") | title }}</span>
+                    {% elif s == 'funded' %}
+                        <span class="inline-block px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full text-xs font-medium">Funded</span>
+                    {% elif s == 'active' %}
+                        <span class="inline-block px-2 py-0.5 bg-green-100 text-green-800 rounded-full text-xs font-medium">Active</span>
+                    {% elif s == 'releasing' %}
+                        <span class="inline-block px-2 py-0.5 bg-purple-100 text-purple-800 rounded-full text-xs font-medium">Releasing</span>
+                    {% elif s == 'completed' %}
+                        <span class="inline-block px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">Completed</span>
+                    {% elif s == 'cancelled' %}
+                        <span class="inline-block px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full text-xs font-medium">Cancelled</span>
+                    {% else %}
+                        <span class="text-gray-400">{{ s }}</span>
+                    {% endif %}
+                    {% if ms.dispute_reason %}
+                        <p class="text-xs text-red-500 mt-1 max-w-xs truncate" title="{{ ms.dispute_reason }}">{{ ms.dispute_reason }}</p>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 text-right font-mono">
+                    {% if ms.fee_collected %}{{ ms.fee_collected }} XMR{% else %}<span class="text-gray-300">--</span>{% endif %}
+                </td>
+                <td class="px-4 py-3 text-right font-mono">
+                    {% if ms.funded_amount %}{{ ms.funded_amount }} XMR{% else %}<span class="text-gray-300">--</span>{% endif %}
+                </td>
+                <td class="px-4 py-3 text-xs text-gray-500">
+                    {{ ms.timeout_at.strftime('%Y-%m-%d %H:%M') if ms.timeout_at else "" }}
+                </td>
+                <td class="px-4 py-3 text-xs text-gray-500">
+                    {{ ms.created_at.strftime('%Y-%m-%d %H:%M') if ms.created_at else "" }}
+                </td>
+            </tr>
+        {% endfor %}
+        {% if not multisigs %}
+            <tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">No multisig escrows found</td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+</div>
+
+{% if total_pages > 1 %}
+<div class="flex justify-between items-center mt-6 text-sm text-gray-600">
+    <span>Showing page {{ page }} of {{ total_pages }} ({{ total }} total)</span>
+    <div class="flex gap-2">
+        {% if page > 1 %}
+            <a href="/admin/multisig?state={{ state }}&page={{ page - 1 }}" class="px-3 py-1 bg-white border rounded hover:bg-gray-50">Previous</a>
+        {% endif %}
+        {% if page < total_pages %}
+            <a href="/admin/multisig?state={{ state }}&page={{ page + 1 }}" class="px-3 py-1 bg-white border rounded hover:bg-gray-50">Next</a>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}

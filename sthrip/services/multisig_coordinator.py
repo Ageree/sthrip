@@ -5,8 +5,15 @@ Fee: 1% collected UPFRONT before funds enter the multisig wallet.
 States: setup_round_1 -> setup_round_2 -> setup_round_3 -> funded -> active
         -> releasing -> completed  (or cancelled / disputed)
 
-Wallet RPC calls are stubbed — the coordinator records state transitions and
-stores key-exchange data.  Actual RPC integration will be connected later.
+Wallet RPC integration:
+  - prepare_multisig        → round 1 info exchange
+  - make_multisig           → round 2 (creates intermediate multisig)
+  - exchange_multisig_keys  → round 3 (finalises shared address)
+  - transfer + sign_multisig → release flow (partial + cosign)
+  - submit_multisig         → broadcast fully-signed TX
+
+When *wallet_rpc* is ``None`` (test mode), every method falls back to
+deterministic stubs so the coordinator can be exercised without a live daemon.
 """
 
 import hashlib
@@ -14,7 +21,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -36,6 +43,7 @@ from sthrip.db.repository import (
 )
 from sthrip.services.audit_logger import log_event as audit_log
 from sthrip.services.webhook_service import queue_webhook
+from sthrip.swaps.xmr.wallet import MoneroRPCError, MoneroTransfer
 
 logger = logging.getLogger("sthrip.multisig")
 
@@ -250,13 +258,37 @@ class MultisigCoordinator:
         state_advanced = False
 
         if count >= _PARTICIPANTS_PER_ROUND:
+            # Collect non-hub infos for this round so the hub can process
+            all_round_entries = ms_repo.get_rounds(escrow_id, round_number)
+            other_infos = [
+                r.multisig_info
+                for r in all_round_entries
+                if r.participant != "hub"
+            ]
+
+            # Hub processes its side of the completed round
+            hub_next_info = self._process_hub_round(
+                round_number, other_infos,
+            )
+
             ms_repo.update_state(escrow_id, next_state)
             ms_escrow.state = next_state
             state_advanced = True
 
+            # If advancing to round 2 or 3, auto-submit hub's data for next round
+            if next_state in ("setup_round_2", "setup_round_3") and hub_next_info:
+                next_round = round_number + 1
+                ms_repo.add_round(
+                    multisig_escrow_id=escrow_id,
+                    round_number=next_round,
+                    participant="hub",
+                    multisig_info=hub_next_info,
+                )
+
             # If we just completed round 3, the multisig address is ready
             if next_state == "funded":
-                ms_escrow.multisig_address = self._finalize_multisig_address()
+                address = self._finalize_multisig_address(other_infos)
+                ms_escrow.multisig_address = address
                 db.flush()
 
         return {
@@ -417,46 +449,220 @@ class MultisigCoordinator:
         }
 
     # ------------------------------------------------------------------
-    # Wallet RPC stubs (to be connected to actual Monero wallet RPC)
+    # Wallet RPC integration (falls back to stubs when wallet is None)
     # ------------------------------------------------------------------
 
     def _prepare_multisig_for_hub(self) -> str:
-        """Stub: call prepare_multisig on the hub wallet.
+        """Call ``prepare_multisig`` on the hub wallet for round 1.
 
-        Returns the hub's multisig info string for round 1.
-        In production, this calls wallet RPC prepare_multisig.
+        Returns the hub's multisig_info string that other participants
+        need during the key-exchange handshake.
+
+        When ``self._wallet`` is ``None`` (test mode), returns a
+        deterministic stub string.
         """
-        if self._wallet is not None:
-            return self._wallet.prepare_multisig()
-        return f"hub_multisig_info_{secrets.token_hex(16)}"
+        if self._wallet is None:
+            return f"hub_multisig_info_{secrets.token_hex(16)}"
 
-    def _finalize_multisig_address(self) -> str:
-        """Stub: derive the final multisig address after round 3.
+        try:
+            info: str = self._wallet.prepare_multisig()
+            logger.info("Hub prepare_multisig succeeded (info length=%d)", len(info))
+            return info
+        except MoneroRPCError as exc:
+            logger.error("prepare_multisig RPC failed: %s", exc)
+            raise RuntimeError(
+                "Failed to prepare hub multisig wallet via RPC"
+            ) from exc
 
-        In production, calls wallet RPC finalize_multisig and returns
-        the shared multisig address.
+    def _process_hub_round(
+        self,
+        completed_round: int,
+        other_participant_infos: List[str],
+    ) -> Optional[str]:
+        """Process the hub's side of a completed key-exchange round.
+
+        Called once all 3 participants have submitted data for
+        ``completed_round``.  Performs the hub's wallet RPC call and
+        returns the hub's new multisig_info for the *next* round (or
+        ``None`` when no further info is needed).
+
+        Round 1 completed  ->  hub calls ``make_multisig`` (2-of-3)
+                               returns hub's round-2 multisig_info
+        Round 2 completed  ->  hub calls ``exchange_multisig_keys``
+                               returns hub's round-3 multisig_info
+        Round 3 completed  ->  no wallet call here; address finalisation
+                               happens in ``_finalize_multisig_address``
+
+        Args:
+            completed_round: The round that just finished (1, 2, or 3).
+            other_participant_infos: The multisig_info strings from the
+                buyer and seller for the completed round.
+
+        Returns:
+            The hub's multisig_info for the next round, or ``None``.
         """
-        if self._wallet is not None:
-            return self._wallet.finalize_multisig()
-        return f"multisig_address_{secrets.token_hex(16)}"
+        if self._wallet is None:
+            # Stub mode — return synthetic info for the next round
+            if completed_round in (1, 2):
+                return f"hub_round{completed_round + 1}_info_{secrets.token_hex(8)}"
+            return None
+
+        try:
+            if completed_round == 1:
+                # Round 1 done: each participant called prepare_multisig.
+                # Now the hub creates a 2-of-3 multisig with buyer+seller infos.
+                result = self._wallet.make_multisig(
+                    multisig_info=other_participant_infos,
+                    threshold=2,
+                    password="",
+                )
+                hub_info = result.get("multisig_info", "")
+                logger.info(
+                    "Hub make_multisig (2-of-3) succeeded, info length=%d",
+                    len(hub_info),
+                )
+                return hub_info
+
+            if completed_round == 2:
+                # Round 2 done: each participant called make_multisig.
+                # Now the hub exchanges keys with the round-2 infos from
+                # buyer and seller to converge on a shared address.
+                result = self._wallet.exchange_multisig_keys(
+                    multisig_info=other_participant_infos,
+                    password="",
+                )
+                hub_info = result.get("multisig_info", "")
+                logger.info(
+                    "Hub exchange_multisig_keys succeeded, info length=%d",
+                    len(hub_info),
+                )
+                return hub_info
+
+            # Round 3: no further info needed from the hub
+            return None
+
+        except MoneroRPCError as exc:
+            logger.error(
+                "Hub round %d RPC processing failed: %s", completed_round, exc
+            )
+            raise RuntimeError(
+                f"Hub wallet RPC failed while processing round {completed_round}"
+            ) from exc
+
+    def _finalize_multisig_address(
+        self,
+        other_participant_infos: List[str],
+    ) -> str:
+        """Derive the final shared multisig address after round 3.
+
+        Calls ``exchange_multisig_keys`` one last time (or
+        ``finalize_multisig`` on older wallet-rpc versions) with the
+        buyer's and seller's round-3 key-exchange data.  The wallet RPC
+        returns the deterministic shared 2-of-3 address.
+
+        Args:
+            other_participant_infos: Round-3 multisig_info strings from
+                the buyer and seller.
+
+        Returns:
+            The shared multisig address string.
+        """
+        if self._wallet is None:
+            return f"multisig_address_{secrets.token_hex(16)}"
+
+        try:
+            result = self._wallet.exchange_multisig_keys(
+                multisig_info=other_participant_infos,
+                password="",
+            )
+            address = result.get("address", "")
+            if not address:
+                # Fallback: some wallet-rpc versions use finalize_multisig
+                address = self._wallet.finalize_multisig(
+                    multisig_info=other_participant_infos,
+                    password="",
+                )
+            logger.info("Multisig address finalised: %s", address[:16] + "...")
+            return address
+        except MoneroRPCError as exc:
+            logger.error("finalize_multisig RPC failed: %s", exc)
+            raise RuntimeError(
+                "Failed to finalise multisig address via wallet RPC"
+            ) from exc
 
     def _create_partial_release_tx(self, ms_escrow: MultisigEscrow) -> str:
-        """Stub: create a partially-signed release transaction.
+        """Create a partially-signed release transaction.
 
-        In production, calls wallet RPC transfer with partial signing.
+        Steps performed when a live wallet is available:
+          1. Export the hub's multisig info so the wallet state is current.
+          2. Build a transfer to the seller's XMR address for the full
+             ``funded_amount``.
+          3. The wallet automatically produces a partial (1-of-2) signature.
+          4. Return the ``multisig_txset`` hex for the cosigner.
+
+        Args:
+            ms_escrow: The ``MultisigEscrow`` ORM object containing the
+                funded amount, multisig address, and linked escrow deal.
+
+        Returns:
+            The partially-signed transaction hex (``multisig_txset``).
         """
-        if self._wallet is not None:
-            return self._wallet.create_partial_tx(
-                amount=ms_escrow.funded_amount,
-                address=ms_escrow.multisig_address,
+        if self._wallet is None:
+            return f"partial_tx_{secrets.token_hex(32)}"
+
+        try:
+            # Sync multisig state before creating the TX
+            self._wallet.export_multisig_info()
+            logger.debug("Hub exported multisig info before release TX")
+
+            # Determine destination — the seller's registered XMR address
+            deal = ms_escrow.escrow_deal
+            seller_address = deal.seller.xmr_address if deal and deal.seller else None
+            if not seller_address:
+                raise ValueError(
+                    "Cannot create release TX: seller XMR address is missing"
+                )
+
+            destination = MoneroTransfer(
+                address=seller_address,
+                amount=Decimal(str(ms_escrow.funded_amount)),
             )
-        return f"partial_tx_{secrets.token_hex(32)}"
+
+            result = self._wallet.transfer(destinations=[destination])
+            tx_hex = result.get("tx_hash", "")
+            logger.info(
+                "Partial release TX created, hash=%s, fee=%s",
+                tx_hex,
+                result.get("fee"),
+            )
+            return tx_hex
+        except MoneroRPCError as exc:
+            logger.error("create_partial_release_tx RPC failed: %s", exc)
+            raise RuntimeError(
+                "Failed to create release transaction via wallet RPC"
+            ) from exc
 
     def _broadcast_signed_tx(self, signed_tx: str) -> str:
-        """Stub: broadcast a fully-signed transaction.
+        """Broadcast a fully-signed (cosigned) multisig transaction.
 
-        In production, calls wallet RPC submit_multisig and returns tx hash.
+        Calls ``submit_multisig`` on the wallet RPC to push the
+        fully-signed TX to the Monero network.
+
+        Args:
+            signed_tx: The fully-signed ``multisig_txset`` hex.
+
+        Returns:
+            The on-chain transaction hash.
         """
-        if self._wallet is not None:
-            return self._wallet.submit_multisig(signed_tx)
-        return f"tx_hash_{secrets.token_hex(32)}"
+        if self._wallet is None:
+            return f"tx_hash_{secrets.token_hex(32)}"
+
+        try:
+            tx_hash: str = self._wallet.submit_multisig(signed_tx)
+            logger.info("Multisig TX broadcast succeeded, tx_hash=%s", tx_hash)
+            return tx_hash
+        except MoneroRPCError as exc:
+            logger.error("submit_multisig RPC failed: %s", exc)
+            raise RuntimeError(
+                "Failed to broadcast multisig transaction via wallet RPC"
+            ) from exc

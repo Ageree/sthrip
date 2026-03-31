@@ -1,4 +1,10 @@
-"""Tests for ZK reputation proof service and API endpoints."""
+"""Tests for ZK reputation proof service and API endpoints.
+
+The ZK service uses Pedersen commitments over a 2048-bit safe prime group
+with bit-decomposition range proofs and Sigma-OR sub-proofs.  These tests
+verify correctness, soundness, and the zero-knowledge property (proof does
+not leak the score).
+"""
 
 import base64
 import json
@@ -20,7 +26,7 @@ from sthrip.services.zk_reputation_service import ZKReputationService
 
 
 # ---------------------------------------------------------------------------
-# Unit tests — ZKReputationService
+# Unit tests -- ZKReputationService
 # ---------------------------------------------------------------------------
 
 
@@ -34,14 +40,18 @@ class TestZKReputationServiceUnit:
 
     def test_create_commitment_returns_hex_strings(self) -> None:
         commitment, blinding = self.svc.create_commitment(75)
-        assert isinstance(commitment, str) and len(commitment) == 64
-        assert isinstance(blinding, str) and len(blinding) == 64
+        assert isinstance(commitment, str)
+        assert isinstance(blinding, str)
+        # Both should be valid hex strings
+        int(commitment, 16)
+        int(blinding, 16)
 
     def test_create_commitment_deterministic_with_same_blinding(self) -> None:
         """Given the same score and blinding, the commitment is deterministic."""
         _, blinding = self.svc.create_commitment(50)
-        c1 = self.svc._compute_commitment(50, blinding)
-        c2 = self.svc._compute_commitment(50, blinding)
+        r = int(blinding, 16)
+        c1 = self.svc._pedersen_commit(50, r)
+        c2 = self.svc._pedersen_commit(50, r)
         assert c1 == c2
 
     def test_create_commitment_different_scores_differ(self) -> None:
@@ -88,9 +98,9 @@ class TestZKReputationServiceUnit:
         commitment, blinding = self.svc.create_commitment(75)
         proof = self.svc.generate_proof(75, blinding, 50)
 
-        # Decode, tamper with the score, re-encode
+        # Decode, tamper with the threshold, re-encode
         payload = json.loads(base64.b64decode(proof))
-        payload["score"] = 30  # lower than threshold
+        payload["threshold"] = 30  # different from what was proven
         tampered = base64.b64encode(
             json.dumps(payload, separators=(",", ":")).encode()
         ).decode()
@@ -98,9 +108,10 @@ class TestZKReputationServiceUnit:
 
     def test_verify_rejects_wrong_commitment(self) -> None:
         """Proof verified against a different commitment returns False."""
-        _, blinding = self.svc.create_commitment(75)
+        commitment, blinding = self.svc.create_commitment(75)
         proof = self.svc.generate_proof(75, blinding, 50)
-        wrong_commitment = "a" * 64
+        # Use a different commitment (hex of a different value)
+        wrong_commitment = format(int(commitment, 16) ^ 1, "x")
         assert not self.svc.verify_proof(wrong_commitment, proof, 50)
 
     def test_verify_rejects_garbage_proof(self) -> None:
@@ -111,7 +122,8 @@ class TestZKReputationServiceUnit:
         if the score is 60."""
         commitment, blinding = self.svc.create_commitment(60)
         proof = self.svc.generate_proof(60, blinding, 50)
-        # The proof embeds score=60 which is < 80, so verification must fail
+        # The proof was generated for threshold=50 but verification at 80
+        # must fail because the threshold embedded in the proof differs.
         assert not self.svc.verify_proof(commitment, proof, 80)
 
     def test_boundary_score_zero(self) -> None:
@@ -131,9 +143,131 @@ class TestZKReputationServiceUnit:
         with pytest.raises(ValueError, match="Threshold must be"):
             self.svc.generate_proof(50, blinding, 101)
 
+    # -- New ZK-specific tests ---------------------------------------------
+
+    def test_proof_does_not_leak_score(self) -> None:
+        """The proof payload must NOT contain the raw score value.
+
+        In the old (v1) scheme the score was embedded in the JSON.
+        The new scheme must not include the score anywhere in the
+        base64-decoded proof bytes.
+        """
+        score = 75
+        commitment, blinding = self.svc.create_commitment(score)
+        proof = self.svc.generate_proof(score, blinding, 50)
+
+        # Decode and inspect the JSON payload
+        payload = json.loads(base64.b64decode(proof))
+
+        # The payload must NOT have a "score" key
+        assert "score" not in payload, "Proof payload contains 'score' key -- not ZK!"
+
+        # The payload must NOT have a "blinding" key
+        assert "blinding" not in payload, "Proof payload contains 'blinding' key -- not ZK!"
+
+        # Verify the proof is still valid despite not containing the score
+        assert self.svc.verify_proof(commitment, proof, 50)
+
+    def test_commitment_is_binding(self) -> None:
+        """Same score + same blinding always produces the same commitment."""
+        _, blinding = self.svc.create_commitment(42)
+        r = int(blinding, 16)
+
+        c1 = self.svc._pedersen_commit(42, r)
+        c2 = self.svc._pedersen_commit(42, r)
+        assert c1 == c2
+
+    def test_commitment_is_hiding(self) -> None:
+        """Different blinding factors produce different commitments for the
+        same score, so the commitment hides the score."""
+        c1, b1 = self.svc.create_commitment(50)
+        c2, b2 = self.svc.create_commitment(50)
+
+        # With overwhelming probability the two blinding factors differ
+        assert b1 != b2, "Blinding factors should differ (probabilistic)"
+        assert c1 != c2, "Commitments with different blinding should differ"
+
+    def test_verify_rejects_wrong_commitment_value(self) -> None:
+        """Verify returns False when the commitment does not match the proof."""
+        commitment, blinding = self.svc.create_commitment(80)
+        proof = self.svc.generate_proof(80, blinding, 50)
+
+        # Create a commitment to a DIFFERENT score
+        wrong_commitment, _ = self.svc.create_commitment(90)
+        assert not self.svc.verify_proof(wrong_commitment, proof, 50)
+
+    def test_boundary_score_equals_threshold_exact(self) -> None:
+        """When score == threshold, delta == 0, all bits are 0."""
+        for threshold in (0, 1, 50, 99, 100):
+            commitment, blinding = self.svc.create_commitment(threshold)
+            proof = self.svc.generate_proof(threshold, blinding, threshold)
+            assert self.svc.verify_proof(commitment, proof, threshold), (
+                f"Failed for score == threshold == {threshold}"
+            )
+
+    def test_max_delta(self) -> None:
+        """Score 100, threshold 0 -> delta 100 (fits in 7 bits)."""
+        commitment, blinding = self.svc.create_commitment(100)
+        proof = self.svc.generate_proof(100, blinding, 0)
+        assert self.svc.verify_proof(commitment, proof, 0)
+
+    def test_verify_rejects_modified_bit_proof(self) -> None:
+        """Tampering with a single bit proof invalidates the whole proof."""
+        commitment, blinding = self.svc.create_commitment(75)
+        proof = self.svc.generate_proof(75, blinding, 50)
+
+        payload = json.loads(base64.b64decode(proof))
+        # Corrupt the first bit proof's response
+        bp = payload["bit_proofs"][0]
+        bp["s0"] = str(int(bp["s0"]) + 1)
+        tampered = base64.b64encode(
+            json.dumps(payload, separators=(",", ":")).encode()
+        ).decode()
+        assert not self.svc.verify_proof(commitment, tampered, 50)
+
+    def test_verify_rejects_modified_link_proof(self) -> None:
+        """Tampering with the linking proof invalidates the proof."""
+        commitment, blinding = self.svc.create_commitment(75)
+        proof = self.svc.generate_proof(75, blinding, 50)
+
+        payload = json.loads(base64.b64decode(proof))
+        lp = payload["link_proof"]
+        lp["s"] = str(int(lp["s"]) + 1)
+        tampered = base64.b64encode(
+            json.dumps(payload, separators=(",", ":")).encode()
+        ).decode()
+        assert not self.svc.verify_proof(commitment, tampered, 50)
+
+    def test_verify_commitment_helper(self) -> None:
+        """The verify_commitment helper correctly checks openings."""
+        commitment, blinding = self.svc.create_commitment(50)
+        assert self.svc.verify_commitment(commitment, 50, blinding)
+        assert not self.svc.verify_commitment(commitment, 51, blinding)
+
+    def test_proof_version_2(self) -> None:
+        """Proofs must be version 2 (real ZK)."""
+        commitment, blinding = self.svc.create_commitment(75)
+        proof = self.svc.generate_proof(75, blinding, 50)
+        payload = json.loads(base64.b64decode(proof))
+        assert payload["version"] == 2
+
+    def test_verify_rejects_version_1_proof(self) -> None:
+        """Old-style proofs (if any remain) are rejected."""
+        # Simulate a v1 proof
+        fake_v1 = base64.b64encode(
+            json.dumps({
+                "commitment": "deadbeef",
+                "threshold": 50,
+                "score": 75,
+                "blinding": "cafebabe",
+                "proof_hash": "0" * 64,
+            }, separators=(",", ":")).encode()
+        ).decode()
+        assert not self.svc.verify_proof("deadbeef", fake_v1, 50)
+
 
 # ---------------------------------------------------------------------------
-# Integration tests — API endpoints
+# Integration tests -- API endpoints
 # ---------------------------------------------------------------------------
 
 # Stable Fernet key for tests

@@ -53,7 +53,7 @@ print(f"Sent: {tx.tx_hash}")
          │                              │
          │ P2P (free, 0%)               │
          │ or                           │
-         │ Hub Routing (0.1%, instant)  │
+         │ Hub Routing (1%, instant)    │
          ▼                              ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Agent B                                                    │
@@ -128,7 +128,7 @@ tx = agent.pay(
 confirmed = agent.wait_for_confirmation(tx.tx_hash)
 ```
 
-### Hub Routing (0.1% fee, instant)
+### Hub Routing (1% fee, instant)
 
 ```python
 # Use hub routing for instant confirmation
@@ -282,7 +282,7 @@ Add to `claude_desktop_config.json`:
 | Service | Fee | When to Use |
 |---------|-----|-------------|
 | P2P Direct | 0% | Trust recipient, normal speed OK |
-| Hub Routing | 0.1% | Need instant confirmation |
+| Hub Routing | 1% | Need instant confirmation |
 | Escrow | 1% | Large amounts, need protection |
 | API Calls | $0.001 | Reputation checks |
 | Verified Badge | $29/month | Build trust |
