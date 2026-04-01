@@ -157,6 +157,31 @@ class SwapStatus(str, _PyEnum):
     EXPIRED = "expired"
 
 
+class LoanStatus(str, _PyEnum):
+    REQUESTED = "requested"
+    ACTIVE = "active"
+    REPAID = "repaid"
+    DEFAULTED = "defaulted"
+    LIQUIDATED = "liquidated"
+    CANCELLED = "cancelled"
+
+
+class ConditionalPaymentState(str, _PyEnum):
+    PENDING = "pending"
+    TRIGGERED = "triggered"
+    EXECUTED = "executed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class MultiPartyPaymentState(str, _PyEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    COMPLETED = "completed"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
 __all__ = [
     "PrivacyLevel",
     "AgentTier",
@@ -176,4 +201,7 @@ __all__ = [
     "RecurringInterval",
     "StreamStatus",
     "SwapStatus",
+    "LoanStatus",
+    "ConditionalPaymentState",
+    "MultiPartyPaymentState",
 ]

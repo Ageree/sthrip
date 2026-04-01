@@ -38,6 +38,9 @@ from sthrip.db.enums import (  # noqa: F401  (re-exported for backward compat)
     RecurringInterval,
     StreamStatus,
     SwapStatus,
+    LoanStatus,
+    ConditionalPaymentState,
+    MultiPartyPaymentState,
 )
 
 
@@ -916,3 +919,295 @@ class CurrencyConversion(Base):
     created_at = Column(DateTime(timezone=True), default=func.now())
 
     agent = relationship("Agent", foreign_keys=[agent_id])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 4a — AGENT FINANCIAL OS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TreasuryPolicy(Base):
+    """Agent treasury management configuration."""
+    __tablename__ = "treasury_policies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    # Target allocation across currencies (percentages, must sum to 100)
+    target_allocation = Column(JSON, nullable=False)  # {"XMR": 40, "xUSD": 50, "xEUR": 10}
+
+    # Rebalance triggers
+    rebalance_threshold_pct = Column(Integer, default=10)
+    rebalance_cooldown_secs = Column(Integer, default=300)
+
+    # Reserve requirements
+    min_liquid_xmr = Column(Numeric(20, 8), nullable=True)
+    min_liquid_xusd = Column(Numeric(20, 8), nullable=True)
+    emergency_reserve_pct = Column(Integer, default=10)
+
+    # Auto-lend settings
+    auto_lend_enabled = Column(Boolean, default=False)
+    max_lend_pct = Column(Integer, default=20)
+    min_borrower_trust_score = Column(Integer, default=70)
+    max_loan_duration_secs = Column(Integer, default=3600)
+
+    is_active = Column(Boolean, default=True)
+    last_rebalance_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+
+    agent = relationship("Agent", backref="treasury_policy", uselist=False)
+
+
+class TreasuryForecast(Base):
+    """Predicted cash flow for treasury planning."""
+    __tablename__ = "treasury_forecasts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+
+    forecast_type = Column(String(50), nullable=False)  # subscription_due, escrow_release, loan_repayment
+    source_id = Column(UUID(as_uuid=True), nullable=False)
+    expected_amount = Column(Numeric(20, 8), nullable=False)
+    expected_currency = Column(String(10), nullable=False, default="XMR")
+    direction = Column(String(10), nullable=False)  # "inflow" or "outflow"
+    expected_at = Column(DateTime(timezone=True), nullable=False)
+    confidence = Column(Numeric(3, 2), nullable=False, default=Decimal("1.00"))
+
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+    __table_args__ = (
+        Index("ix_treasury_forecasts_agent_expected", "agent_id", "expected_at"),
+    )
+
+
+class TreasuryRebalanceLog(Base):
+    """Record of a treasury rebalance execution."""
+    __tablename__ = "treasury_rebalance_log"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+
+    trigger = Column(String(50), nullable=False)  # threshold_breach, forecast_adjustment, manual
+    conversions = Column(JSON, nullable=False, default=list)
+    pre_allocation = Column(JSON, nullable=False)
+    post_allocation = Column(JSON, nullable=False)
+    total_value_xusd = Column(Numeric(20, 8), nullable=False)
+
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+    __table_args__ = (
+        Index("ix_treasury_rebalance_agent_created", "agent_id", "created_at"),
+    )
+
+
+class AgentCreditScore(Base):
+    """Agent credit score derived from on-platform behavior."""
+    __tablename__ = "agent_credit_scores"
+
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    credit_score = Column(Integer, default=0)
+
+    # Factors
+    total_loans_taken = Column(Integer, default=0)
+    total_loans_repaid = Column(Integer, default=0)
+    total_loans_defaulted = Column(Integer, default=0)
+    total_borrowed_volume = Column(Numeric(20, 8), default=Decimal("0"))
+    avg_repayment_time_secs = Column(Integer, nullable=True)
+    longest_default_secs = Column(Integer, nullable=True)
+
+    # Derived limits
+    max_borrow_amount = Column(Numeric(20, 8), default=Decimal("0"))
+    max_concurrent_loans = Column(Integer, default=0)
+
+    calculated_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+
+    agent = relationship("Agent", backref="credit_score_record", uselist=False)
+
+
+class AgentLoan(Base):
+    """Loan between two agents."""
+    __tablename__ = "agent_loans"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    loan_hash = Column(String(64), unique=True, nullable=False)
+
+    # Participants
+    lender_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    borrower_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+
+    # Terms
+    principal = Column(Numeric(20, 8), nullable=False)
+    currency = Column(String(10), default="XMR")
+    interest_rate_bps = Column(Integer, nullable=False)  # basis points (100 = 1%)
+    duration_secs = Column(Integer, nullable=False)
+    collateral_amount = Column(Numeric(20, 8), default=Decimal("0"))
+    collateral_currency = Column(String(10), nullable=True)
+
+    # Repayment
+    repayment_amount = Column(Numeric(20, 8), nullable=False)  # principal + interest
+    repaid_amount = Column(Numeric(20, 8), default=Decimal("0"))
+
+    # State
+    state = Column(SQLEnum(LoanStatus), default=LoanStatus.REQUESTED, nullable=False)
+
+    # Deadlines
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    grace_period_secs = Column(Integer, default=300)
+
+    # Timestamps
+    requested_at = Column(DateTime(timezone=True), default=func.now())
+    funded_at = Column(DateTime(timezone=True), nullable=True)
+    repaid_at = Column(DateTime(timezone=True), nullable=True)
+    defaulted_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Fee
+    platform_fee = Column(Numeric(20, 8), default=Decimal("0"))
+
+    lender = relationship("Agent", foreign_keys=[lender_id])
+    borrower = relationship("Agent", foreign_keys=[borrower_id])
+
+    __table_args__ = (
+        Index("ix_agent_loans_state", "state"),
+        Index("ix_agent_loans_expires", "state", "expires_at"),
+    )
+
+
+class LendingOffer(Base):
+    """Lending offer posted by an agent (order book for interest rate discovery)."""
+    __tablename__ = "lending_offers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lender_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+
+    max_amount = Column(Numeric(20, 8), nullable=False)
+    currency = Column(String(10), default="XMR")
+    interest_rate_bps = Column(Integer, nullable=False)  # minimum acceptable rate
+    max_duration_secs = Column(Integer, nullable=False)
+    min_borrower_credit_score = Column(Integer, default=0)
+    require_collateral = Column(Boolean, default=False)
+    collateral_ratio_pct = Column(Integer, default=100)
+
+    is_active = Column(Boolean, default=True)
+    remaining_amount = Column(Numeric(20, 8), nullable=False)
+
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    lender = relationship("Agent", foreign_keys=[lender_id])
+
+    __table_args__ = (
+        Index("ix_lending_offers_active", "is_active", "currency"),
+    )
+
+
+class ConditionalPayment(Base):
+    """Payment that executes only when specified conditions are met."""
+    __tablename__ = "conditional_payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payment_hash = Column(String(64), unique=True, nullable=False)
+
+    from_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    to_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+
+    amount = Column(Numeric(20, 8), nullable=False)
+    currency = Column(String(10), default="XMR")
+    memo = Column(Text, nullable=True)
+
+    # Conditions
+    condition_type = Column(String(50), nullable=False)  # webhook, escrow_completed, time_lock, balance_threshold
+    condition_config = Column(JSON, nullable=False)
+
+    # Funds locked from sender
+    locked_amount = Column(Numeric(20, 8), nullable=False)
+
+    # State
+    state = Column(SQLEnum(ConditionalPaymentState), default=ConditionalPaymentState.PENDING, nullable=False)
+
+    # Timeouts
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    triggered_at = Column(DateTime(timezone=True), nullable=True)
+    executed_at = Column(DateTime(timezone=True), nullable=True)
+
+    from_agent = relationship("Agent", foreign_keys=[from_agent_id])
+    to_agent = relationship("Agent", foreign_keys=[to_agent_id])
+
+    __table_args__ = (
+        Index("ix_conditional_payments_state", "state"),
+        Index("ix_conditional_payments_expires", "state", "expires_at"),
+    )
+
+
+class MultiPartyPayment(Base):
+    """Atomic multi-party payment (all-or-nothing group payment)."""
+    __tablename__ = "multi_party_payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payment_hash = Column(String(64), unique=True, nullable=False)
+
+    sender_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+
+    total_amount = Column(Numeric(20, 8), nullable=False)
+    currency = Column(String(10), default="XMR")
+
+    require_all_accept = Column(Boolean, default=True)
+
+    state = Column(SQLEnum(MultiPartyPaymentState), default=MultiPartyPaymentState.PENDING, nullable=False)
+
+    accept_deadline = Column(DateTime(timezone=True), nullable=False)
+
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    sender = relationship("Agent", foreign_keys=[sender_id])
+    recipients = relationship(
+        "MultiPartyRecipient",
+        back_populates="payment",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_multi_party_state", "state"),
+    )
+
+
+class MultiPartyRecipient(Base):
+    """Individual recipient in a multi-party payment."""
+    __tablename__ = "multi_party_recipients"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("multi_party_payments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    recipient_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+
+    amount = Column(Numeric(20, 8), nullable=False)
+
+    accepted = Column(Boolean, nullable=True)  # null = pending, true = accepted, false = rejected
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+
+    payment = relationship("MultiPartyPayment", back_populates="recipients")
+    recipient = relationship("Agent", foreign_keys=[recipient_id])
+
+    __table_args__ = (
+        UniqueConstraint("payment_id", "recipient_id", name="uq_multi_party_recipient"),
+    )

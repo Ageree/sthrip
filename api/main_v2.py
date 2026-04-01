@@ -38,7 +38,7 @@ from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 from api.middleware import configure_middleware
 from api.helpers import get_hub_mode, get_wallet_service, create_deposit_monitor
 from api.docs import setup_docs
-from api.routers import health, agents, payments, balance, webhooks, admin, wellknown, escrow, spending_policy, webhook_endpoints, messages, reputation, multisig_escrow, sla, reviews, matchmaking, subscriptions, channels, streams, conversion, swap
+from api.routers import health, agents, payments, balance, webhooks, admin, wellknown, escrow, spending_policy, webhook_endpoints, messages, reputation, multisig_escrow, sla, reviews, matchmaking, subscriptions, channels, streams, conversion, swap, lending, treasury, multi_party, conditional_payments, split_payments
 from api.admin_ui.views import setup_admin_ui
 from sthrip.config import get_settings
 
@@ -274,6 +274,25 @@ async def _recurring_payment_loop():
             logger.exception("Recurring payment loop error")
 
 
+async def _conditional_payment_loop():
+    """Evaluate conditional payment conditions every 30 seconds."""
+    from sthrip.services.conditional_payment_service import ConditionalPaymentService
+    while True:
+        try:
+            await asyncio.sleep(30)  # 30 seconds
+            with get_db() as db:
+                executed = ConditionalPaymentService.evaluate_conditions(db)
+                expired = ConditionalPaymentService.expire_stale(db)
+                if executed > 0:
+                    logger.info("Conditional payments: executed %d payments", executed)
+                if expired > 0:
+                    logger.info("Conditional payments: expired %d payments", expired)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Conditional payment loop error")
+
+
 def _startup_services(hub_mode):
     """Start health monitoring, webhook worker, and deposit monitor. Returns resources for shutdown."""
     monitor = setup_default_monitoring(include_wallet=(hub_mode == "onchain"))
@@ -311,6 +330,10 @@ def _startup_services(hub_mode):
     recurring_payment_task = asyncio.create_task(_recurring_payment_loop())
     logger.info("Recurring payment execution task started")
 
+    # Conditional payment evaluation background task (runs every 30 seconds)
+    conditional_payment_task = asyncio.create_task(_conditional_payment_loop())
+    logger.info("Conditional payment evaluation task started")
+
     return {
         "monitor": monitor,
         "webhook_service": webhook_service,
@@ -321,6 +344,7 @@ def _startup_services(hub_mode):
         "escrow_resolution_task": escrow_resolution_task,
         "sla_enforcement_task": sla_enforcement_task,
         "recurring_payment_task": recurring_payment_task,
+        "conditional_payment_task": conditional_payment_task,
     }
 
 
@@ -392,6 +416,14 @@ async def _shutdown_services(services):
         recurring_task.cancel()
         try:
             await recurring_task
+        except asyncio.CancelledError:
+            pass
+
+    conditional_task = services.get("conditional_payment_task")
+    if conditional_task is not None:
+        conditional_task.cancel()
+        try:
+            await conditional_task
         except asyncio.CancelledError:
             pass
 
@@ -488,6 +520,9 @@ def create_app() -> FastAPI:
     application.include_router(health.router)
     application.include_router(wellknown.router)
     application.include_router(agents.router)
+    application.include_router(multi_party.router)
+    application.include_router(conditional_payments.router)
+    application.include_router(split_payments.router)
     application.include_router(payments.router)
     application.include_router(escrow.router)
     application.include_router(balance.router)
@@ -506,6 +541,8 @@ def create_app() -> FastAPI:
     application.include_router(streams.router)
     application.include_router(conversion.router)
     application.include_router(swap.router)
+    application.include_router(lending.router)
+    application.include_router(treasury.router)
     setup_admin_ui(application)
 
     # Custom branded docs — available in all environments

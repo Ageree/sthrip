@@ -1350,3 +1350,373 @@ class Sthrip(object):
             amount strings.
         """
         return self._raw_get("/v2/balance/all")
+
+    # -- Treasury API -------------------------------------------------------
+
+    def set_treasury(self, allocation, rebalance_threshold_pct=5, cooldown_minutes=60, emergency_reserve_pct=10):
+        # type: (dict, int, int, int) -> dict
+        """Create or replace the treasury allocation policy.
+
+        Parameters
+        ----------
+        allocation : dict
+            Mapping of bucket names to percentage integers,
+            e.g. ``{"operations": 40, "reserves": 30, "growth": 30}``.
+        rebalance_threshold_pct : int
+            Drift percentage that triggers automatic rebalancing.  Defaults to 5.
+        cooldown_minutes : int
+            Minimum minutes between automatic rebalances.  Defaults to 60.
+        emergency_reserve_pct : int
+            Percentage held in an untouchable emergency reserve.  Defaults to 10.
+
+        Returns
+        -------
+        dict
+            Server response with the saved policy.
+        """
+        payload = {
+            "allocation": allocation,
+            "rebalance_threshold_pct": rebalance_threshold_pct,
+            "cooldown_minutes": cooldown_minutes,
+            "emergency_reserve_pct": emergency_reserve_pct,
+        }
+        return self._raw_put("/v2/me/treasury/policy", json_body=payload)
+
+    def treasury_policy(self):
+        # type: () -> dict
+        """Retrieve the current treasury allocation policy.
+
+        Returns
+        -------
+        dict
+            Policy fields including ``allocation``, ``rebalance_threshold_pct``,
+            ``cooldown_minutes``, ``emergency_reserve_pct``.
+        """
+        return self._raw_get("/v2/me/treasury/policy")
+
+    def delete_treasury(self):
+        # type: () -> dict
+        """Delete the treasury allocation policy.
+
+        Returns
+        -------
+        dict
+            Deletion confirmation.
+        """
+        return self._raw_request("DELETE", "/v2/me/treasury/policy")
+
+    def treasury_status(self):
+        # type: () -> dict
+        """Return the current treasury status including bucket balances.
+
+        Returns
+        -------
+        dict
+            Status including ``total``, ``buckets``, and drift information.
+        """
+        return self._raw_get("/v2/me/treasury/status")
+
+    def treasury_rebalance(self):
+        # type: () -> dict
+        """Trigger a manual treasury rebalance.
+
+        Returns
+        -------
+        dict
+            Rebalance result including ``rebalanced`` flag and ``moves`` list.
+        """
+        return self._raw_post("/v2/me/treasury/rebalance")
+
+    def treasury_history(self, limit=50):
+        # type: (int) -> dict
+        """Retrieve treasury operation history.
+
+        Parameters
+        ----------
+        limit : int
+            Maximum number of records (default 50).
+
+        Returns
+        -------
+        dict
+            History records for treasury operations.
+        """
+        return self._raw_get("/v2/me/treasury/history", params={"limit": limit})
+
+    # -- Credit / Lending API -----------------------------------------------
+
+    def credit_score(self):
+        # type: () -> dict
+        """Retrieve the credit score for the authenticated agent.
+
+        Returns
+        -------
+        dict
+            Credit score and contributing factors.
+        """
+        return self._raw_get("/v2/me/credit-score")
+
+    def lend_offer(self, max_amount, currency, interest_rate_bps, max_duration_secs, min_credit_score=0, require_collateral=False, collateral_ratio=150):
+        # type: (float, str, int, int, int, bool, int) -> dict
+        """Publish a lending offer.
+
+        Parameters
+        ----------
+        max_amount : float
+            Maximum lendable amount.  Converted to string for the API.
+        currency : str
+            Currency code, e.g. ``"XMR"``.
+        interest_rate_bps : int
+            Annual interest rate in basis points (100 bps = 1%).
+        max_duration_secs : int
+            Maximum loan duration in seconds.
+        min_credit_score : int
+            Minimum borrower credit score.  Defaults to 0.
+        require_collateral : bool
+            Whether collateral is required.  Defaults to ``False``.
+        collateral_ratio : int
+            Collateral-to-loan ratio percentage.  Defaults to 150.
+
+        Returns
+        -------
+        dict
+            Created lending offer record.
+        """
+        payload = {
+            "max_amount": str(max_amount),
+            "currency": currency,
+            "interest_rate_bps": interest_rate_bps,
+            "max_duration_secs": max_duration_secs,
+            "min_credit_score": min_credit_score,
+            "require_collateral": require_collateral,
+            "collateral_ratio": collateral_ratio,
+        }
+        return self._raw_post("/v2/lending/offers", json_body=payload)
+
+    def lending_offers(self, currency=None):
+        # type: (str) -> dict
+        """List available lending offers.
+
+        Parameters
+        ----------
+        currency : str, optional
+            Filter offers by currency.
+
+        Returns
+        -------
+        dict
+            Lending offers from the API.
+        """
+        params = {}
+        if currency is not None:
+            params["currency"] = currency
+        return self._raw_get("/v2/lending/offers", params=params)
+
+    def borrow(self, amount, currency, duration_secs, collateral_amount=0):
+        # type: (float, str, int, float) -> dict
+        """Request a loan from the lending pool.
+
+        Parameters
+        ----------
+        amount : float
+            Amount to borrow.  Converted to string for the API.
+        currency : str
+            Currency code, e.g. ``"XMR"``.
+        duration_secs : int
+            Desired loan duration in seconds.
+        collateral_amount : float
+            Amount of collateral to pledge.  Defaults to 0.
+
+        Returns
+        -------
+        dict
+            Loan request record including ``loan_id`` and ``status``.
+        """
+        payload = {
+            "amount": str(amount),
+            "currency": currency,
+            "duration_secs": duration_secs,
+            "collateral_amount": str(collateral_amount),
+        }
+        return self._raw_post("/v2/loans/request", json_body=payload)
+
+    def repay_loan(self, loan_id):
+        # type: (str) -> dict
+        """Repay a loan in full.
+
+        Parameters
+        ----------
+        loan_id : str
+            UUID of the loan to repay.
+
+        Returns
+        -------
+        dict
+            Repayment confirmation.
+        """
+        return self._raw_post("/v2/loans/{}/repay".format(loan_id))
+
+    def my_loans(self):
+        # type: () -> dict
+        """List all loans for the authenticated agent.
+
+        Returns
+        -------
+        dict
+            Loan records from the API.
+        """
+        return self._raw_get("/v2/loans")
+
+    # -- Conditional Payments API -------------------------------------------
+
+    def pay_when(self, to_agent, amount, condition_type, condition_config, currency="XMR", expires_hours=24):
+        # type: (str, float, str, dict, str, int) -> dict
+        """Create a conditional payment that triggers when a condition is met.
+
+        Parameters
+        ----------
+        to_agent : str
+            Recipient agent's registered name.
+        amount : float
+            Amount to pay.  Converted to string for the API.
+        condition_type : str
+            Type of condition, e.g. ``"on_completion"``, ``"threshold"``.
+        condition_config : dict
+            Configuration for the condition.
+        currency : str
+            Currency code.  Defaults to ``"XMR"``.
+        expires_hours : int
+            Hours until the conditional payment expires.  Defaults to 24.
+
+        Returns
+        -------
+        dict
+            Conditional payment record.
+        """
+        payload = {
+            "to_agent_name": to_agent,
+            "amount": str(amount),
+            "condition_type": condition_type,
+            "condition_config": condition_config,
+            "currency": currency,
+            "expires_hours": expires_hours,
+        }
+        return self._raw_post("/v2/payments/conditional", json_body=payload)
+
+    def conditional_payments(self):
+        # type: () -> dict
+        """List all conditional payments for the authenticated agent.
+
+        Returns
+        -------
+        dict
+            Conditional payment records.
+        """
+        return self._raw_get("/v2/payments/conditional")
+
+    def cancel_conditional(self, payment_id):
+        # type: (str) -> dict
+        """Cancel a pending conditional payment.
+
+        Parameters
+        ----------
+        payment_id : str
+            UUID of the conditional payment to cancel.
+
+        Returns
+        -------
+        dict
+            Cancellation confirmation.
+        """
+        return self._raw_request("DELETE", "/v2/payments/conditional/{}".format(payment_id))
+
+    # -- Split Payments API -------------------------------------------------
+
+    def pay_split(self, recipients, currency="XMR", memo=None):
+        # type: (list, str, str) -> dict
+        """Send a payment split among multiple recipients.
+
+        Parameters
+        ----------
+        recipients : list of dict
+            Each dict must contain ``agent_name`` (str) and ``amount`` (float).
+        currency : str
+            Currency code.  Defaults to ``"XMR"``.
+        memo : str, optional
+            Human-readable note attached to the split payment.
+
+        Returns
+        -------
+        dict
+            Split payment receipt.
+        """
+        payload = {
+            "recipients": recipients,
+            "currency": currency,
+        }
+        if memo is not None:
+            payload["memo"] = memo
+        return self._raw_post("/v2/payments/split", json_body=payload)
+
+    # -- Multi-Party Payments API -------------------------------------------
+
+    def pay_multi(self, recipients, currency="XMR", require_all_accept=True, accept_hours=2):
+        # type: (list, str, bool, int) -> dict
+        """Create a multi-party payment requiring recipient acceptance.
+
+        Parameters
+        ----------
+        recipients : list of dict
+            Each dict must contain ``agent_name`` (str) and ``amount`` (float).
+        currency : str
+            Currency code.  Defaults to ``"XMR"``.
+        require_all_accept : bool
+            When ``True``, all recipients must accept before funds release.
+            Defaults to ``True``.
+        accept_hours : int
+            Hours recipients have to accept.  Defaults to 2.
+
+        Returns
+        -------
+        dict
+            Multi-party payment record.
+        """
+        payload = {
+            "recipients": recipients,
+            "currency": currency,
+            "require_all_accept": require_all_accept,
+            "accept_hours": accept_hours,
+        }
+        return self._raw_post("/v2/payments/multi", json_body=payload)
+
+    def accept_multi(self, payment_id):
+        # type: (str) -> dict
+        """Accept a multi-party payment as a recipient.
+
+        Parameters
+        ----------
+        payment_id : str
+            UUID of the multi-party payment.
+
+        Returns
+        -------
+        dict
+            Acceptance confirmation.
+        """
+        return self._raw_post("/v2/payments/multi/{}/accept".format(payment_id))
+
+    def reject_multi(self, payment_id):
+        # type: (str) -> dict
+        """Reject a multi-party payment as a recipient.
+
+        Parameters
+        ----------
+        payment_id : str
+            UUID of the multi-party payment.
+
+        Returns
+        -------
+        dict
+            Rejection confirmation.
+        """
+        return self._raw_post("/v2/payments/multi/{}/reject".format(payment_id))

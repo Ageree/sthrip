@@ -29,6 +29,11 @@ from sthrip.db.models import (
     PaymentStream,
     CurrencyConversion,
     SwapOrder,
+    # Phase 4a
+    TreasuryPolicy, TreasuryForecast, TreasuryRebalanceLog,
+    AgentCreditScore, AgentLoan, LendingOffer,
+    ConditionalPayment,
+    MultiPartyPayment, MultiPartyRecipient,
 )
 
 # Stable Fernet key for tests (base64url-encoded 32-byte key).
@@ -61,6 +66,16 @@ _COMMON_TEST_TABLES = [
     PaymentStream.__table__,
     CurrencyConversion.__table__,
     SwapOrder.__table__,
+    # Phase 4a
+    TreasuryPolicy.__table__,
+    TreasuryForecast.__table__,
+    TreasuryRebalanceLog.__table__,
+    AgentCreditScore.__table__,
+    AgentLoan.__table__,
+    LendingOffer.__table__,
+    ConditionalPayment.__table__,
+    MultiPartyPayment.__table__,
+    MultiPartyRecipient.__table__,
 ]
 
 # Modules where get_db must be patched.
@@ -90,6 +105,11 @@ _GET_DB_MODULES = [
     "api.routers.streams",
     "api.routers.conversion",
     "api.routers.swap",
+    "api.routers.lending",
+    "api.routers.treasury",
+    "api.routers.multi_party",
+    "api.routers.conditional_payments",
+    "api.routers.split_payments",
 ]
 
 # Modules where get_rate_limiter must be patched.

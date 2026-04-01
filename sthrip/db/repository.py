@@ -45,6 +45,11 @@ from .recurring_repo import RecurringPaymentRepository
 from .stream_repo import PaymentStreamRepository
 from .conversion_repo import ConversionRepository as _ConversionRepository
 from .swap_repo import SwapRepository
+from .treasury_repo import TreasuryRepository
+from .credit_repo import CreditRepository
+from .loan_repo import LoanRepository
+from .conditional_payment_repo import ConditionalPaymentRepository
+from .multi_party_repo import MultiPartyRepository
 
 # Re-export under the canonical name
 ConversionRepository = _ConversionRepository
