@@ -75,8 +75,22 @@ class ChannelStatus(str, _PyEnum):
     PENDING = "pending"
     OPEN = "open"
     CLOSING = "closing"
+    SETTLED = "settled"
     CLOSED = "closed"
     DISPUTED = "disputed"
+
+
+class RecurringInterval(str, _PyEnum):
+    HOURLY = "hourly"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+
+
+class StreamStatus(str, _PyEnum):
+    ACTIVE = "active"
+    PAUSED = "paused"
+    STOPPED = "stopped"
 
 
 class WebhookStatus(str, _PyEnum):
@@ -118,6 +132,31 @@ class MultisigState(str, _PyEnum):
     DISPUTED = "disputed"
 
 
+class SLAStatus(str, _PyEnum):
+    PROPOSED = "proposed"
+    ACCEPTED = "accepted"
+    ACTIVE = "active"
+    DELIVERED = "delivered"
+    COMPLETED = "completed"
+    BREACHED = "breached"
+    DISPUTED = "disputed"
+
+
+class MatchRequestStatus(str, _PyEnum):
+    SEARCHING = "searching"
+    MATCHED = "matched"
+    ASSIGNED = "assigned"
+    EXPIRED = "expired"
+
+
+class SwapStatus(str, _PyEnum):
+    CREATED = "created"
+    LOCKED = "locked"
+    COMPLETED = "completed"
+    REFUNDED = "refunded"
+    EXPIRED = "expired"
+
+
 __all__ = [
     "PrivacyLevel",
     "AgentTier",
@@ -132,4 +171,9 @@ __all__ = [
     "WithdrawalStatus",
     "MilestoneStatus",
     "MultisigState",
+    "SLAStatus",
+    "MatchRequestStatus",
+    "RecurringInterval",
+    "StreamStatus",
+    "SwapStatus",
 ]

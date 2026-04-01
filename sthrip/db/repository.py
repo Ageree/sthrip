@@ -38,6 +38,16 @@ from .balance_repo import BalanceRepository
 from .pending_withdrawal_repo import PendingWithdrawalRepository
 from .system_state_repo import SystemStateRepository
 from .multisig_repo import MultisigEscrowRepository
+from .sla_repo import SLATemplateRepository, SLAContractRepository
+from .review_repo import ReviewRepository
+from .matchmaking_repo import MatchmakingRepository
+from .recurring_repo import RecurringPaymentRepository
+from .stream_repo import PaymentStreamRepository
+from .conversion_repo import ConversionRepository as _ConversionRepository
+from .swap_repo import SwapRepository
+
+# Re-export under the canonical name
+ConversionRepository = _ConversionRepository
 
 __all__ = [
     "_MAX_QUERY_LIMIT",
@@ -53,4 +63,12 @@ __all__ = [
     "PendingWithdrawalRepository",
     "SystemStateRepository",
     "MultisigEscrowRepository",
+    "SLATemplateRepository",
+    "SLAContractRepository",
+    "ReviewRepository",
+    "MatchmakingRepository",
+    "RecurringPaymentRepository",
+    "PaymentStreamRepository",
+    "ConversionRepository",
+    "SwapRepository",
 ]

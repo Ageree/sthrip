@@ -33,6 +33,11 @@ from sthrip.db.enums import (  # noqa: F401  (re-exported for backward compat)
     FeeCollectionStatus,
     WithdrawalStatus,
     MultisigState,
+    SLAStatus,
+    MatchRequestStatus,
+    RecurringInterval,
+    StreamStatus,
+    SwapStatus,
 )
 
 
@@ -306,7 +311,19 @@ class PaymentChannel(Base):
     funded_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
-    
+
+    # Phase 3b: off-chain channel fields
+    deposit_a = Column(Numeric(20, 8), default=Decimal('0'))
+    deposit_b = Column(Numeric(20, 8), default=Decimal('0'))
+    balance_a = Column(Numeric(20, 8), default=Decimal('0'))
+    balance_b = Column(Numeric(20, 8), default=Decimal('0'))
+    nonce = Column(Integer, default=0)
+    last_update_sig_a = Column(Text, nullable=True)
+    last_update_sig_b = Column(Text, nullable=True)
+    settlement_period = Column(Integer, default=3600)
+    settled_at = Column(DateTime(timezone=True), nullable=True)
+    closes_at = Column(DateTime(timezone=True), nullable=True)
+
     # Relationships
     agent_a = relationship("Agent", foreign_keys=[agent_a_id], back_populates="channels_as_a")
     agent_b = relationship("Agent", foreign_keys=[agent_b_id], back_populates="channels_as_b")
@@ -657,3 +674,245 @@ class MultisigRound(Base):
             name="uq_multisig_round_participant",
         ),
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MARKETPLACE V2 — SLA CONTRACTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SLATemplate(Base):
+    """Reusable service level agreement template published by a provider."""
+    __tablename__ = "sla_templates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    service_description = Column(Text, nullable=False)
+    deliverables = Column(JSON, default=list)
+    response_time_secs = Column(Integer, nullable=False)
+    delivery_time_secs = Column(Integer, nullable=False)
+    base_price = Column(Numeric(20, 8), nullable=False)
+    currency = Column(String(10), default="XMR")
+    penalty_percent = Column(Integer, default=10)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+    provider = relationship("Agent", backref="sla_templates")
+
+
+class SLAContract(Base):
+    """Concrete SLA contract between a consumer and provider."""
+    __tablename__ = "sla_contracts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    consumer_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    template_id = Column(UUID(as_uuid=True), ForeignKey("sla_templates.id"), nullable=True)
+    service_description = Column(Text, nullable=False)
+    deliverables = Column(JSON, default=list)
+    response_time_secs = Column(Integer, nullable=False)
+    delivery_time_secs = Column(Integer, nullable=False)
+    price = Column(Numeric(20, 8), nullable=False)
+    currency = Column(String(10), default="XMR")
+    penalty_percent = Column(Integer, default=10)
+    state = Column(SQLEnum(SLAStatus), default=SLAStatus.PROPOSED)
+    escrow_deal_id = Column(UUID(as_uuid=True), ForeignKey("escrow_deals.id"), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    response_time_actual = Column(Integer, nullable=True)
+    delivery_time_actual = Column(Integer, nullable=True)
+    sla_met = Column(Boolean, nullable=True)
+    result_hash = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+    provider = relationship("Agent", foreign_keys=[provider_id])
+    consumer = relationship("Agent", foreign_keys=[consumer_id])
+    template = relationship("SLATemplate")
+    escrow_deal = relationship("EscrowDeal")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MARKETPLACE V2 — REVIEWS & RATINGS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AgentReview(Base):
+    """Review tied to a completed transaction."""
+    __tablename__ = "agent_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    reviewer_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    reviewed_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    transaction_id = Column(UUID(as_uuid=True), nullable=False)
+    transaction_type = Column(String(20), nullable=False)  # "payment", "escrow", "sla"
+    overall_rating = Column(Integer, nullable=False)
+    speed_rating = Column(Integer, nullable=True)
+    quality_rating = Column(Integer, nullable=True)
+    reliability_rating = Column(Integer, nullable=True)
+    comment_encrypted = Column(Text, nullable=True)
+    is_verified = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    reviewer = relationship("Agent", foreign_keys=[reviewer_id])
+    reviewed = relationship("Agent", foreign_keys=[reviewed_id])
+    __table_args__ = (
+        UniqueConstraint("reviewer_id", "transaction_id", name="uq_review_per_transaction"),
+        CheckConstraint("overall_rating >= 1 AND overall_rating <= 5", name="ck_overall_rating_range"),
+    )
+
+
+class AgentRatingSummary(Base):
+    """Materialized rating summary for an agent."""
+    __tablename__ = "agent_rating_summary"
+
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True)
+    total_reviews = Column(Integer, default=0)
+    avg_overall = Column(Numeric(3, 2), default=Decimal('0'))
+    avg_speed = Column(Numeric(3, 2), default=Decimal('0'))
+    avg_quality = Column(Numeric(3, 2), default=Decimal('0'))
+    avg_reliability = Column(Numeric(3, 2), default=Decimal('0'))
+    five_star_count = Column(Integer, default=0)
+    one_star_count = Column(Integer, default=0)
+    last_review_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+    agent = relationship("Agent", backref="rating_summary", uselist=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MARKETPLACE V2 — MATCHMAKING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class MatchRequest(Base):
+    """Automatic agent matchmaking request."""
+    __tablename__ = "match_requests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    requester_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    task_description = Column(Text, nullable=False)
+    required_capabilities = Column(JSON, default=list)
+    budget = Column(Numeric(20, 8), nullable=False)
+    currency = Column(String(10), default="XMR")
+    deadline_secs = Column(Integer, nullable=False)
+    min_rating = Column(Numeric(3, 2), default=Decimal('0'))
+    auto_assign = Column(Boolean, default=False)
+    matched_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
+    sla_contract_id = Column(UUID(as_uuid=True), ForeignKey("sla_contracts.id"), nullable=True)
+    state = Column(SQLEnum(MatchRequestStatus), default=MatchRequestStatus.SEARCHING)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    requester = relationship("Agent", foreign_keys=[requester_id])
+    matched_agent = relationship("Agent", foreign_keys=[matched_agent_id])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAYMENT SCALING — CHANNELS, SUBSCRIPTIONS, STREAMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ChannelUpdate(Base):
+    """Off-chain state update record for payment channels."""
+    __tablename__ = "channel_updates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    channel_id = Column(UUID(as_uuid=True), ForeignKey("payment_channels.id", ondelete="CASCADE"), nullable=False, index=True)
+    nonce = Column(Integer, nullable=False)
+    balance_a = Column(Numeric(20, 8), nullable=False)
+    balance_b = Column(Numeric(20, 8), nullable=False)
+    signature_a = Column(Text, nullable=True)
+    signature_b = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+    channel = relationship("PaymentChannel")
+
+    __table_args__ = (
+        UniqueConstraint("channel_id", "nonce", name="uq_channel_update_nonce"),
+    )
+
+
+class RecurringPayment(Base):
+    """Server-side recurring payment schedule."""
+    __tablename__ = "recurring_payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    from_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    to_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    amount = Column(Numeric(20, 8), nullable=False)
+    interval = Column(SQLEnum(RecurringInterval), nullable=False)
+    next_payment_at = Column(DateTime(timezone=True), nullable=False)
+    last_payment_at = Column(DateTime(timezone=True), nullable=True)
+    total_paid = Column(Numeric(20, 8), default=Decimal('0'))
+    max_payments = Column(Integer, nullable=True)
+    payments_made = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+
+    from_agent = relationship("Agent", foreign_keys=[from_agent_id])
+    to_agent = relationship("Agent", foreign_keys=[to_agent_id])
+
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_recurring_amount_positive"),
+    )
+
+
+class PaymentStream(Base):
+    """Real-time payment stream built on top of a payment channel."""
+    __tablename__ = "payment_streams"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    channel_id = Column(UUID(as_uuid=True), ForeignKey("payment_channels.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    to_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    rate_per_second = Column(Numeric(20, 12), nullable=False)
+    started_at = Column(DateTime(timezone=True), default=func.now())
+    paused_at = Column(DateTime(timezone=True), nullable=True)
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    total_streamed = Column(Numeric(20, 8), default=Decimal('0'))
+    state = Column(SQLEnum(StreamStatus), default=StreamStatus.ACTIVE)
+
+    channel = relationship("PaymentChannel")
+
+    __table_args__ = (
+        CheckConstraint("rate_per_second > 0", name="ck_stream_rate_positive"),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MULTI-CURRENCY — SWAPS & CONVERSIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SwapOrder(Base):
+    """Cross-chain swap order with HTLC."""
+    __tablename__ = "swap_orders"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    from_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    from_currency = Column(String(10), nullable=False)
+    from_amount = Column(Numeric(20, 8), nullable=False)
+    to_currency = Column(String(10), nullable=False, default="XMR")
+    to_amount = Column(Numeric(20, 8), nullable=False)
+    exchange_rate = Column(Numeric(20, 8), nullable=False)
+    fee_amount = Column(Numeric(20, 8), nullable=False)
+    state = Column(SQLEnum(SwapStatus), default=SwapStatus.CREATED)
+    htlc_hash = Column(String(64), nullable=False)
+    htlc_secret = Column(String(64), nullable=True)
+    btc_tx_hash = Column(String(64), nullable=True)
+    xmr_tx_hash = Column(String(64), nullable=True)
+    lock_expiry = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+    from_agent = relationship("Agent", foreign_keys=[from_agent_id])
+
+
+class CurrencyConversion(Base):
+    """Record of currency conversion between agent balances."""
+    __tablename__ = "currency_conversions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    from_currency = Column(String(10), nullable=False)
+    from_amount = Column(Numeric(20, 8), nullable=False)
+    to_currency = Column(String(10), nullable=False)
+    to_amount = Column(Numeric(20, 8), nullable=False)
+    rate = Column(Numeric(20, 8), nullable=False)
+    fee_amount = Column(Numeric(20, 8), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+    agent = relationship("Agent", foreign_keys=[agent_id])

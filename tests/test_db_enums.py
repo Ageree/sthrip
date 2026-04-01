@@ -226,7 +226,8 @@ class TestChannelStatus:
 
     def test_member_count(self):
         from sthrip.db.enums import ChannelStatus
-        assert len(ChannelStatus) == 5
+        # PENDING, OPEN, CLOSING, SETTLED, CLOSED, DISPUTED
+        assert len(ChannelStatus) == 6
 
 
 # ---------------------------------------------------------------------------

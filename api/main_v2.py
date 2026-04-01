@@ -38,7 +38,7 @@ from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 from api.middleware import configure_middleware
 from api.helpers import get_hub_mode, get_wallet_service, create_deposit_monitor
 from api.docs import setup_docs
-from api.routers import health, agents, payments, balance, webhooks, admin, wellknown, escrow, spending_policy, webhook_endpoints, messages, reputation, multisig_escrow
+from api.routers import health, agents, payments, balance, webhooks, admin, wellknown, escrow, spending_policy, webhook_endpoints, messages, reputation, multisig_escrow, sla, reviews, matchmaking, subscriptions, channels, streams, conversion, swap
 from api.admin_ui.views import setup_admin_ui
 from sthrip.config import get_settings
 
@@ -241,6 +241,39 @@ async def _escrow_resolution_loop():
             logger.exception("Escrow auto-resolution error")
 
 
+async def _sla_enforcement_loop():
+    from sthrip.services.sla_service import SLAService
+    svc = SLAService()
+    while True:
+        try:
+            await asyncio.sleep(30)  # 30 seconds per spec
+            with get_db() as db:
+                resolved = svc.enforce_sla(db)
+                if resolved > 0:
+                    logger.info("SLA auto-enforcement: resolved %d contracts", resolved)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("SLA auto-enforcement error")
+
+
+async def _recurring_payment_loop():
+    """Execute due recurring payments every 5 minutes."""
+    from sthrip.services.recurring_service import RecurringService
+    svc = RecurringService()
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+            with get_db() as db:
+                executed = svc.execute_due_payments(db)
+                if executed > 0:
+                    logger.info("Recurring payments: executed %d payments", executed)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Recurring payment loop error")
+
+
 def _startup_services(hub_mode):
     """Start health monitoring, webhook worker, and deposit monitor. Returns resources for shutdown."""
     monitor = setup_default_monitoring(include_wallet=(hub_mode == "onchain"))
@@ -270,6 +303,14 @@ def _startup_services(hub_mode):
     escrow_resolution_task = asyncio.create_task(_escrow_resolution_loop())
     logger.info("Escrow auto-resolution task started")
 
+    # SLA auto-enforcement background task (runs every 30 seconds)
+    sla_enforcement_task = asyncio.create_task(_sla_enforcement_loop())
+    logger.info("SLA auto-enforcement task started")
+
+    # Recurring payment execution background task (runs every 5 minutes)
+    recurring_payment_task = asyncio.create_task(_recurring_payment_loop())
+    logger.info("Recurring payment execution task started")
+
     return {
         "monitor": monitor,
         "webhook_service": webhook_service,
@@ -278,6 +319,8 @@ def _startup_services(hub_mode):
         "deposit_task": deposit_task,
         "reconciliation_task": reconciliation_task,
         "escrow_resolution_task": escrow_resolution_task,
+        "sla_enforcement_task": sla_enforcement_task,
+        "recurring_payment_task": recurring_payment_task,
     }
 
 
@@ -333,6 +376,22 @@ async def _shutdown_services(services):
         escrow_task.cancel()
         try:
             await escrow_task
+        except asyncio.CancelledError:
+            pass
+
+    sla_task = services.get("sla_enforcement_task")
+    if sla_task is not None:
+        sla_task.cancel()
+        try:
+            await sla_task
+        except asyncio.CancelledError:
+            pass
+
+    recurring_task = services.get("recurring_payment_task")
+    if recurring_task is not None:
+        recurring_task.cancel()
+        try:
+            await recurring_task
         except asyncio.CancelledError:
             pass
 
@@ -439,6 +498,14 @@ def create_app() -> FastAPI:
     application.include_router(messages.router)
     application.include_router(reputation.router)
     application.include_router(multisig_escrow.router)
+    application.include_router(sla.router)
+    application.include_router(reviews.router)
+    application.include_router(matchmaking.router)
+    application.include_router(subscriptions.router)
+    application.include_router(channels.router)
+    application.include_router(streams.router)
+    application.include_router(conversion.router)
+    application.include_router(swap.router)
     setup_admin_ui(application)
 
     # Custom branded docs — available in all environments

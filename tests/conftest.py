@@ -20,6 +20,15 @@ from sthrip.db.models import (
     HubRoute, FeeCollection, PendingWithdrawal, Transaction,
     SpendingPolicy, WebhookEndpoint, MessageRelay,
     EscrowDeal, EscrowMilestone, MultisigEscrow, MultisigRound,
+    SLATemplate, SLAContract,
+    AgentReview, AgentRatingSummary,
+    MatchRequest,
+    RecurringPayment,
+    PaymentChannel,
+    ChannelUpdate,
+    PaymentStream,
+    CurrencyConversion,
+    SwapOrder,
 )
 
 # Stable Fernet key for tests (base64url-encoded 32-byte key).
@@ -41,6 +50,17 @@ _COMMON_TEST_TABLES = [
     EscrowMilestone.__table__,
     MultisigEscrow.__table__,
     MultisigRound.__table__,
+    SLATemplate.__table__,
+    SLAContract.__table__,
+    AgentReview.__table__,
+    AgentRatingSummary.__table__,
+    MatchRequest.__table__,
+    RecurringPayment.__table__,
+    PaymentChannel.__table__,
+    ChannelUpdate.__table__,
+    PaymentStream.__table__,
+    CurrencyConversion.__table__,
+    SwapOrder.__table__,
 ]
 
 # Modules where get_db must be patched.
@@ -62,6 +82,14 @@ _GET_DB_MODULES = [
     "api.routers.messages",
     "api.routers.multisig_escrow",
     "api.routers.escrow",
+    "api.routers.sla",
+    "api.routers.reviews",
+    "api.routers.matchmaking",
+    "api.routers.channels",
+    "api.routers.subscriptions",
+    "api.routers.streams",
+    "api.routers.conversion",
+    "api.routers.swap",
 ]
 
 # Modules where get_rate_limiter must be patched.
