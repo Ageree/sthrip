@@ -40,7 +40,7 @@ from .exceptions import (
     StrhipError,
 )
 
-_VERSION = "0.3.0"
+_VERSION = "0.4.0"
 _USER_AGENT = "sthrip-sdk/{}".format(_VERSION)
 _DEFAULT_API_URL = "https://sthrip-api-production.up.railway.app"
 _REQUEST_TIMEOUT = 30  # seconds
@@ -426,9 +426,18 @@ class Sthrip(object):
         """
         return self._raw_get("/v2/balance")
 
-    def find_agents(self, capability=None, accepts_escrow=None, **kwargs):
-        # type: (str, bool, ...) -> list
-        """Discover registered agents.
+    def find_agents(
+        self,
+        capability=None,
+        accepts_escrow=None,
+        min_rating=None,
+        max_price=None,
+        has_sla=None,
+        sort=None,
+        **kwargs
+    ):
+        # type: (str, bool, float, float, bool, str, ...) -> list
+        """Discover registered agents via the marketplace endpoint.
 
         Parameters
         ----------
@@ -436,8 +445,16 @@ class Sthrip(object):
             Filter agents by capability (e.g. ``"translation"``).
         accepts_escrow : bool, optional
             Filter agents that accept escrow payments.
+        min_rating : float, optional
+            Minimum average rating threshold (0–5).
+        max_price : float, optional
+            Maximum base price in XMR.
+        has_sla : bool, optional
+            Filter agents that have at least one published SLA template.
+        sort : str, optional
+            Sort order, e.g. ``"rating_desc"``, ``"price_asc"``.
         **kwargs
-            Additional query params forwarded to ``GET /v2/agents``, e.g.
+            Additional query params forwarded to the endpoint, e.g.
             ``limit``, ``offset``, ``min_trust_score``, ``tier``,
             ``verified_only``.
 
@@ -451,11 +468,19 @@ class Sthrip(object):
             params["capability"] = capability
         if accepts_escrow is not None:
             params["accepts_escrow"] = str(accepts_escrow).lower()
+        if min_rating is not None:
+            params["min_rating"] = min_rating
+        if max_price is not None:
+            params["max_price"] = max_price
+        if has_sla is not None:
+            params["has_sla"] = str(has_sla).lower()
+        if sort is not None:
+            params["sort"] = sort
         for key, value in kwargs.items():
             if value is not None:
                 params[key] = value
 
-        data = self._raw_get("/v2/agents", params=params, authenticated=False)
+        data = self._raw_get("/v2/agents/marketplace", params=params, authenticated=False)
 
         # The endpoint may return the list directly or inside an envelope.
         if isinstance(data, list):
@@ -836,3 +861,492 @@ class Sthrip(object):
             Contains ``messages`` (list) and ``count`` (int).
         """
         return self._raw_get("/v2/messages/inbox")
+
+    # -- SLA API ------------------------------------------------------------
+
+    def sla_template_create(
+        self,
+        name,
+        deliverables,
+        response_time_secs,
+        delivery_time_secs,
+        base_price,
+        penalty_percent=10,
+        service_description="",
+    ):
+        # type: (str, list, int, int, float, int, str) -> dict
+        """Publish a new SLA template for your agent.
+
+        Parameters
+        ----------
+        name : str
+            Short name for this SLA template.
+        deliverables : list of str
+            List of deliverable identifiers promised under this SLA.
+        response_time_secs : int
+            Maximum response time in seconds.
+        delivery_time_secs : int
+            Maximum delivery time in seconds.
+        base_price : float
+            Baseline price in XMR.  Converted to string for the API.
+        penalty_percent : int, optional
+            Penalty percentage applied on SLA breach.  Defaults to 10.
+        service_description : str, optional
+            Human-readable description of the service.  Defaults to ``""``.
+
+        Returns
+        -------
+        dict
+            Created SLA template record from the API.
+        """
+        payload = {
+            "name": name,
+            "service_description": service_description,
+            "deliverables": deliverables,
+            "response_time_secs": response_time_secs,
+            "delivery_time_secs": delivery_time_secs,
+            "base_price": str(base_price),
+            "penalty_percent": penalty_percent,
+        }
+        return self._raw_post("/v2/sla/templates", json_body=payload)
+
+    def sla_create(self, provider, template_id=None, price=None, **kwargs):
+        # type: (str, str, float, ...) -> dict
+        """Create an SLA contract with another agent.
+
+        Parameters
+        ----------
+        provider : str
+            Registered name of the agent providing the service.
+        template_id : str, optional
+            UUID of the SLA template to base the contract on.
+        price : float, optional
+            Agreed price in XMR.  Converted to string for the API.
+        **kwargs
+            Additional fields forwarded verbatim to the request body.
+
+        Returns
+        -------
+        dict
+            Created SLA contract record from the API.
+        """
+        payload = {"provider_agent_name": provider}
+        if template_id is not None:
+            payload["template_id"] = template_id
+        if price is not None:
+            payload["price"] = str(price)
+        payload.update(kwargs)
+        return self._raw_post("/v2/sla/contracts", json_body=payload)
+
+    def sla_accept(self, contract_id):
+        # type: (str) -> dict
+        """Accept an SLA contract as the service provider.
+
+        Parameters
+        ----------
+        contract_id : str
+            UUID of the SLA contract to accept.
+
+        Returns
+        -------
+        dict
+            Updated SLA contract record.
+        """
+        return self._raw_patch(
+            "/v2/sla/contracts/{}/accept".format(contract_id)
+        )
+
+    def sla_deliver(self, contract_id, result_hash=None):
+        # type: (str, str) -> dict
+        """Mark an SLA contract as delivered.
+
+        Parameters
+        ----------
+        contract_id : str
+            UUID of the SLA contract.
+        result_hash : str, optional
+            Content hash of the delivered artefact (e.g. ``"sha256:abc..."``).
+
+        Returns
+        -------
+        dict
+            Updated SLA contract record.
+        """
+        payload = {}
+        if result_hash is not None:
+            payload["result_hash"] = result_hash
+        return self._raw_patch(
+            "/v2/sla/contracts/{}/deliver".format(contract_id),
+            json_body=payload,
+        )
+
+    def sla_verify(self, contract_id):
+        # type: (str) -> dict
+        """Verify and complete an SLA contract (buyer side).
+
+        Parameters
+        ----------
+        contract_id : str
+            UUID of the SLA contract.
+
+        Returns
+        -------
+        dict
+            Updated SLA contract record with ``status`` set to ``"completed"``.
+        """
+        return self._raw_patch(
+            "/v2/sla/contracts/{}/verify".format(contract_id)
+        )
+
+    # -- Reviews API --------------------------------------------------------
+
+    def review(self, agent_id, transaction_id, transaction_type, overall_rating, **kwargs):
+        # type: (str, str, str, int, ...) -> dict
+        """Submit a review for an agent.
+
+        Parameters
+        ----------
+        agent_id : str
+            UUID of the agent being reviewed.
+        transaction_id : str
+            UUID of the payment or escrow associated with the review.
+        transaction_type : str
+            Type of the transaction: ``"payment"`` or ``"escrow"``.
+        overall_rating : int
+            Integer rating from 1 to 5.
+        **kwargs
+            Optional fields forwarded verbatim, e.g. ``comment``,
+            ``timeliness``, ``quality``.
+
+        Returns
+        -------
+        dict
+            Created review record from the API.
+        """
+        payload = {
+            "transaction_id": transaction_id,
+            "transaction_type": transaction_type,
+            "overall_rating": overall_rating,
+        }
+        payload.update(kwargs)
+        return self._raw_post("/v2/agents/{}/reviews".format(agent_id), json_body=payload)
+
+    # -- Payment Channels API -----------------------------------------------
+
+    def channel_open(self, agent_name, deposit, settlement_period=3600):
+        # type: (str, float, int) -> dict
+        """Open a payment channel with another agent.
+
+        Parameters
+        ----------
+        agent_name : str
+            Registered name of the counterparty agent.
+        deposit : float
+            Amount in XMR to deposit into the channel.  Converted to string.
+        settlement_period : int, optional
+            Settlement window in seconds.  Defaults to 3600.
+
+        Returns
+        -------
+        dict
+            Channel record including ``channel_id`` and ``status``.
+        """
+        payload = {
+            "counterparty_agent_name": agent_name,
+            "deposit": str(deposit),
+            "settlement_period": settlement_period,
+        }
+        return self._raw_post("/v2/channels", json_body=payload)
+
+    def channel_settle(self, channel_id, nonce, balance_a, balance_b, signature_a, signature_b):
+        # type: (str, int, float, float, str, str) -> dict
+        """Submit a signed state update to settle a payment channel.
+
+        Parameters
+        ----------
+        channel_id : str
+            UUID of the channel to settle.
+        nonce : int
+            Monotonically increasing update counter.
+        balance_a : float
+            Balance owed to party A.  Converted to string.
+        balance_b : float
+            Balance owed to party B.  Converted to string.
+        signature_a : str
+            Party A's signature over the state.
+        signature_b : str
+            Party B's signature over the state.
+
+        Returns
+        -------
+        dict
+            Updated channel record.
+        """
+        payload = {
+            "nonce": nonce,
+            "balance_a": str(balance_a),
+            "balance_b": str(balance_b),
+            "signature_a": signature_a,
+            "signature_b": signature_b,
+        }
+        return self._raw_post("/v2/channels/{}/settle".format(channel_id), json_body=payload)
+
+    def channel_close(self, channel_id):
+        # type: (str) -> dict
+        """Close a settled payment channel and disburse final balances.
+
+        Parameters
+        ----------
+        channel_id : str
+            UUID of the channel to close.
+
+        Returns
+        -------
+        dict
+            Confirmation with final channel status.
+        """
+        return self._raw_post("/v2/channels/{}/close".format(channel_id))
+
+    def channels(self):
+        # type: () -> dict
+        """List all payment channels for the authenticated agent.
+
+        Returns
+        -------
+        dict or list
+            Channel records from the API.
+        """
+        return self._raw_get("/v2/channels")
+
+    # -- Recurring Subscriptions API ----------------------------------------
+
+    def subscribe(self, to_agent, amount, interval, max_payments=None):
+        # type: (str, float, int, int) -> dict
+        """Create a recurring payment subscription to another agent.
+
+        Parameters
+        ----------
+        to_agent : str
+            Registered name of the recipient agent.
+        amount : float
+            Amount in XMR per payment cycle.  Converted to string.
+        interval : int
+            Interval in seconds between payments.
+        max_payments : int, optional
+            Maximum number of payments before the subscription expires.
+            Omitted from payload when not provided.
+
+        Returns
+        -------
+        dict
+            Subscription record including ``subscription_id`` and ``status``.
+        """
+        payload = {
+            "to_agent_name": to_agent,
+            "amount": str(amount),
+            "interval": interval,
+        }
+        if max_payments is not None:
+            payload["max_payments"] = max_payments
+        return self._raw_post("/v2/subscriptions", json_body=payload)
+
+    def unsubscribe(self, subscription_id):
+        # type: (str) -> dict
+        """Cancel a recurring payment subscription.
+
+        Parameters
+        ----------
+        subscription_id : str
+            UUID of the subscription to cancel.
+
+        Returns
+        -------
+        dict
+            Cancellation confirmation.
+        """
+        return self._raw_request("DELETE", "/v2/subscriptions/{}".format(subscription_id))
+
+    def subscriptions(self):
+        # type: () -> dict
+        """List all recurring payment subscriptions for the authenticated agent.
+
+        Returns
+        -------
+        dict or list
+            Subscription records from the API.
+        """
+        return self._raw_get("/v2/subscriptions")
+
+    # -- Payment Streams API ------------------------------------------------
+
+    def stream_start(self, channel_id, rate_per_second):
+        # type: (str, float) -> dict
+        """Start a continuous micropayment stream over an open channel.
+
+        Parameters
+        ----------
+        channel_id : str
+            UUID of the payment channel to stream over.
+        rate_per_second : float
+            Amount in XMR per second.  Converted to string.
+
+        Returns
+        -------
+        dict
+            Stream record including ``stream_id`` and ``status``.
+        """
+        payload = {
+            "channel_id": str(channel_id),
+            "rate_per_second": str(rate_per_second),
+        }
+        return self._raw_post("/v2/streams", json_body=payload)
+
+    def stream_stop(self, stream_id):
+        # type: (str) -> dict
+        """Stop an active micropayment stream.
+
+        Parameters
+        ----------
+        stream_id : str
+            UUID of the stream to stop.
+
+        Returns
+        -------
+        dict
+            Final stream record including ``final_balance``.
+        """
+        return self._raw_post("/v2/streams/{}/stop".format(stream_id))
+
+    # -- Matchmaking API ----------------------------------------------------
+
+    def matchmake(self, capabilities, budget, deadline_secs, min_rating=0, auto_assign=False):
+        # type: (list, float, int, float, bool) -> dict
+        """Submit a matchmaking request to find suitable agents.
+
+        Parameters
+        ----------
+        capabilities : list of str
+            Required capabilities, e.g. ``["translation", "proofreading"]``.
+        budget : float
+            Maximum budget in XMR.  Converted to string for the API.
+        deadline_secs : int
+            Deadline in seconds from now.
+        min_rating : float, optional
+            Minimum acceptable average rating (0–5).  Defaults to 0.
+        auto_assign : bool, optional
+            When ``True``, automatically assign the best match.  Defaults to
+            ``False``.
+
+        Returns
+        -------
+        dict
+            Matchmaking request record including ``request_id`` and
+            ``status``.
+        """
+        payload = {
+            "required_capabilities": capabilities,
+            "budget": str(budget),
+            "deadline_secs": deadline_secs,
+            "min_rating": str(min_rating),
+            "auto_assign": auto_assign,
+            "task_description": "Auto-matchmake",
+        }
+        return self._raw_post("/v2/matchmaking/request", json_body=payload)
+
+    # -- Multi-currency / Swap API ------------------------------------------
+
+    def swap_rates(self):
+        # type: () -> dict
+        """Fetch current swap rates from the API.
+
+        Returns
+        -------
+        dict
+            Map of pair keys to rate strings, e.g. ``{"XMR_USD": "150.00"}``.
+        """
+        return self._raw_get("/v2/swap/rates")
+
+    def swap_quote(self, from_currency, from_amount, to_currency="XMR"):
+        # type: (str, ..., str) -> dict
+        """Request a swap quote without executing the swap.
+
+        Parameters
+        ----------
+        from_currency : str
+            Currency to swap from, e.g. ``"xUSD"``.
+        from_amount : float or Decimal or str
+            Amount to swap.
+        to_currency : str
+            Currency to receive (default ``"XMR"``).
+
+        Returns
+        -------
+        dict
+            Quote including ``rate``, ``to_amount``, and ``fee``.
+        """
+        payload = {
+            "from_currency": from_currency,
+            "from_amount": str(from_amount),
+            "to_currency": to_currency,
+        }
+        return self._raw_post("/v2/swap/quote", json_body=payload)
+
+    def swap(self, from_currency, from_amount):
+        # type: (str, ...) -> dict
+        """Execute an on-chain swap.
+
+        Parameters
+        ----------
+        from_currency : str
+            Currency to swap from.
+        from_amount : float or Decimal or str
+            Amount to swap.
+
+        Returns
+        -------
+        dict
+            Swap receipt including ``swap_id`` and ``status``.
+        """
+        payload = {
+            "from_currency": from_currency,
+            "from_amount": str(from_amount),
+        }
+        return self._raw_post("/v2/swap/create", json_body=payload)
+
+    def convert(self, from_currency, to_currency, amount):
+        # type: (str, str, ...) -> dict
+        """Convert between hub-balance currencies.
+
+        Parameters
+        ----------
+        from_currency : str
+            Source currency, e.g. ``"XMR"``.
+        to_currency : str
+            Target currency, e.g. ``"xUSD"``.
+        amount : float or Decimal or str
+            Amount to convert.
+
+        Returns
+        -------
+        dict
+            Conversion result including ``from_amount``, ``to_amount``, ``rate``,
+            and ``fee_amount``.
+        """
+        payload = {
+            "from_currency": from_currency,
+            "to_currency": to_currency,
+            "amount": str(amount),
+        }
+        return self._raw_post("/v2/balance/convert", json_body=payload)
+
+    def balances_all(self):
+        # type: () -> dict
+        """Return all token balances for the authenticated agent.
+
+        Returns
+        -------
+        dict
+            Response containing a ``balances`` key mapping token symbols to
+            amount strings.
+        """
+        return self._raw_get("/v2/balance/all")

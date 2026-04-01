@@ -889,7 +889,7 @@ class TestFindAgents:
         client.find_agents()
         args = mock_session.request.call_args
         assert args[0][0] == "GET"
-        assert args[0][1].endswith("/v2/agents")
+        assert args[0][1].endswith("/v2/agents/marketplace")
 
 
 # ===========================================================================
@@ -1581,13 +1581,13 @@ class TestPowIntegration:
 
 class TestVersion:
 
-    def test_version_is_0_3_0(self):
+    def test_version_is_0_4_0(self):
         from sthrip_sdk.client import _VERSION
-        assert _VERSION == "0.3.0"
+        assert _VERSION == "0.4.0"
 
     def test_user_agent_contains_version(self):
         from sthrip_sdk.client import _USER_AGENT
-        assert "0.3.0" in _USER_AGENT
+        assert "0.4.0" in _USER_AGENT
 
 
 # ===========================================================================
