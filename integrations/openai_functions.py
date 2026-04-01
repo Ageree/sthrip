@@ -257,6 +257,328 @@ STHRIP_FUNCTIONS: list[dict[str, Any]] = [
             },
         },
     },
+    # -- Phase 3a: SLA, Reviews, Matchmaking --
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_sla_template_create",
+            "description": (
+                "Create an SLA service template defining deliverables, response times, "
+                "delivery times, base price, and penalty terms."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Short name for this SLA template.",
+                    },
+                    "deliverables": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of deliverable identifiers promised under this SLA.",
+                    },
+                    "response_time_secs": {
+                        "type": "integer",
+                        "description": "Maximum response time in seconds.",
+                    },
+                    "delivery_time_secs": {
+                        "type": "integer",
+                        "description": "Maximum delivery time in seconds.",
+                    },
+                    "base_price": {
+                        "type": "number",
+                        "description": "Baseline price in XMR.",
+                    },
+                    "penalty_percent": {
+                        "type": "integer",
+                        "description": "Penalty percentage on SLA breach.",
+                        "default": 10,
+                    },
+                    "service_description": {
+                        "type": "string",
+                        "description": "Human-readable description of the service.",
+                    },
+                },
+                "required": [
+                    "name",
+                    "deliverables",
+                    "response_time_secs",
+                    "delivery_time_secs",
+                    "base_price",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_sla_create",
+            "description": (
+                "Create an SLA contract with a provider agent, optionally referencing "
+                "an existing SLA template and agreed price."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Registered name of the provider agent.",
+                    },
+                    "template_id": {
+                        "type": "string",
+                        "description": "UUID of the SLA template to base the contract on.",
+                    },
+                    "price": {
+                        "type": "number",
+                        "description": "Agreed price in XMR.",
+                    },
+                },
+                "required": ["provider"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_review_agent",
+            "description": (
+                "Submit a review for an agent based on a completed payment or escrow. "
+                "Rating is 1-5."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "UUID of the agent being reviewed.",
+                    },
+                    "transaction_id": {
+                        "type": "string",
+                        "description": "UUID of the payment or escrow associated with the review.",
+                    },
+                    "transaction_type": {
+                        "type": "string",
+                        "enum": ["payment", "escrow"],
+                        "description": "Type of transaction: 'payment' or 'escrow'.",
+                    },
+                    "overall_rating": {
+                        "type": "integer",
+                        "description": "Integer rating from 1 to 5.",
+                        "minimum": 1,
+                        "maximum": 5,
+                    },
+                    "comment": {
+                        "type": "string",
+                        "description": "Optional text comment.",
+                    },
+                },
+                "required": [
+                    "agent_id",
+                    "transaction_id",
+                    "transaction_type",
+                    "overall_rating",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_matchmake",
+            "description": (
+                "Submit a matchmaking request to automatically find the best agent "
+                "for a task given required capabilities, budget, and deadline."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "capabilities": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Required capabilities, e.g. ['translation', 'proofreading'].",
+                    },
+                    "budget": {
+                        "type": "number",
+                        "description": "Maximum budget in XMR.",
+                    },
+                    "deadline_secs": {
+                        "type": "integer",
+                        "description": "Deadline in seconds from now.",
+                    },
+                    "min_rating": {
+                        "type": "number",
+                        "description": "Minimum acceptable average rating (0-5).",
+                        "default": 0,
+                    },
+                    "auto_assign": {
+                        "type": "boolean",
+                        "description": "Automatically assign best match when true.",
+                        "default": False,
+                    },
+                },
+                "required": ["capabilities", "budget", "deadline_secs"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    # -- Phase 3b: Channels, Subscriptions, Streams --
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_channel_open",
+            "description": (
+                "Open a bidirectional payment channel with another agent by depositing XMR. "
+                "Enables high-frequency micropayments without on-chain fees."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Registered name of the counterparty agent.",
+                    },
+                    "deposit": {
+                        "type": "number",
+                        "description": "Amount in XMR to deposit into the channel.",
+                    },
+                    "settlement_period": {
+                        "type": "integer",
+                        "description": "Settlement window in seconds.",
+                        "default": 3600,
+                    },
+                },
+                "required": ["agent_name", "deposit"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_subscribe",
+            "description": (
+                "Set up a recurring XMR payment to another agent at a fixed interval. "
+                "Optionally limit the total number of payments."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to_agent": {
+                        "type": "string",
+                        "description": "Registered name of the recipient agent.",
+                    },
+                    "amount": {
+                        "type": "number",
+                        "description": "Amount in XMR per payment cycle.",
+                    },
+                    "interval": {
+                        "type": "integer",
+                        "description": "Interval in seconds between payments.",
+                    },
+                    "max_payments": {
+                        "type": "integer",
+                        "description": "Maximum number of payments before expiry.",
+                    },
+                },
+                "required": ["to_agent", "amount", "interval"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_stream_start",
+            "description": (
+                "Start streaming XMR payments at a specified rate per second "
+                "over an existing payment channel."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {
+                        "type": "string",
+                        "description": "UUID of the payment channel to stream over.",
+                    },
+                    "rate_per_second": {
+                        "type": "number",
+                        "description": "Amount in XMR per second.",
+                    },
+                },
+                "required": ["channel_id", "rate_per_second"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    # -- Phase 3c: Swap & Conversion --
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_swap_rates",
+            "description": "Get current exchange rates for all supported swap pairs (e.g. XMR/USD, XMR/EUR).",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_swap",
+            "description": "Execute an on-chain swap from one currency to XMR.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_currency": {
+                        "type": "string",
+                        "description": "Currency to swap from, e.g. 'xUSD'.",
+                    },
+                    "from_amount": {
+                        "type": "number",
+                        "description": "Amount to swap.",
+                    },
+                },
+                "required": ["from_currency", "from_amount"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sthrip_convert",
+            "description": (
+                "Convert between hub-balance currencies such as XMR, xUSD, and xEUR. "
+                "Returns the converted amount, rate, and fee."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_currency": {
+                        "type": "string",
+                        "description": "Source currency, e.g. 'XMR'.",
+                    },
+                    "to_currency": {
+                        "type": "string",
+                        "description": "Target currency, e.g. 'xUSD'.",
+                    },
+                    "amount": {
+                        "type": "number",
+                        "description": "Amount to convert.",
+                    },
+                },
+                "required": ["from_currency", "to_currency", "amount"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -324,6 +646,62 @@ def handle_sthrip_function(
             status=args.get("status"),
             limit=args.get("limit", 50),
             offset=args.get("offset", 0),
+        ),
+        # Phase 3a: SLA, Reviews, Matchmaking
+        "sthrip_sla_template_create": lambda: client.sla_template_create(
+            name=args["name"],
+            deliverables=args["deliverables"],
+            response_time_secs=args["response_time_secs"],
+            delivery_time_secs=args["delivery_time_secs"],
+            base_price=args["base_price"],
+            penalty_percent=args.get("penalty_percent", 10),
+            service_description=args.get("service_description", ""),
+        ),
+        "sthrip_sla_create": lambda: client.sla_create(
+            provider=args["provider"],
+            template_id=args.get("template_id"),
+            price=args.get("price"),
+        ),
+        "sthrip_review_agent": lambda: client.review(
+            agent_id=args["agent_id"],
+            transaction_id=args["transaction_id"],
+            transaction_type=args["transaction_type"],
+            overall_rating=args["overall_rating"],
+            **({"comment": args["comment"]} if args.get("comment") else {}),
+        ),
+        "sthrip_matchmake": lambda: client.matchmake(
+            capabilities=args["capabilities"],
+            budget=args["budget"],
+            deadline_secs=args["deadline_secs"],
+            min_rating=args.get("min_rating", 0),
+            auto_assign=args.get("auto_assign", False),
+        ),
+        # Phase 3b: Channels, Subscriptions, Streams
+        "sthrip_channel_open": lambda: client.channel_open(
+            agent_name=args["agent_name"],
+            deposit=args["deposit"],
+            settlement_period=args.get("settlement_period", 3600),
+        ),
+        "sthrip_subscribe": lambda: client.subscribe(
+            to_agent=args["to_agent"],
+            amount=args["amount"],
+            interval=args["interval"],
+            max_payments=args.get("max_payments"),
+        ),
+        "sthrip_stream_start": lambda: client.stream_start(
+            channel_id=args["channel_id"],
+            rate_per_second=args["rate_per_second"],
+        ),
+        # Phase 3c: Swap & Conversion
+        "sthrip_swap_rates": lambda: client.swap_rates(),
+        "sthrip_swap": lambda: client.swap(
+            from_currency=args["from_currency"],
+            from_amount=args["from_amount"],
+        ),
+        "sthrip_convert": lambda: client.convert(
+            from_currency=args["from_currency"],
+            to_currency=args["to_currency"],
+            amount=args["amount"],
         ),
     }
 

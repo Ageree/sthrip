@@ -22,6 +22,61 @@ _EXPECTED_ENDPOINTS = {
     "balance",
     "deposit",
     "agents",
+    "escrow",
+    "spending_policy",
+    "messages",
+    "reputation",
+    "webhooks",
+    # Phase 3a — Marketplace v2
+    "sla_templates",
+    "sla_contracts",
+    "reviews",
+    "matchmaking",
+    "marketplace_discover",
+    # Phase 3b — Payment Scaling
+    "payment_channels",
+    "recurring_payments",
+    "payment_streams",
+    # Phase 3c — Multi-Currency
+    "cross_chain_swaps",
+    "virtual_stablecoins",
+    "currency_conversion",
+}
+
+_EXPECTED_CAPABILITIES = {
+    "hub-routing",
+    "escrow",
+    "multisig-escrow",
+    "webhooks",
+    "mcp-server",
+    "spending-policies",
+    "encrypted-messaging",
+    "zk-reputation",
+    "pow-registration",
+    # Phase 3a
+    "sla-contracts",
+    "zk-reviews",
+    "matchmaking",
+    # Phase 3b
+    "payment-channels",
+    "recurring-payments",
+    "payment-streaming",
+    # Phase 3c
+    "cross-chain-swaps",
+    "virtual-stablecoins",
+    "currency-conversion",
+}
+
+_PHASE3_FEATURE_SECTIONS = {
+    "sla_contracts",
+    "zk_reviews",
+    "matchmaking",
+    "payment_channels",
+    "recurring_payments",
+    "payment_streaming",
+    "cross_chain_swaps",
+    "virtual_stablecoins",
+    "currency_conversion",
 }
 
 
@@ -54,11 +109,16 @@ class TestAgentPaymentsDiscovery:
 
     def test_version(self, client):
         resp = client.get("/.well-known/agent-payments.json")
-        assert resp.json()["version"] == "3.0.0"
+        assert resp.json()["version"] == "4.0.0"
 
     def test_supported_tokens(self, client):
         resp = client.get("/.well-known/agent-payments.json")
-        assert resp.json()["supported_tokens"] == ["XMR"]
+        tokens = resp.json()["supported_tokens"]
+        assert "XMR" in tokens
+        assert "BTC" in tokens
+        assert "ETH" in tokens
+        assert "xUSD" in tokens
+        assert "xEUR" in tokens
 
     def test_fee_percent(self, client):
         resp = client.get("/.well-known/agent-payments.json")
@@ -97,3 +157,107 @@ class TestAgentPaymentsDiscovery:
     def test_description(self, client):
         resp = client.get("/.well-known/agent-payments.json")
         assert resp.json()["description"] == "Anonymous payments for AI agents"
+
+    def test_all_capabilities_present(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        caps = set(resp.json()["capabilities"])
+        missing = _EXPECTED_CAPABILITIES - caps
+        assert not missing, f"Missing capabilities: {missing}"
+
+    def test_phase3_feature_sections_present(self, client):
+        """Every Phase 3 feature must have a top-level section with supported=True."""
+        resp = client.get("/.well-known/agent-payments.json")
+        data = resp.json()
+        for section in _PHASE3_FEATURE_SECTIONS:
+            assert section in data, f"Missing feature section: {section}"
+            assert data[section]["supported"] is True, (
+                f"{section} should be supported"
+            )
+
+    # -- Phase 3a: Marketplace v2 --
+
+    def test_sla_contracts_endpoints(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        sla = resp.json()["sla_contracts"]
+        eps = sla["endpoints"]
+        assert "create_contract" in eps
+        assert "accept_contract" in eps
+        assert "terminate_contract" in eps
+        assert "list_templates" in eps
+
+    def test_zk_reviews_endpoints(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        reviews = resp.json()["zk_reviews"]
+        eps = reviews["endpoints"]
+        assert "submit_review" in eps
+        assert "verify_review" in eps
+
+    def test_matchmaking_filters(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        mm = resp.json()["matchmaking"]
+        assert "capability" in mm["filters"]
+        assert "min_rating" in mm["filters"]
+        assert "max_price" in mm["filters"]
+        assert "sla_tier" in mm["filters"]
+
+    # -- Phase 3b: Payment Scaling --
+
+    def test_payment_channels_signing(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        pc = resp.json()["payment_channels"]
+        assert pc["signing"] == "Ed25519"
+        eps = pc["endpoints"]
+        assert "open" in eps
+        assert "close" in eps
+        assert "dispute" in eps
+
+    def test_recurring_payments_intervals(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        rp = resp.json()["recurring_payments"]
+        assert set(rp["intervals"]) == {"hourly", "daily", "weekly", "monthly"}
+        eps = rp["endpoints"]
+        assert "create" in eps
+        assert "cancel" in eps
+        assert "pause" in eps
+
+    def test_payment_streaming_rate(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        ps = resp.json()["payment_streaming"]
+        assert ps["min_rate_per_second"] == "0.000001"
+        eps = ps["endpoints"]
+        assert "start" in eps
+        assert "stop" in eps
+        assert "adjust_rate" in eps
+
+    # -- Phase 3c: Multi-Currency --
+
+    def test_cross_chain_swaps_pairs(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        swaps = resp.json()["cross_chain_swaps"]
+        assert swaps["mechanism"] == "HTLC (Hash Time-Locked Contracts)"
+        assert "BTC/XMR" in swaps["supported_pairs"]
+        assert "ETH/XMR" in swaps["supported_pairs"]
+
+    def test_virtual_stablecoins(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        vs = resp.json()["virtual_stablecoins"]
+        assert "xUSD" in vs["coins"]
+        assert "xEUR" in vs["coins"]
+        eps = vs["endpoints"]
+        assert "mint" in eps
+        assert "burn" in eps
+        assert "rates" in eps
+
+    def test_currency_conversion_endpoints(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        cc = resp.json()["currency_conversion"]
+        eps = cc["endpoints"]
+        assert "quote" in eps
+        assert "execute" in eps
+
+    def test_new_fee_entries(self, client):
+        resp = client.get("/.well-known/agent-payments.json")
+        fees = resp.json()["fees"]
+        assert "payment_channels" in fees
+        assert "cross_chain_swap" in fees
+        assert "currency_conversion" in fees

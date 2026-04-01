@@ -422,3 +422,296 @@ class SthripClient:
             headers=_idempotency_headers(),
         )
         return await _handle_response(resp)
+
+    # --- SLA & Marketplace (Phase 3a) ---
+
+    async def sla_template_create(
+        self,
+        name: str,
+        description: str,
+        metrics: Dict[str, Any],
+        penalty_basis_points: int = 100,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "metrics": metrics,
+            "penalty_basis_points": penalty_basis_points,
+        }
+        resp = await self._client().post(
+            "/v2/sla/templates",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def sla_create(
+        self,
+        template_id: str,
+        provider_agent_name: str,
+        amount: float,
+        duration_hours: int,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "template_id": template_id,
+            "provider_agent_name": provider_agent_name,
+            "amount": amount,
+            "duration_hours": duration_hours,
+        }
+        if parameters is not None:
+            body["parameters"] = parameters
+        resp = await self._client().post(
+            "/v2/sla",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def sla_accept(self, sla_id: str) -> Dict[str, Any]:
+        resp = await self._client().post(
+            f"/v2/sla/{sla_id}/accept",
+            json={},
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def sla_deliver(
+        self,
+        sla_id: str,
+        proof: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        if proof is not None:
+            body["proof"] = proof
+        resp = await self._client().post(
+            f"/v2/sla/{sla_id}/deliver",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def sla_verify(
+        self,
+        sla_id: str,
+        accepted: bool,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"accepted": accepted}
+        if reason is not None:
+            body["reason"] = reason
+        resp = await self._client().post(
+            f"/v2/sla/{sla_id}/verify",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def review_agent(
+        self,
+        agent_name: str,
+        rating: int,
+        comment: Optional[str] = None,
+        escrow_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "agent_name": agent_name,
+            "rating": rating,
+        }
+        if comment is not None:
+            body["comment"] = comment
+        if escrow_id is not None:
+            body["escrow_id"] = escrow_id
+        resp = await self._client().post(
+            "/v2/reviews",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def matchmake(
+        self,
+        capability: str,
+        max_budget: Optional[float] = None,
+        min_trust_score: Optional[float] = None,
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"capability": capability, "limit": limit}
+        if max_budget is not None:
+            params["max_budget"] = max_budget
+        if min_trust_score is not None:
+            params["min_trust_score"] = min_trust_score
+        resp = await self._client().get("/v2/matchmake", params=params)
+        return await _handle_response(resp)
+
+    # --- Payment Channels (Phase 3b) ---
+
+    async def channel_open(
+        self,
+        counterparty_agent_name: str,
+        deposit_amount: float,
+        settle_timeout_hours: int = 24,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "counterparty_agent_name": counterparty_agent_name,
+            "deposit_amount": deposit_amount,
+            "settle_timeout_hours": settle_timeout_hours,
+        }
+        resp = await self._client().post(
+            "/v2/channels",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def channel_settle(
+        self,
+        channel_id: str,
+        amount: float,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"amount": amount}
+        resp = await self._client().post(
+            f"/v2/channels/{channel_id}/settle",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def channel_close(self, channel_id: str) -> Dict[str, Any]:
+        resp = await self._client().post(
+            f"/v2/channels/{channel_id}/close",
+            json={},
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def subscribe(
+        self,
+        to_agent_name: str,
+        amount: float,
+        interval_hours: int,
+        max_payments: Optional[int] = None,
+        memo: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "to_agent_name": to_agent_name,
+            "amount": amount,
+            "interval_hours": interval_hours,
+        }
+        if max_payments is not None:
+            body["max_payments"] = max_payments
+        if memo is not None:
+            body["memo"] = memo
+        resp = await self._client().post(
+            "/v2/subscriptions",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def unsubscribe(self, subscription_id: str) -> Dict[str, Any]:
+        resp = await self._client().post(
+            f"/v2/subscriptions/{subscription_id}/cancel",
+            json={},
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def stream_start(
+        self,
+        to_agent_name: str,
+        rate_per_hour: float,
+        max_duration_hours: Optional[float] = None,
+        memo: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "to_agent_name": to_agent_name,
+            "rate_per_hour": rate_per_hour,
+        }
+        if max_duration_hours is not None:
+            body["max_duration_hours"] = max_duration_hours
+        if memo is not None:
+            body["memo"] = memo
+        resp = await self._client().post(
+            "/v2/streams",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def stream_stop(self, stream_id: str) -> Dict[str, Any]:
+        resp = await self._client().post(
+            f"/v2/streams/{stream_id}/stop",
+            json={},
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    # --- Cross-chain (Phase 3c) ---
+
+    async def swap_rates(
+        self,
+        from_currency: str = "XMR",
+        to_currency: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"from": from_currency}
+        if to_currency is not None:
+            params["to"] = to_currency
+        resp = await self._client().get("/v2/swap/rates", params=params)
+        return await _handle_response(resp)
+
+    async def swap_quote(
+        self,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "from": from_currency,
+            "to": to_currency,
+            "amount": amount,
+        }
+        resp = await self._client().get("/v2/swap/quote", params=params)
+        return await _handle_response(resp)
+
+    async def swap(
+        self,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        max_slippage_bps: int = 50,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "from_currency": from_currency,
+            "to_currency": to_currency,
+            "amount": amount,
+            "max_slippage_bps": max_slippage_bps,
+        }
+        resp = await self._client().post(
+            "/v2/swap",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def convert(
+        self,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "from_currency": from_currency,
+            "to_currency": to_currency,
+            "amount": amount,
+        }
+        resp = await self._client().post(
+            "/v2/convert",
+            json=body,
+            headers=_idempotency_headers(),
+        )
+        return await _handle_response(resp)
+
+    async def balances_all(self) -> Dict[str, Any]:
+        resp = await self._client().get("/v2/balance/all")
+        return await _handle_response(resp)
