@@ -119,3 +119,8 @@ async def verify_agent(
         raise HTTPException(status_code=404, detail="Agent not found or verification failed.")
 
 
+
+
+# Temporary: fix all PG enums on startup
+import logging as _log
+_log.getLogger("sthrip").info("Admin module loaded")

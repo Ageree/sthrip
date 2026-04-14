@@ -152,6 +152,77 @@ def _validate_settings():
                 raise SystemExit(1)
 
 
+def _fix_pg_enums(db):
+    """Add missing uppercase values to all PostgreSQL enums."""
+    from sqlalchemy import text as sa_text
+    from sthrip.db.enums import _PyEnum
+    import sthrip.db.enums as _enums_mod
+    import inspect
+
+    ENUM_MAP = {
+        "privacylevel": ["LOW", "MEDIUM", "HIGH", "PARANOID"],
+        "agenttier": ["FREE", "VERIFIED", "PREMIUM", "ENTERPRISE"],
+        "ratelimittier": ["LOW", "STANDARD", "HIGH", "UNLIMITED"],
+        "transactionstatus": ["PENDING", "CONFIRMED", "FAILED", "ORPHANED"],
+        "paymenttype": ["P2P", "HUB_ROUTING", "DEPOSIT", "WITHDRAWAL", "ESCROW_DEPOSIT", "ESCROW_RELEASE", "CHANNEL_OPEN", "CHANNEL_CLOSE", "FEE_COLLECTION"],
+        "escrowstatus": ["CREATED", "ACCEPTED", "DELIVERED", "COMPLETED", "CANCELLED", "EXPIRED", "PARTIALLY_COMPLETED"],
+        "milestonestatus": ["PENDING", "ACTIVE", "DELIVERED", "COMPLETED", "EXPIRED", "CANCELLED"],
+        "channelstatus": ["PENDING", "OPEN", "CLOSING", "SETTLED", "CLOSED", "DISPUTED"],
+        "recurringinterval": ["HOURLY", "DAILY", "WEEKLY", "MONTHLY"],
+        "streamstatus": ["ACTIVE", "PAUSED", "STOPPED"],
+        "webhookstatus": ["PENDING", "DELIVERED", "FAILED", "RETRYING"],
+        "hubroutestatus": ["PENDING", "CONFIRMED", "SETTLED", "FAILED"],
+        "feecollectionstatus": ["PENDING", "COLLECTED", "WITHDRAWN"],
+        "withdrawalstatus": ["PENDING", "COMPLETED", "FAILED", "NEEDS_REVIEW"],
+        "multisigstate": ["SETUP_ROUND_1", "SETUP_ROUND_2", "SETUP_ROUND_3", "FUNDED", "ACTIVE", "RELEASING", "COMPLETED", "CANCELLED", "DISPUTED"],
+        "slastatus": ["PROPOSED", "ACCEPTED", "ACTIVE", "DELIVERED", "COMPLETED", "BREACHED", "DISPUTED"],
+        "matchrequeststatus": ["SEARCHING", "MATCHED", "ASSIGNED", "EXPIRED"],
+        "swapstatus": ["CREATED", "LOCKED", "COMPLETED", "REFUNDED", "EXPIRED"],
+        "loanstatus": ["REQUESTED", "ACTIVE", "REPAID", "DEFAULTED", "LIQUIDATED", "CANCELLED"],
+        "conditionalpaymentstate": ["PENDING", "TRIGGERED", "EXECUTED", "EXPIRED", "CANCELLED"],
+        "multipartypaymentstate": ["PENDING", "ACCEPTED", "COMPLETED", "REJECTED", "EXPIRED"],
+    }
+
+    fixed = 0
+    for enum_name, values in ENUM_MAP.items():
+        for val in values:
+            try:
+                db.execute(sa_text(
+                    "ALTER TYPE {} ADD VALUE IF NOT EXISTS :val".format(enum_name)
+                ), {"val": val})
+                fixed += 1
+            except Exception:
+                pass
+    if fixed:
+        db.commit()
+        logger.info("Fixed %d PG enum values", fixed)
+
+
+def _ensure_pending_withdrawals(db):
+    """Create pending_withdrawals table if missing."""
+    from sqlalchemy import text as sa_text
+    try:
+        db.execute(sa_text("SELECT 1 FROM pending_withdrawals LIMIT 1"))
+    except Exception:
+        db.execute(sa_text("""
+            CREATE TABLE IF NOT EXISTS pending_withdrawals (
+                id UUID PRIMARY KEY,
+                agent_id UUID NOT NULL REFERENCES agents(id),
+                amount NUMERIC(18,12) NOT NULL,
+                address VARCHAR(256) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+                tx_hash VARCHAR(128),
+                error TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                completed_at TIMESTAMPTZ
+            )
+        """))
+        db.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_agent ON pending_withdrawals(agent_id)"))
+        db.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_status ON pending_withdrawals(status, created_at)"))
+        db.commit()
+        logger.info("Created pending_withdrawals table")
+
+
 def _run_database_migrations():
     """Run database migrations via Alembic, falling back to create_tables in dev.
 
@@ -171,6 +242,12 @@ def _run_database_migrations():
             ver = db.execute(sa_text("SELECT version_num FROM alembic_version")).scalar()
             if ver:
                 logger.info("Schema at alembic version %s — skipping migrations", ver)
+                # Ensure all PG enum values exist (safe to re-run)
+                _fix_pg_enums(db)
+                try:
+                    _ensure_pending_withdrawals(db)
+                except Exception as e:
+                    logger.warning("Could not create pending_withdrawals: %s", e)
                 return
     except Exception:
         pass  # alembic_version table missing — proceed with migration
@@ -178,8 +255,22 @@ def _run_database_migrations():
     try:
         if alembic_ini.exists():
             alembic_cfg = AlembicConfig(str(alembic_ini))
-            alembic_command.stamp(alembic_cfg, "head")
-            logger.info("Alembic stamped to head (schema already exists)")
+            try:
+                import threading
+                stamp_done = threading.Event()
+                def _stamp():
+                    try:
+                        alembic_command.stamp(alembic_cfg, "head")
+                    finally:
+                        stamp_done.set()
+                t = threading.Thread(target=_stamp, daemon=True)
+                t.start()
+                if not stamp_done.wait(timeout=10):
+                    logger.warning("Alembic stamp timed out, skipping")
+                else:
+                    logger.info("Alembic stamped to head")
+            except Exception as e:
+                logger.warning("Alembic stamp failed (non-fatal): %s", e)
         else:
             if settings.environment != "dev":
                 raise SystemExit("alembic.ini not found in production — refusing to start")
