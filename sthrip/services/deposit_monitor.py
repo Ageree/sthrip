@@ -13,7 +13,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from ..db.models import AgentBalance, TransactionStatus
+from ..db.models import AgentBalance, TransactionStatus, PaymentType
 from ..db.repository import BalanceRepository, TransactionRepository, SystemStateRepository
 from sthrip.config import get_settings
 from .wallet_service import WalletService
@@ -287,7 +287,7 @@ return 0
         from sqlalchemy.exc import IntegrityError
 
         is_confirmed = confirmations >= self.min_confirmations
-        status = "confirmed" if is_confirmed else "pending"
+        status = TransactionStatus.CONFIRMED if is_confirmed else TransactionStatus.PENDING
 
         # Wrap in savepoint so IntegrityError only rolls back THIS insert,
         # not the entire batch transaction.
@@ -300,7 +300,7 @@ return 0
                 to_agent_id=agent_id,
                 amount=amount,
                 token="XMR",
-                payment_type="deposit",
+                payment_type=PaymentType.DEPOSIT,
                 status=status,
             )
         except IntegrityError:

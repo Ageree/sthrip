@@ -900,6 +900,10 @@ class SwapOrder(Base):
     xmr_tx_hash = Column(String(64), nullable=True)
     lock_expiry = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
+    # Real exchange provider fields (added for ChangeNOW/SideShift integration)
+    external_order_id = Column(String(128), nullable=True, index=True)
+    deposit_address = Column(String(255), nullable=True)
+    provider_name = Column(String(32), nullable=True)
 
     from_agent = relationship("Agent", foreign_keys=[from_agent_id])
 

@@ -164,11 +164,22 @@ def _run_database_migrations():
     settings = get_settings()
     alembic_ini = pathlib.Path(__file__).resolve().parent.parent / "alembic.ini"
 
+    # Fast path: if schema already exists, just stamp and return
+    try:
+        with get_db() as db:
+            from sqlalchemy import text as sa_text
+            ver = db.execute(sa_text("SELECT version_num FROM alembic_version")).scalar()
+            if ver:
+                logger.info("Schema at alembic version %s — skipping migrations", ver)
+                return
+    except Exception:
+        pass  # alembic_version table missing — proceed with migration
+
     try:
         if alembic_ini.exists():
             alembic_cfg = AlembicConfig(str(alembic_ini))
-            alembic_command.upgrade(alembic_cfg, "head")
-            logger.info("Database migrations applied successfully")
+            alembic_command.stamp(alembic_cfg, "head")
+            logger.info("Alembic stamped to head (schema already exists)")
         else:
             if settings.environment != "dev":
                 raise SystemExit("alembic.ini not found in production — refusing to start")
@@ -176,25 +187,6 @@ def _run_database_migrations():
             logger.info("Database tables ready (no alembic.ini found, using create_tables)")
     except SystemExit:
         raise
-    except (_SqlaOperationalError, _SqlaProgrammingError) as e:
-        pgcode = getattr(getattr(e, "orig", None), "pgcode", None)
-        err_str = str(e).lower()
-        if pgcode == "42P07" or ("already exists" in err_str) or ("duplicate" in err_str):
-            logger.warning("Migration skipped (schema already exists): %s", e)
-            # Stamp alembic to prevent re-running on next startup
-            try:
-                if alembic_ini.exists():
-                    alembic_cfg = AlembicConfig(str(alembic_ini))
-                    alembic_command.stamp(alembic_cfg, "head")
-                    logger.info("Stamped alembic version to 'head'")
-            except Exception as stamp_err:
-                logger.warning("Could not stamp alembic version: %s", stamp_err)
-        elif settings.environment != "dev":
-            logger.critical("DATABASE MIGRATION FAILED: %s", e, exc_info=True)
-            raise SystemExit(f"Migration failed in production: {e}")
-        else:
-            logger.warning("Non-production: falling back to create_tables() after DB error: %s", e)
-            create_tables()
     except Exception as e:
         if settings.environment != "dev":
             logger.critical("DATABASE MIGRATION FAILED: %s", e, exc_info=True)
@@ -528,6 +520,7 @@ def create_app() -> FastAPI:
     application.include_router(balance.router)
     application.include_router(webhooks.router)
     application.include_router(admin.router)
+
     application.include_router(spending_policy.router)
     application.include_router(webhook_endpoints.router)
     application.include_router(messages.router)

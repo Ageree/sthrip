@@ -31,8 +31,14 @@ class SwapRepository:
         fee_amount: Decimal,
         htlc_hash: str,
         lock_expiry: datetime,
+        htlc_secret: Optional[str] = None,
     ) -> models.SwapOrder:
-        """Persist a new SwapOrder in CREATED state."""
+        """Persist a new SwapOrder in CREATED state.
+
+        Parameters:
+            htlc_secret: optional pre-image for legacy HTLC claim path.
+                         Omit for exchange-provider swaps.
+        """
         order = models.SwapOrder(
             from_agent_id=from_agent_id,
             from_currency=from_currency,
@@ -43,6 +49,7 @@ class SwapRepository:
             fee_amount=fee_amount,
             state=SwapStatus.CREATED,
             htlc_hash=htlc_hash,
+            htlc_secret=htlc_secret,
             lock_expiry=lock_expiry,
         )
         self.db.add(order)
@@ -143,6 +150,94 @@ class SwapRepository:
                 ),
                 models.SwapOrder.lock_expiry <= now,
             )
+            .all()
+        )
+
+    def bulk_expire_stale(self) -> int:
+        """Expire all overdue swap orders in a single UPDATE.
+
+        Returns the number of rows updated.
+        """
+        now = datetime.now(timezone.utc)
+        return (
+            self.db.query(models.SwapOrder)
+            .filter(
+                models.SwapOrder.state.in_(
+                    [SwapStatus.CREATED, SwapStatus.LOCKED]
+                ),
+                models.SwapOrder.lock_expiry <= now,
+            )
+            .update({"state": SwapStatus.EXPIRED})
+        )
+
+    def complete_from_external(
+        self,
+        swap_id: UUID,
+        to_amount: Decimal,
+        xmr_tx_hash: Optional[str] = None,
+    ) -> int:
+        """Transition CREATED → COMPLETED for an exchange-completed swap.
+
+        Unlike the HTLC claim path (LOCKED → COMPLETED), the exchange provider
+        path completes from CREATED state because no BTC lock step is involved.
+
+        Returns rows updated (0 if the order was not in CREATED state).
+        """
+        update_values: dict = {
+            "state": SwapStatus.COMPLETED,
+            "to_amount": to_amount,
+        }
+        if xmr_tx_hash is not None:
+            update_values["xmr_tx_hash"] = xmr_tx_hash
+
+        return (
+            self.db.query(models.SwapOrder)
+            .filter(
+                models.SwapOrder.id == swap_id,
+                models.SwapOrder.state == SwapStatus.CREATED,
+            )
+            .update(update_values)
+        )
+
+    def set_external_order(
+        self,
+        swap_id: UUID,
+        external_order_id: str,
+        deposit_address: str,
+        provider_name: str,
+    ) -> int:
+        """Store exchange-provider details on a CREATED order.
+
+        Returns rows updated (0 if the order was not found in CREATED state).
+        """
+        return (
+            self.db.query(models.SwapOrder)
+            .filter(
+                models.SwapOrder.id == swap_id,
+                models.SwapOrder.state == SwapStatus.CREATED,
+            )
+            .update(
+                {
+                    "external_order_id": external_order_id,
+                    "deposit_address": deposit_address,
+                    "provider_name": provider_name,
+                }
+            )
+        )
+
+    def get_pending_external(self) -> List[models.SwapOrder]:
+        """Return CREATED orders that have an external_order_id (i.e. awaiting deposit).
+
+        Uses FOR UPDATE with skip_locked to prevent concurrent pollers from
+        processing the same order simultaneously.
+        """
+        return (
+            self.db.query(models.SwapOrder)
+            .filter(
+                models.SwapOrder.state == SwapStatus.CREATED,
+                models.SwapOrder.external_order_id.isnot(None),
+            )
+            .with_for_update(skip_locked=True)
             .all()
         )
 

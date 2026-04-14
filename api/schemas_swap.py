@@ -20,7 +20,7 @@ class SwapCreateRequest(BaseModel):
     """Request body for POST /v2/swap/create."""
 
     from_currency: str
-    from_amount: Decimal = Field(..., gt=0)
+    from_amount: Decimal = Field(..., gt=0, le=Decimal("100"))
     to_currency: str = "XMR"
 
 
@@ -34,6 +34,10 @@ class SwapResponse(BaseModel):
     """Response schema for swap order details.
 
     All numeric fields are returned as strings for precision safety.
+
+    Exchange provider fields (external_order_id, deposit_address, provider_name)
+    are populated when ChangeNOW or SideShift successfully creates an order.
+    deposit_address is the address where the user should send source funds.
     """
 
     swap_id: str
@@ -50,3 +54,7 @@ class SwapResponse(BaseModel):
     xmr_tx_hash: Optional[str] = None
     lock_expiry: Optional[str] = None
     created_at: Optional[str] = None
+    # Exchange provider fields
+    external_order_id: Optional[str] = None
+    deposit_address: Optional[str] = None
+    provider_name: Optional[str] = None

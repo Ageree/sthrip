@@ -12,11 +12,13 @@ in the create response (see security note in docs).
 """
 
 import hashlib
+import hmac
 import logging
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -25,10 +27,26 @@ from sthrip.db.swap_repo import SwapRepository
 from sthrip.db.balance_repo import BalanceRepository
 from sthrip.db.models import SwapOrder, SwapStatus
 from sthrip.services.rate_service import RateService
+from sthrip.services.exchange_providers import (
+    create_order_with_fallback,
+    ExchangeProviderError,
+    ChangeNowProvider,
+    SideShiftProvider,
+    STATUS_FINISHED,
+    STATUS_FAILED,
+    STATUS_EXPIRED,
+)
 
 logger = logging.getLogger("sthrip.swap_service")
 
 _LOCK_EXPIRY_MINUTES: int = 30
+
+# Allowed format for external order IDs returned by exchange providers.
+_EXTERNAL_ORDER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+
+# XMR address where the exchange should send converted funds.
+# In production this is the hub's primary XMR wallet address.
+_XMR_HUB_ADDRESS_ENV = "XMR_HUB_ADDRESS"
 
 
 def _now() -> datetime:
@@ -61,14 +79,38 @@ def _order_to_dict(order: SwapOrder) -> dict:
         "xmr_tx_hash": order.xmr_tx_hash,
         "lock_expiry": _iso(order.lock_expiry),
         "created_at": _iso(order.created_at),
+        # Exchange provider fields (None for legacy HTLC-only orders)
+        "external_order_id": getattr(order, "external_order_id", None),
+        "deposit_address": getattr(order, "deposit_address", None),
+        "provider_name": getattr(order, "provider_name", None),
     }
 
 
 class SwapService:
-    """Orchestrates cross-chain HTLC swap operations."""
+    """Orchestrates cross-chain HTLC swap operations.
+
+    Uses ChangeNOW (primary) / SideShift (fallback) to create real deposit
+    addresses for incoming funds. XMR is credited to the agent's hub balance
+    once the exchange confirms delivery.
+    """
 
     def __init__(self) -> None:
         self._rate_svc = RateService()
+
+    def _get_hub_xmr_address(self) -> str:
+        """Return the hub's XMR receive address for exchange deliveries.
+
+        Reads XMR_HUB_ADDRESS from the environment.  Raises RuntimeError if
+        not configured (should be set in Railway env vars for production).
+        """
+        import os
+        addr = os.environ.get(_XMR_HUB_ADDRESS_ENV, "")
+        if not addr:
+            raise RuntimeError(
+                f"XMR_HUB_ADDRESS is not configured. "
+                "Set this env var to the hub's primary XMR wallet address."
+            )
+        return addr
 
     # ------------------------------------------------------------------
     # Rate helpers
@@ -99,17 +141,19 @@ class SwapService:
         from_amount: Decimal,
         to_currency: str = "XMR",
     ) -> dict:
-        """Create a new swap order.
+        """Create a new swap order via a real exchange provider (ChangeNOW / SideShift).
 
         Steps:
           1. Get quote from RateService.
-          2. Generate HTLC: secret = token_hex(32), hash = SHA-256(secret bytes).
-          3. Persist order with lock_expiry = now + 30 minutes.
-          4. Return order dict (htlc_secret NOT in response for security).
+          2. Generate HTLC hash (kept for compatibility; secret stored for legacy claim path).
+          3. Persist order in CREATED state with lock_expiry = now + 30 minutes.
+          4. Call exchange providers (ChangeNOW first, SideShift fallback) to get
+             a real deposit address.
+          5. Store external_order_id, deposit_address, provider_name on the order.
+          6. Return order dict — deposit_address tells user where to send funds.
 
-        The htlc_secret is stored in the order record so the initiator can
-        retrieve it via get_swap() or from the creation response in a real
-        HTLC protocol.
+        Falls back gracefully if exchange providers are unavailable (returns the
+        order without a deposit_address so legacy HTLC flow still works).
         """
         quote = self._rate_svc.get_quote(from_currency, from_amount, to_currency)
 
@@ -118,6 +162,31 @@ class SwapService:
         lock_expiry = _now() + timedelta(minutes=_LOCK_EXPIRY_MINUTES)
 
         repo = SwapRepository(db)
+
+        # Attempt to obtain a real deposit address from an exchange provider.
+        # We do this before persisting so we know whether to store the HTLC
+        # secret (only needed for the legacy claim path, not exchange swaps).
+        provider_result = None
+        try:
+            hub_xmr_address = self._get_hub_xmr_address()
+            provider_result = create_order_with_fallback(
+                from_currency=from_currency,
+                from_amount=str(from_amount),
+                to_currency=quote["to_currency"],
+                to_address=hub_xmr_address,
+            )
+        except (ExchangeProviderError, RuntimeError) as exc:
+            # Non-fatal: log and continue.  The order exists; the poller or
+            # legacy HTLC path will handle it.
+            logger.warning(
+                "exchange provider unavailable for swap: %s — proceeding without deposit_address",
+                exc,
+            )
+
+        # For exchange-provider swaps the HTLC secret is not used; only
+        # store it when falling back to the legacy claim path.
+        stored_secret = None if provider_result is not None else htlc_secret
+
         order = repo.create(
             from_agent_id=from_agent_id,
             from_currency=from_currency,
@@ -127,16 +196,34 @@ class SwapService:
             exchange_rate=Decimal(quote["rate"]),
             fee_amount=Decimal(quote["fee"]),
             htlc_hash=htlc_hash,
+            htlc_secret=stored_secret,
             lock_expiry=lock_expiry,
         )
 
-        # Store the pre-image so the initiator can claim later.
-        # In production this would be returned via a secure separate channel.
-        order.htlc_secret = htlc_secret
-        db.flush()
+        if provider_result is not None:
+            ext_id = provider_result["external_order_id"]
+            if not _EXTERNAL_ORDER_ID_RE.match(ext_id):
+                raise ValueError(
+                    f"Invalid external_order_id format from provider: {ext_id!r}"
+                )
+            rows = repo.set_external_order(
+                swap_id=order.id,
+                external_order_id=ext_id,
+                deposit_address=provider_result["deposit_address"],
+                provider_name=provider_result["provider"],
+            )
+            if rows == 0:
+                logger.warning("set_external_order matched 0 rows for swap %s", order.id)
+            db.flush()
+            db.refresh(order)
+            logger.info(
+                "swap %s created via %s — deposit to %s",
+                order.id,
+                provider_result["provider"],
+                provider_result["deposit_address"],
+            )
 
         result = _order_to_dict(order)
-        # Explicitly exclude htlc_secret from the returned dict.
         result.pop("htlc_secret", None)
         return result
 
@@ -171,9 +258,15 @@ class SwapService:
         if order.from_agent_id != agent_id:
             raise PermissionError("You do not own this swap order")
 
-        # Verify HTLC pre-image
-        computed_hash = hashlib.sha256(bytes.fromhex(htlc_secret)).hexdigest()
-        if computed_hash != order.htlc_hash:
+        # Validate hex format before attempting conversion
+        try:
+            secret_bytes = bytes.fromhex(htlc_secret)
+        except ValueError:
+            raise ValueError("Invalid HTLC secret: must be 64 hex characters")
+
+        # Verify HTLC pre-image (constant-time comparison to prevent timing attacks)
+        computed_hash = hashlib.sha256(secret_bytes).hexdigest()
+        if not hmac.compare_digest(computed_hash, order.htlc_hash):
             raise ValueError(f"Invalid HTLC secret for order {order_id}")
 
         rows = repo.complete(order_id, htlc_secret=htlc_secret)
@@ -211,15 +304,144 @@ class SwapService:
             raise PermissionError("You do not own this swap order")
         return _order_to_dict(order)
 
+    def get_pending_external_orders(self, db: Session) -> List[SwapOrder]:
+        """Return all CREATED orders that have an external_order_id.
+
+        Used by the background poller to check exchange status.
+        """
+        repo = SwapRepository(db)
+        return repo.get_pending_external()
+
+    def poll_external_orders(self, db: Session) -> dict:
+        """Check exchange status for all pending external orders.
+
+        For each CREATED order with an external_order_id:
+          - Determines which provider to use (from provider_name field).
+          - Calls get_order_status() on the provider.
+          - If FINISHED: transitions CREATED → COMPLETED, credits XMR balance.
+          - If FAILED or EXPIRED: transitions CREATED → EXPIRED.
+          - If any other status: leaves the order alone (still waiting).
+
+        Returns a summary dict: {completed: int, expired: int, errors: int, skipped: int}
+        """
+        repo = SwapRepository(db)
+        balance_repo = BalanceRepository(db)
+        orders = repo.get_pending_external()
+
+        completed = 0
+        expired_count = 0
+        errors = 0
+        skipped = 0
+
+        _provider_cache: dict = {}
+
+        for order in orders:
+            provider_name = getattr(order, "provider_name", None)
+            external_order_id = order.external_order_id
+
+            # external_order_id is guaranteed non-null by the query filter;
+            # this guard is defensive only.
+            if not external_order_id or not provider_name:
+                skipped += 1
+                continue
+
+            # Reuse provider instances across orders in the same poll cycle.
+            # Explicit matching — never fall back silently to a default provider.
+            if provider_name not in _provider_cache:
+                if provider_name == "changenow":
+                    _provider_cache[provider_name] = ChangeNowProvider()
+                elif provider_name == "sideshift":
+                    _provider_cache[provider_name] = SideShiftProvider()
+                else:
+                    logger.error(
+                        "Unknown provider %r for swap %s — skipping",
+                        provider_name,
+                        order.id,
+                    )
+                    errors += 1
+                    continue
+
+            provider = _provider_cache[provider_name]
+
+            try:
+                status_info = provider.get_order_status(external_order_id)
+                status = status_info["status"]
+                to_amount_raw = status_info.get("to_amount")
+
+                if status == STATUS_FINISHED:
+                    to_amount = (
+                        Decimal(to_amount_raw)
+                        if to_amount_raw
+                        else order.to_amount
+                    )
+                    rows = repo.complete_from_external(
+                        swap_id=order.id,
+                        to_amount=to_amount,
+                    )
+                    if rows == 1:
+                        balance_repo.credit(
+                            order.from_agent_id,
+                            Decimal(str(to_amount)),
+                            token="XMR",
+                        )
+                        # Per-order commit to prevent crash-recovery double-credit
+                        db.commit()
+                        completed += 1
+                        logger.info(
+                            "swap %s completed via %s — credited %.8f XMR",
+                            order.id,
+                            provider_name,
+                            to_amount,
+                        )
+                    else:
+                        logger.warning(
+                            "complete_from_external matched 0 rows for swap %s (already completed?)",
+                            order.id,
+                        )
+                        skipped += 1
+
+                elif status in (STATUS_FAILED, STATUS_EXPIRED):
+                    rows = repo.expire(order.id)
+                    if rows == 1:
+                        db.commit()
+                        expired_count += 1
+                        logger.info(
+                            "swap %s marked EXPIRED (exchange status: %s)",
+                            order.id,
+                            status,
+                        )
+                    else:
+                        skipped += 1
+                else:
+                    # Still waiting/confirming — nothing to do yet.
+                    skipped += 1
+
+            except ExchangeProviderError as exc:
+                logger.warning(
+                    "poll_external_orders: provider error for swap %s: %s",
+                    order.id,
+                    exc,
+                )
+                errors += 1
+            except Exception:
+                logger.exception(
+                    "poll_external_orders: unexpected error for swap %s",
+                    order.id,
+                )
+                errors += 1
+
+        return {
+            "completed": completed,
+            "expired": expired_count,
+            "errors": errors,
+            "skipped": skipped,
+        }
+
     def expire_stale(self, db: Session) -> int:
         """Expire all overdue swap orders (past lock_expiry and in CREATED/LOCKED).
 
+        Uses a single bulk UPDATE for efficiency instead of N+1 queries.
         Returns the number of orders expired.
         """
         repo = SwapRepository(db)
-        stale = repo.get_expired()
-        count = 0
-        for order in stale:
-            rows = repo.expire(order.id)
-            count += rows
-        return count
+        return repo.bulk_expire_stale()

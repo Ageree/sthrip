@@ -1,9 +1,9 @@
 [project]
 name = "sthrip"
-version = "0.4.0"
+version = "0.5.0"
 description = "Anonymous payments for AI agents"
 requires-python = ">=3.8"
-dependencies = ["requests>=2.25"]
+dependencies = ["requests>=2.25", "httpx>=0.25", "typer>=0.9"]
 license = {text = "MIT"}
 readme = "README.md"
 keywords = ["payments", "ai", "agents", "monero", "anonymous"]
@@ -18,6 +18,9 @@ classifiers = [
 Homepage = "https://sthrip.dev"
 Documentation = "https://sthrip-api-production.up.railway.app/docs"
 Repository = "https://github.com/Ageree/sthrip"
+
+[project.scripts]
+sthrip = "sthrip.cli.__main__:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

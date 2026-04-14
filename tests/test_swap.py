@@ -1141,3 +1141,293 @@ class TestSwapAPI:
             headers={"Authorization": f"Bearer {api_key}"},
         )
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# SPRINT 2 — SwapRepository: set_external_order + get_pending_external
+# ---------------------------------------------------------------------------
+
+
+class TestSwapRepositoryExternalOrder:
+    """Tests for the new exchange-provider fields on SwapRepository."""
+
+    def test_set_external_order_stores_fields(self, db):
+        """set_external_order() stores provider fields and returns 1 row."""
+        agent = _make_agent(db)
+        _, htlc_hash = _valid_htlc_pair()
+        lock_expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
+        repo = SwapRepository(db)
+        order = repo.create(
+            from_agent_id=agent.id,
+            from_currency="BTC",
+            from_amount=Decimal("0.01"),
+            to_currency="XMR",
+            to_amount=Decimal("1.5"),
+            exchange_rate=Decimal("150.0"),
+            fee_amount=Decimal("0.015"),
+            htlc_hash=htlc_hash,
+            lock_expiry=lock_expiry,
+        )
+        db.commit()
+
+        rows = repo.set_external_order(
+            swap_id=order.id,
+            external_order_id="cn-ext-001",
+            deposit_address="bc1qdeposit123",
+            provider_name="changenow",
+        )
+        db.commit()
+
+        assert rows == 1
+        db.refresh(order)
+        assert order.external_order_id == "cn-ext-001"
+        assert order.deposit_address == "bc1qdeposit123"
+        assert order.provider_name == "changenow"
+
+    def test_set_external_order_returns_zero_for_non_created_order(self, db):
+        """set_external_order() returns 0 if the order is not in CREATED state."""
+        agent = _make_agent(db)
+        secret, htlc_hash = _valid_htlc_pair()
+        lock_expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
+        repo = SwapRepository(db)
+        order = repo.create(
+            from_agent_id=agent.id,
+            from_currency="BTC",
+            from_amount=Decimal("0.01"),
+            to_currency="XMR",
+            to_amount=Decimal("1.5"),
+            exchange_rate=Decimal("150.0"),
+            fee_amount=Decimal("0.015"),
+            htlc_hash=htlc_hash,
+            lock_expiry=lock_expiry,
+        )
+        db.commit()
+        # Move to LOCKED state
+        repo.lock(order.id, btc_tx_hash="btctx")
+        db.commit()
+
+        rows = repo.set_external_order(
+            swap_id=order.id,
+            external_order_id="cn-ext-002",
+            deposit_address="bc1qdeposit456",
+            provider_name="changenow",
+        )
+        assert rows == 0
+
+    def test_get_pending_external_returns_orders_with_external_id(self, db):
+        """get_pending_external() returns only CREATED orders with external_order_id set."""
+        agent = _make_agent(db)
+        lock_expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
+        repo = SwapRepository(db)
+
+        # Order with external_order_id set
+        _, h1 = _valid_htlc_pair()
+        order_with = repo.create(
+            from_agent_id=agent.id,
+            from_currency="BTC",
+            from_amount=Decimal("0.01"),
+            to_currency="XMR",
+            to_amount=Decimal("1.5"),
+            exchange_rate=Decimal("150.0"),
+            fee_amount=Decimal("0.015"),
+            htlc_hash=h1,
+            lock_expiry=lock_expiry,
+        )
+        db.commit()
+        repo.set_external_order(
+            swap_id=order_with.id,
+            external_order_id="ext-001",
+            deposit_address="bc1q...",
+            provider_name="changenow",
+        )
+        db.commit()
+
+        # Order without external_order_id
+        _, h2 = _valid_htlc_pair()
+        order_without = repo.create(
+            from_agent_id=agent.id,
+            from_currency="ETH",
+            from_amount=Decimal("0.5"),
+            to_currency="XMR",
+            to_amount=Decimal("5.0"),
+            exchange_rate=Decimal("10.0"),
+            fee_amount=Decimal("0.005"),
+            htlc_hash=h2,
+            lock_expiry=lock_expiry,
+        )
+        db.commit()
+
+        pending = repo.get_pending_external()
+        pending_ids = [o.id for o in pending]
+        assert order_with.id in pending_ids
+        assert order_without.id not in pending_ids
+
+    def test_get_pending_external_excludes_non_created(self, db):
+        """get_pending_external() excludes LOCKED/COMPLETED orders even if they have external_order_id."""
+        agent = _make_agent(db)
+        _, htlc_hash = _valid_htlc_pair()
+        lock_expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
+        repo = SwapRepository(db)
+        order = repo.create(
+            from_agent_id=agent.id,
+            from_currency="BTC",
+            from_amount=Decimal("0.01"),
+            to_currency="XMR",
+            to_amount=Decimal("1.5"),
+            exchange_rate=Decimal("150.0"),
+            fee_amount=Decimal("0.015"),
+            htlc_hash=htlc_hash,
+            lock_expiry=lock_expiry,
+        )
+        db.commit()
+        repo.set_external_order(
+            swap_id=order.id,
+            external_order_id="ext-locked",
+            deposit_address="addr",
+            provider_name="changenow",
+        )
+        db.commit()
+        repo.lock(order.id, btc_tx_hash="btctx")
+        db.commit()
+
+        pending = repo.get_pending_external()
+        assert order.id not in [o.id for o in pending]
+
+
+# ---------------------------------------------------------------------------
+# SPRINT 2 — SwapService: create_swap with real exchange providers
+# ---------------------------------------------------------------------------
+
+
+class TestSwapServiceWithExchangeProviders:
+    """Tests for create_swap using mocked exchange providers."""
+
+    def test_create_swap_calls_exchange_and_stores_deposit_address(
+        self, db, swap_session_factory
+    ):
+        """create_swap() stores deposit_address when exchange provider succeeds."""
+        from unittest.mock import patch
+        from sthrip.services.swap_service import SwapService
+
+        provider_result = {
+            "external_order_id": "cn-test-id",
+            "deposit_address": "bc1qtest_deposit_address",
+            "expected_amount": "0.01",
+            "provider": "changenow",
+        }
+        agent = _make_agent(db)
+        db.commit()
+
+        svc = SwapService()
+        with patch(
+            "sthrip.services.swap_service.create_order_with_fallback",
+            return_value=provider_result,
+        ), patch.object(
+            svc, "_get_hub_xmr_address", return_value="4AbCdEfHub"
+        ):
+            result = svc.create_swap(
+                db, from_agent_id=agent.id, from_currency="BTC", from_amount=Decimal("0.01")
+            )
+
+        assert result["deposit_address"] == "bc1qtest_deposit_address"
+        assert result["external_order_id"] == "cn-test-id"
+        assert result["provider_name"] == "changenow"
+        assert "htlc_secret" not in result
+
+    def test_create_swap_succeeds_when_exchange_provider_fails(self, db):
+        """create_swap() returns order without deposit_address if provider fails."""
+        from unittest.mock import patch
+        from sthrip.services.swap_service import SwapService
+        from sthrip.services.exchange_providers import ExchangeProviderError
+
+        agent = _make_agent(db)
+        db.commit()
+
+        svc = SwapService()
+        with patch(
+            "sthrip.services.swap_service.create_order_with_fallback",
+            side_effect=ExchangeProviderError("all providers failed"),
+        ), patch.object(
+            svc, "_get_hub_xmr_address", return_value="4AbCdEfHub"
+        ):
+            result = svc.create_swap(
+                db, from_agent_id=agent.id, from_currency="BTC", from_amount=Decimal("0.01")
+            )
+
+        # Should still succeed — order created, no deposit_address
+        assert result["swap_id"] is not None
+        assert result["deposit_address"] is None
+
+    def test_create_swap_succeeds_when_hub_address_not_configured(self, db):
+        """create_swap() gracefully handles missing XMR_HUB_ADDRESS."""
+        from unittest.mock import patch
+        from sthrip.services.swap_service import SwapService
+
+        agent = _make_agent(db)
+        db.commit()
+
+        svc = SwapService()
+        with patch.dict("os.environ", {}, clear=False):
+            # Remove XMR_HUB_ADDRESS if present
+            import os
+            os.environ.pop("XMR_HUB_ADDRESS", None)
+            result = svc.create_swap(
+                db, from_agent_id=agent.id, from_currency="BTC", from_amount=Decimal("0.01")
+            )
+
+        assert result["swap_id"] is not None
+        # No deposit_address — exchange was not contacted
+        assert result["deposit_address"] is None
+
+    def test_get_pending_external_orders_delegates_to_repo(self, db):
+        """get_pending_external_orders() returns orders with external_order_id set."""
+        from sthrip.services.swap_service import SwapService
+
+        agent = _make_agent(db)
+        _, htlc_hash = _valid_htlc_pair()
+        lock_expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
+        repo = SwapRepository(db)
+        order = repo.create(
+            from_agent_id=agent.id,
+            from_currency="BTC",
+            from_amount=Decimal("0.01"),
+            to_currency="XMR",
+            to_amount=Decimal("1.5"),
+            exchange_rate=Decimal("150.0"),
+            fee_amount=Decimal("0.015"),
+            htlc_hash=htlc_hash,
+            lock_expiry=lock_expiry,
+        )
+        db.commit()
+        repo.set_external_order(
+            swap_id=order.id,
+            external_order_id="ext-pending",
+            deposit_address="bc1q...",
+            provider_name="changenow",
+        )
+        db.commit()
+
+        svc = SwapService()
+        pending = svc.get_pending_external_orders(db)
+        assert any(o.id == order.id for o in pending)
+
+    def test_create_swap_response_includes_new_schema_fields(self, db):
+        """create_swap result dict always includes deposit_address/external_order_id/provider_name keys."""
+        from unittest.mock import patch
+        from sthrip.services.swap_service import SwapService
+
+        agent = _make_agent(db)
+        db.commit()
+
+        svc = SwapService()
+        with patch(
+            "sthrip.services.swap_service.create_order_with_fallback",
+            side_effect=RuntimeError("not configured"),
+        ):
+            result = svc.create_swap(
+                db, from_agent_id=agent.id, from_currency="BTC", from_amount=Decimal("0.01")
+            )
+
+        assert "deposit_address" in result
+        assert "external_order_id" in result
+        assert "provider_name" in result

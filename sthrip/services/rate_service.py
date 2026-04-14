@@ -17,7 +17,7 @@ logger = logging.getLogger("sthrip.rate_service")
 # ---------------------------------------------------------------------------
 
 SUPPORTED_PAIRS: frozenset = frozenset(
-    {"BTC_XMR", "XMR_BTC", "ETH_XMR", "XMR_USD", "XMR_EUR"}
+    {"BTC_XMR", "XMR_BTC", "ETH_XMR", "SOL_XMR", "XMR_USD", "XMR_EUR"}
 )
 
 _CACHE_TTL_SECONDS: int = 60
@@ -28,6 +28,7 @@ _FALLBACK_RATES: Dict[str, Decimal] = {
     "BTC_XMR": Decimal("150.0"),
     "XMR_BTC": Decimal("0.006667"),
     "ETH_XMR": Decimal("10.0"),
+    "SOL_XMR": Decimal("0.234"),
     "XMR_USD": Decimal("180.0"),
     "XMR_EUR": Decimal("160.0"),
 }
@@ -134,7 +135,7 @@ class RateService:
 
             url = (
                 "https://api.coingecko.com/api/v3/simple/price"
-                "?ids=bitcoin,ethereum,monero"
+                "?ids=bitcoin,ethereum,solana,monero"
                 "&vs_currencies=xmr,btc,usd,eur"
             )
             with urllib.request.urlopen(url, timeout=5) as resp:
@@ -151,6 +152,10 @@ class RateService:
             eth_xmr = data.get("ethereum", {}).get("xmr")
             if eth_xmr:
                 rates["ETH_XMR"] = Decimal(str(eth_xmr))
+
+            sol_xmr = data.get("solana", {}).get("xmr")
+            if sol_xmr:
+                rates["SOL_XMR"] = Decimal(str(sol_xmr))
 
             xmr_usd = data.get("monero", {}).get("usd")
             if xmr_usd:
