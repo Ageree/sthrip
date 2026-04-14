@@ -9,7 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends, Header, BackgroundTasks, Query, Request
 
 from sthrip.db.database import get_db
-from sthrip.db.models import Agent, HubRoute
+from sthrip.db.models import Agent, HubRoute, Transaction, PaymentType, TransactionStatus
 from sthrip.db.repository import BalanceRepository, TransactionRepository
 from sthrip.services.fee_collector import get_fee_collector
 from sthrip.services.agent_registry import get_registry
@@ -132,6 +132,22 @@ def _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempoten
     balance_repo.credit(_UUID(recipient.id), amount)
 
     collector.confirm_hub_route(route["payment_id"], db=db)
+
+    # Create a Transaction record so /payments/history and /history reflect
+    # hub-routing payments.  Uses the hub-route payment_id as tx_hash.
+    tx_repo = TransactionRepository(db)
+    tx_repo.create(
+        tx_hash=route["payment_id"],
+        network="hub",
+        from_agent_id=agent.id,
+        to_agent_id=_UUID(recipient.id),
+        amount=amount,
+        fee=fee_info["fee_amount"],
+        fee_collected=fee_info["fee_amount"],
+        payment_type=PaymentType.HUB_ROUTING.value,
+        status=TransactionStatus.CONFIRMED.value,
+        memo=getattr(req, "memo", None),
+    )
 
     return route
 
@@ -321,12 +337,12 @@ async def get_payment_history(
 
 @router.get("/{payment_id}")
 async def get_payment(
-    payment_id: UUID,
+    payment_id: str,
     agent: Agent = Depends(get_current_agent),
 ):
-    """Look up a hub-routing payment by ID"""
+    """Look up a hub-routing payment by ID (accepts UUID or hub-route payment_id like hp_...)"""
     with get_db() as db:
-        route = db.query(HubRoute).filter(HubRoute.payment_id == str(payment_id)).first()
+        route = db.query(HubRoute).filter(HubRoute.payment_id == payment_id).first()
         if not route:
             raise HTTPException(status_code=404, detail="Payment not found")
         if route.from_agent_id != agent.id and route.to_agent_id != agent.id:
