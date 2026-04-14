@@ -152,13 +152,12 @@ def _validate_settings():
                 raise SystemExit(1)
 
 
-def _fix_pg_enums(db):
-    """Add missing uppercase values to all PostgreSQL enums."""
-    from sqlalchemy import text as sa_text
-    from sthrip.db.enums import _PyEnum
-    import sthrip.db.enums as _enums_mod
-    import inspect
-
+def _fix_pg_enums():
+    """Add missing uppercase values to all PostgreSQL enums (uses autocommit)."""
+    from sqlalchemy import create_engine, text as sa_text
+    import os
+    url = os.getenv("DATABASE_URL", "postgresql://sthrip:sthrip@localhost:5432/sthrip")
+    eng = create_engine(url, isolation_level="AUTOCOMMIT")
     ENUM_MAP = {
         "privacylevel": ["LOW", "MEDIUM", "HIGH", "PARANOID"],
         "agenttier": ["FREE", "VERIFIED", "PREMIUM", "ENTERPRISE"],
@@ -182,45 +181,44 @@ def _fix_pg_enums(db):
         "conditionalpaymentstate": ["PENDING", "TRIGGERED", "EXECUTED", "EXPIRED", "CANCELLED"],
         "multipartypaymentstate": ["PENDING", "ACCEPTED", "COMPLETED", "REJECTED", "EXPIRED"],
     }
-
     fixed = 0
-    for enum_name, values in ENUM_MAP.items():
-        for val in values:
-            try:
-                db.execute(sa_text(
-                    "ALTER TYPE {} ADD VALUE IF NOT EXISTS :val".format(enum_name)
-                ), {"val": val})
-                fixed += 1
-            except Exception:
-                pass
+    with eng.connect() as conn:
+        for enum_name, values in ENUM_MAP.items():
+            for val in values:
+                try:
+                    conn.execute(sa_text("ALTER TYPE {} ADD VALUE IF NOT EXISTS '{}'".format(enum_name, val)))
+                    fixed += 1
+                except Exception:
+                    pass
     if fixed:
-        db.commit()
         logger.info("Fixed %d PG enum values", fixed)
 
-
-def _ensure_pending_withdrawals(db):
-    """Create pending_withdrawals table if missing."""
-    from sqlalchemy import text as sa_text
-    try:
-        db.execute(sa_text("SELECT 1 FROM pending_withdrawals LIMIT 1"))
-    except Exception:
-        db.execute(sa_text("""
-            CREATE TABLE IF NOT EXISTS pending_withdrawals (
-                id UUID PRIMARY KEY,
-                agent_id UUID NOT NULL REFERENCES agents(id),
-                amount NUMERIC(18,12) NOT NULL,
-                address VARCHAR(256) NOT NULL,
-                status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
-                tx_hash VARCHAR(128),
-                error TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                completed_at TIMESTAMPTZ
-            )
-        """))
-        db.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_agent ON pending_withdrawals(agent_id)"))
-        db.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_status ON pending_withdrawals(status, created_at)"))
-        db.commit()
-        logger.info("Created pending_withdrawals table")
+def _ensure_pending_withdrawals():
+    """Create pending_withdrawals table if missing (uses autocommit)."""
+    from sqlalchemy import create_engine, text as sa_text
+    import os
+    url = os.getenv("DATABASE_URL", "postgresql://sthrip:sthrip@localhost:5432/sthrip")
+    eng = create_engine(url, isolation_level="AUTOCOMMIT")
+    with eng.connect() as conn:
+        try:
+            conn.execute(sa_text("SELECT 1 FROM pending_withdrawals LIMIT 1"))
+        except Exception:
+            conn.execute(sa_text("""
+                CREATE TABLE IF NOT EXISTS pending_withdrawals (
+                    id UUID PRIMARY KEY,
+                    agent_id UUID NOT NULL REFERENCES agents(id),
+                    amount NUMERIC(18,12) NOT NULL,
+                    address VARCHAR(256) NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+                    tx_hash VARCHAR(128),
+                    error TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ
+                )
+            """))
+            conn.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_agent ON pending_withdrawals(agent_id)"))
+            conn.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_status ON pending_withdrawals(status, created_at)"))
+            logger.info("Created pending_withdrawals table")
 
 
 def _run_database_migrations():
@@ -243,9 +241,9 @@ def _run_database_migrations():
             if ver:
                 logger.info("Schema at alembic version %s — skipping migrations", ver)
                 # Ensure all PG enum values exist (safe to re-run)
-                _fix_pg_enums(db)
+                _fix_pg_enums()
                 try:
-                    _ensure_pending_withdrawals(db)
+                    _ensure_pending_withdrawals()
                 except Exception as e:
                     logger.warning("Could not create pending_withdrawals: %s", e)
                 return
