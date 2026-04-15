@@ -36,6 +36,7 @@ USER appuser
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV WEB_CONCURRENCY=2
 
 # Railway sets PORT; healthcheck uses /ready endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

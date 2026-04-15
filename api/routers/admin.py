@@ -7,6 +7,10 @@ import uuid as _uuid
 from fastapi import APIRouter, HTTPException, Depends, Header, Request, Query
 from pydantic import BaseModel, Field
 
+from typing import List, Optional
+
+from sthrip.db.database import get_db
+from sthrip.db.models import Agent, AgentBalance, PendingWithdrawal
 from sthrip.services.fee_collector import get_fee_collector
 from sthrip.services.agent_registry import get_registry
 from sthrip.services.monitoring import get_monitor
@@ -119,6 +123,100 @@ async def verify_agent(
         raise HTTPException(status_code=404, detail="Agent not found or verification failed.")
 
 
+
+
+class CleanupRequest(BaseModel):
+    """Request body for test agent cleanup."""
+    name_pattern: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="SQL LIKE pattern for agent names (e.g. 'test-%'). If not set, uses default test patterns.",
+    )
+    dry_run: bool = Field(
+        default=True,
+        description="If true, only list agents that would be removed without actually removing them.",
+    )
+
+
+@router.post("/cleanup-test-agents")
+async def cleanup_test_agents(
+    body: CleanupRequest,
+    request: Request,
+    _auth: bool = Depends(get_admin_session),
+):
+    """Deactivate test agents matching a name pattern.
+
+    Default patterns: 'test-%', 'e2e-%', 'demo-%', 'atomic-test-%',
+    'withdraw-test-%', 'wd-%'.
+    Only deactivates agents with zero balance to prevent fund loss.
+    """
+    default_patterns = [
+        "test-%", "e2e-%", "demo-%", "atomic-test-%",
+        "withdraw-test-%", "wd-%",
+    ]
+    patterns = [body.name_pattern] if body.name_pattern else default_patterns
+
+    matched: List[dict] = []
+    deactivated = 0
+    skipped_with_balance = 0
+
+    with get_db() as db:
+        for pattern in patterns:
+            agents = db.query(Agent).filter(
+                Agent.agent_name.like(pattern),
+                Agent.is_active == True,
+            ).all()
+
+            for agent in agents:
+                # Check balance — never deactivate agents with funds
+                balance = db.query(AgentBalance).filter_by(agent_id=agent.id).first()
+                has_funds = balance and (
+                    (balance.available or 0) > 0 or (balance.pending or 0) > 0
+                )
+
+                entry = {
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.agent_name,
+                    "created_at": agent.created_at.isoformat() if agent.created_at else None,
+                    "has_funds": bool(has_funds),
+                }
+
+                if has_funds:
+                    entry["action"] = "skipped (has funds)"
+                    skipped_with_balance += 1
+                elif body.dry_run:
+                    entry["action"] = "would_deactivate"
+                else:
+                    agent.is_active = False
+                    entry["action"] = "deactivated"
+                    deactivated += 1
+
+                matched.append(entry)
+
+        if not body.dry_run:
+            db.commit()
+
+    audit_log(
+        "admin.cleanup_test_agents",
+        ip_address=get_client_ip(request),
+        request_method="POST",
+        request_path="/v2/admin/cleanup-test-agents",
+        details={
+            "patterns": patterns,
+            "dry_run": body.dry_run,
+            "matched": len(matched),
+            "deactivated": deactivated,
+            "skipped_with_balance": skipped_with_balance,
+        },
+    )
+
+    return {
+        "dry_run": body.dry_run,
+        "matched": len(matched),
+        "deactivated": deactivated,
+        "skipped_with_balance": skipped_with_balance,
+        "agents": matched,
+    }
 
 
 # Temporary: fix all PG enums on startup

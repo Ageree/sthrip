@@ -118,6 +118,7 @@ _RATE_LIMITER_MODULES = [
     "api.main_v2",
     "api.deps",
     "api.routers.agents",
+    "api.routers.balance",
 ]
 
 # Modules where audit_log must be patched.
