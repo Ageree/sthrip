@@ -152,6 +152,74 @@ def _validate_settings():
                 raise SystemExit(1)
 
 
+def _sync_table_columns():
+    """Add missing columns to existing tables based on SQLAlchemy models."""
+    from sqlalchemy import create_engine, text as sa_text, inspect as sa_inspect
+    from sthrip.db.models import Base
+    import os
+    url = os.getenv("DATABASE_URL", "postgresql://sthrip:sthrip@localhost:5432/sthrip")
+    eng = create_engine(url, isolation_level="AUTOCOMMIT")
+    
+    # Type mapping: SQLAlchemy -> PostgreSQL
+    TYPE_MAP = {
+        "UUID": "UUID", "UUid": "UUID",
+        "NUMERIC": "NUMERIC(24,12)", "Numeric": "NUMERIC(24,12)",
+        "VARCHAR": "VARCHAR(256)", "String": "TEXT",
+        "INTEGER": "INTEGER", "Integer": "INTEGER", "BigInteger": "BIGINT",
+        "BOOLEAN": "BOOLEAN", "Boolean": "BOOLEAN",
+        "TIMESTAMP": "TIMESTAMPTZ", "DateTime": "TIMESTAMPTZ",
+        "JSON": "JSON", "Text": "TEXT", "FLOAT": "DOUBLE PRECISION", "Float": "DOUBLE PRECISION",
+    }
+    
+    added = 0
+    with eng.connect() as conn:
+        # Get existing tables
+        existing_tables = set()
+        for row in conn.execute(sa_text(
+            "SELECT tablename FROM pg_tables WHERE schemaname='public'"
+        )):
+            existing_tables.add(row[0])
+        
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue  # Only fix existing tables
+            
+            # Get existing columns
+            existing_cols = set()
+            for row in conn.execute(sa_text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name=:t"
+            ), {"t": table.name}):
+                existing_cols.add(row[0])
+            
+            # Add missing columns
+            for col in table.columns:
+                if col.name not in existing_cols:
+                    sa_type = str(col.type)
+                    pg_type = "TEXT"
+                    for key, val in TYPE_MAP.items():
+                        if key.upper() in sa_type.upper():
+                            pg_type = val
+                            break
+                    
+                    # Handle specific VARCHAR lengths
+                    import re
+                    m = re.search(r'(?:VARCHAR|String)\((\d+)\)', sa_type)
+                    if m:
+                        pg_type = f"VARCHAR({m.group(1)})"
+                    
+                    try:
+                        conn.execute(sa_text(
+                            f"ALTER TABLE {table.name} ADD COLUMN IF NOT EXISTS {col.name} {pg_type}"
+                        ))
+                        added += 1
+                        logger.info("Added column %s.%s (%s)", table.name, col.name, pg_type)
+                    except Exception as e:
+                        logger.warning("Could not add %s.%s: %s", table.name, col.name, e)
+    
+    if added:
+        logger.info("Synced %d missing columns", added)
+
+
 def _fix_pg_enums():
     """Add missing uppercase values to all PostgreSQL enums (uses autocommit)."""
     from sqlalchemy import create_engine, text as sa_text
@@ -252,6 +320,7 @@ def _run_database_migrations():
                 logger.info("Schema at alembic version %s — skipping migrations", ver)
                 # Ensure all PG enum values exist (safe to re-run)
                 _fix_pg_enums()
+                _sync_table_columns()
                 try:
                     _ensure_pending_withdrawals()
                 except Exception as e:
@@ -394,31 +463,14 @@ def _startup_services(hub_mode):
     webhook_task = asyncio.create_task(webhook_service.start_worker())
     logger.info("Webhook worker started")
 
-    # Worker guard: only start DepositMonitor in the first worker
-    # Uses PG advisory lock 73911 (distinct from monitor's poll lock 73910)
+    # DepositMonitor: always start (distributed lock inside prevents duplicate polling)
     deposit_monitor = None
     deposit_task = None
-    _monitor_lock_id = 73911
     if hub_mode == "onchain":
-        try:
-            from sqlalchemy import text as sa_text
-            with get_db() as db:
-                result = db.execute(sa_text(
-                    "SELECT pg_try_advisory_lock(:lid)"
-                ), {"lid": _monitor_lock_id}).scalar()
-                if result:
-                    deposit_monitor = create_deposit_monitor()
-                    if deposit_monitor is not None:
-                        deposit_task = asyncio.create_task(deposit_monitor.start())
-                        logger.info("DepositMonitor started (onchain mode, worker lock acquired)")
-                else:
-                    logger.info("DepositMonitor skipped (another worker holds the lock)")
-        except Exception as e:
-            logger.warning("DepositMonitor worker guard failed, starting anyway: %s", e)
-            deposit_monitor = create_deposit_monitor()
-            if deposit_monitor is not None:
-                deposit_task = asyncio.create_task(deposit_monitor.start())
-                logger.info("DepositMonitor started (onchain mode, fallback)")
+        deposit_monitor = create_deposit_monitor()
+        if deposit_monitor is not None:
+            deposit_task = asyncio.create_task(deposit_monitor.start())
+            logger.info("DepositMonitor started (onchain mode)")
 
     from sthrip.services.withdrawal_recovery import periodic_recovery_loop
     reconciliation_task = None
