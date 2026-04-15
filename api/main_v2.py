@@ -194,7 +194,7 @@ def _fix_pg_enums():
         logger.info("Fixed %d PG enum values", fixed)
 
 def _ensure_pending_withdrawals():
-    """Create pending_withdrawals table if missing (uses autocommit)."""
+    """Create or fix pending_withdrawals table (uses autocommit)."""
     from sqlalchemy import create_engine, text as sa_text
     import os
     url = os.getenv("DATABASE_URL", "postgresql://sthrip:sthrip@localhost:5432/sthrip")
@@ -202,23 +202,33 @@ def _ensure_pending_withdrawals():
     with eng.connect() as conn:
         try:
             conn.execute(sa_text("SELECT 1 FROM pending_withdrawals LIMIT 1"))
-        except Exception:
+            # Table exists — fix status column type if needed
             conn.execute(sa_text("""
-                CREATE TABLE IF NOT EXISTS pending_withdrawals (
-                    id UUID PRIMARY KEY,
-                    agent_id UUID NOT NULL REFERENCES agents(id),
-                    amount NUMERIC(18,12) NOT NULL,
-                    address VARCHAR(256) NOT NULL,
-                    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
-                    tx_hash VARCHAR(128),
-                    error TEXT,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    completed_at TIMESTAMPTZ
-                )
+                ALTER TABLE pending_withdrawals
+                ALTER COLUMN status TYPE withdrawalstatus
+                USING status::withdrawalstatus
             """))
-            conn.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_agent ON pending_withdrawals(agent_id)"))
-            conn.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_status ON pending_withdrawals(status, created_at)"))
-            logger.info("Created pending_withdrawals table")
+            logger.info("pending_withdrawals status column verified as enum")
+        except Exception:
+            try:
+                conn.execute(sa_text("""
+                    CREATE TABLE IF NOT EXISTS pending_withdrawals (
+                        id UUID PRIMARY KEY,
+                        agent_id UUID NOT NULL REFERENCES agents(id),
+                        amount NUMERIC(18,12) NOT NULL,
+                        address VARCHAR(256) NOT NULL,
+                        status withdrawalstatus NOT NULL DEFAULT 'PENDING',
+                        tx_hash VARCHAR(128),
+                        error TEXT,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        completed_at TIMESTAMPTZ
+                    )
+                """))
+                conn.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_agent ON pending_withdrawals(agent_id)"))
+                conn.execute(sa_text("CREATE INDEX IF NOT EXISTS ix_pw_status ON pending_withdrawals(status, created_at)"))
+                logger.info("Created pending_withdrawals table with enum")
+            except Exception as e2:
+                logger.warning("Could not create/fix pending_withdrawals: %s", e2)
 
 
 def _run_database_migrations():
@@ -384,11 +394,31 @@ def _startup_services(hub_mode):
     webhook_task = asyncio.create_task(webhook_service.start_worker())
     logger.info("Webhook worker started")
 
-    deposit_monitor = create_deposit_monitor()
+    # Worker guard: only start DepositMonitor in the first worker
+    # Uses PG advisory lock 73911 (distinct from monitor's poll lock 73910)
+    deposit_monitor = None
     deposit_task = None
-    if deposit_monitor is not None:
-        deposit_task = asyncio.create_task(deposit_monitor.start())
-        logger.info("DepositMonitor started (onchain mode)")
+    _monitor_lock_id = 73911
+    if hub_mode == "onchain":
+        try:
+            from sqlalchemy import text as sa_text
+            with get_db() as db:
+                result = db.execute(sa_text(
+                    "SELECT pg_try_advisory_lock(:lid)"
+                ), {"lid": _monitor_lock_id}).scalar()
+                if result:
+                    deposit_monitor = create_deposit_monitor()
+                    if deposit_monitor is not None:
+                        deposit_task = asyncio.create_task(deposit_monitor.start())
+                        logger.info("DepositMonitor started (onchain mode, worker lock acquired)")
+                else:
+                    logger.info("DepositMonitor skipped (another worker holds the lock)")
+        except Exception as e:
+            logger.warning("DepositMonitor worker guard failed, starting anyway: %s", e)
+            deposit_monitor = create_deposit_monitor()
+            if deposit_monitor is not None:
+                deposit_task = asyncio.create_task(deposit_monitor.start())
+                logger.info("DepositMonitor started (onchain mode, fallback)")
 
     from sthrip.services.withdrawal_recovery import periodic_recovery_loop
     reconciliation_task = None
