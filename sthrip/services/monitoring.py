@@ -441,6 +441,22 @@ def dispatch_alert_webhook(alert: Alert) -> None:
                 f"Source: `{alert.source}` | {alert.timestamp.isoformat()}"
             )
             requests.post(webhook_url, json={"text": text, "parse_mode": "Markdown"}, timeout=10)
+        elif "hooks.slack.com" in webhook_url:
+            # Slack Incoming Webhook
+            color = {"info": "#36a64f", "warning": "#ffcc00", "critical": "#ff0000"}.get(alert.severity.value, "#808080")
+            payload = {
+                "attachments": [{
+                    "color": color,
+                    "title": f"{severity_emoji} {alert.title}",
+                    "text": alert.message,
+                    "fields": [
+                        {"title": "Source", "value": alert.source, "short": True},
+                        {"title": "Severity", "value": alert.severity.value.upper(), "short": True},
+                    ],
+                    "ts": int(alert.timestamp.timestamp()),
+                }]
+            }
+            requests.post(webhook_url, json=payload, timeout=10)
         else:
             # Discord webhook (or generic)
             embed = {

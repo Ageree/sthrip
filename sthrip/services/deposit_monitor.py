@@ -17,6 +17,7 @@ from ..db.models import AgentBalance, TransactionStatus, PaymentType
 from ..db.repository import BalanceRepository, TransactionRepository, SystemStateRepository
 from sthrip.config import get_settings
 from .wallet_service import WalletService
+from .monitoring import get_monitor, AlertSeverity
 
 try:
     import redis as _redis_lib
@@ -102,6 +103,26 @@ class DepositMonitor:
                         "DepositMonitor failed %d times — deposits may be missed",
                         consecutive_failures,
                     )
+                    # Fire alert through monitoring system (dispatches to Slack/Telegram)
+                    try:
+                        monitor = get_monitor()
+                        severity = (
+                            AlertSeverity.CRITICAL
+                            if consecutive_failures >= _ALERT_THRESHOLD * 2
+                            else AlertSeverity.WARNING
+                        )
+                        monitor._create_alert(
+                            severity=severity,
+                            title="DepositMonitor poll failures",
+                            message=(
+                                f"DepositMonitor has failed {consecutive_failures} "
+                                f"consecutive times. Deposits may be missed. "
+                                f"Check wallet RPC connectivity."
+                            ),
+                            source="deposit_monitor",
+                        )
+                    except Exception:
+                        logger.warning("Failed to dispatch DepositMonitor alert")
             backoff = min(
                 self.poll_interval * max(consecutive_failures, 1),
                 _MAX_BACKOFF,

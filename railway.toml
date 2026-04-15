@@ -6,7 +6,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "railway/Dockerfile.railway"
 
 [deploy]
-startCommand = "sh -c 'gunicorn api.main_v2:app --worker-class uvicorn.workers.UvicornWorker --workers ${WEB_CONCURRENCY:-1} --bind 0.0.0.0:${PORT:-8000} --graceful-timeout 60 --timeout 120'"
+startCommand = "sh -c 'gunicorn api.main_v2:app --worker-class uvicorn.workers.UvicornWorker --workers ${WEB_CONCURRENCY:-2} --bind 0.0.0.0:${PORT:-8000} --graceful-timeout 60 --timeout 120 --max-requests 1000 --max-requests-jitter 50'"
 healthcheckPath = "/ready"
 healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"

@@ -15,6 +15,7 @@ from sthrip.services.idempotency import get_idempotency_store
 from sthrip.services.webhook_service import queue_webhook
 from sthrip.services.audit_logger import log_event as audit_log
 from sthrip.services.metrics import balance_ops_total
+from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 from api.deps import get_current_agent
 from api.schemas import DepositRequest, WithdrawRequest
 from sthrip.config import get_settings
@@ -58,6 +59,22 @@ async def deposit_balance(
 
     try:
         if hub_mode == "onchain":
+            # Rate limit subaddress creation: 10 per agent per hour, 200 global per hour
+            limiter = get_rate_limiter()
+            try:
+                limiter.check_rate_limit(
+                    agent_id=str(agent.id),
+                    tier="standard",
+                    endpoint="deposit_subaddress",
+                    cost=1,
+                )
+            except RateLimitExceeded as e:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Deposit address creation rate limit exceeded",
+                    headers={"Retry-After": str(max(1, int(e.reset_at - __import__('time').time())))},
+                )
+
             wallet_svc = get_wallet_service()
             rpc_timeout = get_settings().wallet_rpc_timeout * 3  # 3 retries max
             deposit_address = await asyncio.wait_for(

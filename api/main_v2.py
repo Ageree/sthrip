@@ -5,6 +5,7 @@ Sthrip API v2 — App factory
 import json
 import asyncio
 import logging
+import os
 import pathlib
 import time as _time
 from contextlib import asynccontextmanager
@@ -204,12 +205,18 @@ def _ensure_pending_withdrawals():
             conn.execute(sa_text("SELECT 1 FROM pending_withdrawals LIMIT 1"))
         except Exception:
             conn.execute(sa_text("""
+                DO $$ BEGIN
+                    CREATE TYPE withdrawalstatus AS ENUM ('PENDING', 'COMPLETED', 'FAILED', 'NEEDS_REVIEW');
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END $$;
+            """))
+            conn.execute(sa_text("""
                 CREATE TABLE IF NOT EXISTS pending_withdrawals (
                     id UUID PRIMARY KEY,
                     agent_id UUID NOT NULL REFERENCES agents(id),
                     amount NUMERIC(18,12) NOT NULL,
                     address VARCHAR(256) NOT NULL,
-                    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+                    status withdrawalstatus NOT NULL DEFAULT 'PENDING',
                     tx_hash VARCHAR(128),
                     error TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -374,6 +381,46 @@ async def _conditional_payment_loop():
             logger.exception("Conditional payment loop error")
 
 
+def _is_primary_worker() -> bool:
+    """Determine if this is the primary worker that should run background tasks.
+
+    With gunicorn + uvicorn workers, each worker is a separate process.
+    We use a simple strategy: try to acquire a PG advisory lock or check
+    an env var. The DepositMonitor already uses distributed locking, but
+    other background tasks (escrow, SLA, recurring) need a guard too.
+
+    Returns True if this worker should run background tasks.
+    """
+    # If WEB_CONCURRENCY is 1 (or not set), always primary
+    concurrency = int(os.environ.get("WEB_CONCURRENCY", "2"))
+    if concurrency <= 1:
+        return True
+
+    # Try PG advisory lock for leader election among workers
+    try:
+        from sqlalchemy import text as sa_text
+        from sthrip.db.database import get_engine
+        engine = get_engine()
+        if engine.dialect.name == "postgresql":
+            with engine.connect() as conn:
+                # Use a different lock ID than DepositMonitor
+                _LEADER_LOCK_ID = 73911
+                acquired = conn.execute(
+                    sa_text("SELECT pg_try_advisory_lock(:id)"),
+                    {"id": _LEADER_LOCK_ID},
+                ).scalar()
+                if acquired:
+                    logger.info("Worker elected as primary (PG advisory lock acquired)")
+                    return True
+                else:
+                    logger.info("Worker is secondary (PG advisory lock held by another)")
+                    return False
+    except Exception as e:
+        logger.warning("Worker guard lock failed (%s), defaulting to primary", e)
+
+    return True
+
+
 def _startup_services(hub_mode):
     """Start health monitoring, webhook worker, and deposit monitor. Returns resources for shutdown."""
     monitor = setup_default_monitoring(include_wallet=(hub_mode == "onchain"))
@@ -384,36 +431,47 @@ def _startup_services(hub_mode):
     webhook_task = asyncio.create_task(webhook_service.start_worker())
     logger.info("Webhook worker started")
 
+    # Worker guard: only the primary worker runs background tasks to prevent
+    # duplicate processing with multiple gunicorn workers.
+    is_primary = _is_primary_worker()
+
     deposit_monitor = create_deposit_monitor()
     deposit_task = None
-    if deposit_monitor is not None:
+    if deposit_monitor is not None and is_primary:
         deposit_task = asyncio.create_task(deposit_monitor.start())
-        logger.info("DepositMonitor started (onchain mode)")
+        logger.info("DepositMonitor started (onchain mode, primary worker)")
+    elif deposit_monitor is not None:
+        logger.info("DepositMonitor skipped (secondary worker — distributed lock ensures safety)")
 
     from sthrip.services.withdrawal_recovery import periodic_recovery_loop
     reconciliation_task = None
-    if hub_mode == "onchain":
+    if hub_mode == "onchain" and is_primary:
         wallet_svc = get_wallet_service()
         reconciliation_task = asyncio.create_task(
             periodic_recovery_loop(wallet_service=wallet_svc)
         )
         logger.info("Periodic withdrawal reconciliation started")
 
-    # Escrow auto-resolution background task (runs every 5 minutes)
-    escrow_resolution_task = asyncio.create_task(_escrow_resolution_loop())
-    logger.info("Escrow auto-resolution task started")
+    # Background tasks only run on primary worker
+    escrow_resolution_task = None
+    sla_enforcement_task = None
+    recurring_payment_task = None
+    conditional_payment_task = None
 
-    # SLA auto-enforcement background task (runs every 30 seconds)
-    sla_enforcement_task = asyncio.create_task(_sla_enforcement_loop())
-    logger.info("SLA auto-enforcement task started")
+    if is_primary:
+        escrow_resolution_task = asyncio.create_task(_escrow_resolution_loop())
+        logger.info("Escrow auto-resolution task started")
 
-    # Recurring payment execution background task (runs every 5 minutes)
-    recurring_payment_task = asyncio.create_task(_recurring_payment_loop())
-    logger.info("Recurring payment execution task started")
+        sla_enforcement_task = asyncio.create_task(_sla_enforcement_loop())
+        logger.info("SLA auto-enforcement task started")
 
-    # Conditional payment evaluation background task (runs every 30 seconds)
-    conditional_payment_task = asyncio.create_task(_conditional_payment_loop())
-    logger.info("Conditional payment evaluation task started")
+        recurring_payment_task = asyncio.create_task(_recurring_payment_loop())
+        logger.info("Recurring payment execution task started")
+
+        conditional_payment_task = asyncio.create_task(_conditional_payment_loop())
+        logger.info("Conditional payment evaluation task started")
+    else:
+        logger.info("Background tasks skipped (secondary worker)")
 
     return {
         "monitor": monitor,
