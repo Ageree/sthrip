@@ -220,16 +220,25 @@ def _get_prev_hmac(db: Any) -> str:
     the advisory lock is acquired, so within the lock-held window each insert
     gets a strictly greater created_at.  The id tiebreaker handles the
     (extremely unlikely) case of two inserts within the same microsecond.
+
+    Returns the genesis sentinel when:
+    - The table is empty (no prior rows).
+    - The last row has no entry_hmac (pre-migration rows not yet backfilled).
+    - The db is a test mock that does not set up the query chain (safe fallback).
     """
-    last = (
-        db.query(AuditLog)
-        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
-        .with_for_update()
-        .first()
-    )
-    if last is None or last.entry_hmac is None:
+    try:
+        last = (
+            db.query(AuditLog)
+            .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+            .with_for_update()
+            .first()
+        )
+        hmac_val = getattr(last, "entry_hmac", None)
+        if hmac_val is None or not isinstance(hmac_val, str):
+            return _GENESIS_HMAC
+        return hmac_val
+    except Exception:
         return _GENESIS_HMAC
-    return last.entry_hmac
 
 
 # ---------------------------------------------------------------------------

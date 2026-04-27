@@ -379,6 +379,43 @@ def _run_database_migrations():
             create_tables()
 
 
+def _verify_audit_chain_on_startup() -> None:
+    """Run a full audit chain verification at startup (F-11, non-fatal on mismatch).
+
+    A mismatch is logged as a WARNING and a metric counter is incremented.
+    The application continues to start — crashing production on a single bad
+    row would be a denial-of-service vector.  Operators should alert on the
+    ``audit_chain_invalid_rows`` metric.
+    """
+    try:
+        from sthrip.services.audit_logger import verify_chain
+        from sthrip.services.monitoring import get_monitor
+
+        with get_db() as db:
+            status = verify_chain(db)
+
+        if status.ok:
+            logger.info(
+                "Audit chain verification passed (%d rows checked)",
+                status.total_checked,
+            )
+        else:
+            logger.warning(
+                "AUDIT CHAIN INTEGRITY VIOLATION detected at startup: "
+                "first_bad_id=%s, total_checked=%d. "
+                "Investigate possible tampering of the audit_log table.",
+                status.first_bad_id,
+                status.total_checked,
+            )
+            try:
+                monitor = get_monitor()
+                monitor.record_metric("audit_chain_invalid_rows", 1)
+            except Exception:
+                pass  # Monitoring failure must not block startup
+    except Exception as exc:
+        logger.error("Audit chain verification failed (non-fatal): %s", exc)
+
+
 def _recover_pending_withdrawals():
     """Recover stale pending withdrawals in onchain mode (non-fatal on failure)."""
     try:
@@ -713,6 +750,8 @@ async def lifespan(app: FastAPI):
     hub_mode = get_hub_mode()
     if hub_mode == "onchain":
         _recover_pending_withdrawals()
+
+    _verify_audit_chain_on_startup()
 
     services = _startup_services(hub_mode)
 
