@@ -44,3 +44,6 @@ mcp>=1.0.0
 
 # E2E Encrypted Messaging
 PyNaCl>=1.6.0
+
+# Testing
+fakeredis>=2.0.0
