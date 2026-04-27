@@ -89,25 +89,6 @@ class RecurringPaymentRepository:
 
         return query.all()
 
-    def get_by_id_for_update(self, payment_id: UUID) -> Optional[RecurringPayment]:
-        """Fetch a payment by ID with a row-level lock (FOR UPDATE).
-
-        Used during the charge window so that concurrent ``cancel_subscription``
-        calls must wait for the charge transaction to commit or roll back.
-        On SQLite the lock is silently dropped (single-process test environment).
-        """
-        dialect = getattr(self.db.bind, "dialect", None)
-        dialect_name = dialect.name if dialect else ""
-
-        query = self.db.query(RecurringPayment).filter(
-            RecurringPayment.id == payment_id
-        )
-
-        if dialect_name == "postgresql":
-            query = query.with_for_update()
-
-        return query.first()
-
     def list_by_agent(
         self,
         agent_id: UUID,

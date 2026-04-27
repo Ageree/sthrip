@@ -510,18 +510,32 @@ async def _recurring_payment_loop():
 
 
 async def _conditional_payment_loop():
-    """Evaluate conditional payment conditions every 30 seconds."""
+    """Evaluate conditional payment conditions every 30 seconds.
+
+    F-3 fix: acquires a distributed Redis lease so only one replica evaluates
+    conditional payments per cycle.  Without this, multiple replicas would
+    each pick up the same triggered payment and execute it more than once.
+    """
     from sthrip.services.conditional_payment_service import ConditionalPaymentService
+    from sthrip.services.distributed_lease import with_redis_lease
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
     while True:
         try:
             await asyncio.sleep(30)  # 30 seconds
-            with get_db() as db:
-                executed = ConditionalPaymentService.evaluate_conditions(db)
-                expired = ConditionalPaymentService.expire_stale(db)
-                if executed > 0:
-                    logger.info("Conditional payments: executed %d payments", executed)
-                if expired > 0:
-                    logger.info("Conditional payments: expired %d payments", expired)
+            with with_redis_lease(
+                _redis, "conditional_payment_loop", ttl=45, fail_open=_fail_open
+            ) as acquired:
+                if not acquired:
+                    logger.debug("Conditional payments: lease not acquired, skipping cycle")
+                    continue
+                with get_db() as db:
+                    executed = ConditionalPaymentService.evaluate_conditions(db)
+                    expired = ConditionalPaymentService.expire_stale(db)
+                    if executed > 0:
+                        logger.info("Conditional payments: executed %d payments", executed)
+                    if expired > 0:
+                        logger.info("Conditional payments: expired %d payments", expired)
         except asyncio.CancelledError:
             break
         except Exception:
