@@ -48,16 +48,33 @@ async def deposit_balance(
     idempotency_key: Optional[str] = Header(None, min_length=8, max_length=255),
 ):
     """Deposit XMR to hub balance."""
-    hub_mode = get_hub_mode()
+    import hashlib as _hashlib
+    import json as _json
 
+    hub_mode = get_hub_mode()
     store = get_idempotency_store() if idempotency_key else None
-    if idempotency_key:
-        cached = store.try_reserve(str(agent.id), "deposit", idempotency_key)
-        if cached is not None:
-            return cached
+
+    _req_body = _json.dumps(
+        req.dict() if req is not None else {},
+        sort_keys=True, separators=(",", ":"), default=str,
+    )
+    req_hash = _hashlib.sha256(_req_body.encode()).hexdigest() if idempotency_key else None
 
     try:
         if hub_mode == "onchain":
+            # Onchain deposit: no balance mutation, just a wallet address lookup.
+            # Fix 1: single try_reserve with a short-lived DB session for F-4 replay
+            # detection. The DB write is still atomic because there is no concurrent
+            # balance mutation here.
+            if idempotency_key:
+                with get_db() as db:
+                    cached = store.try_reserve(
+                        str(agent.id), "deposit", idempotency_key,
+                        db=db, request_hash=req_hash,
+                    )
+                    if cached is not None:
+                        return cached
+
             wallet_svc = get_wallet_service()
             rpc_timeout = get_settings().wallet_rpc_timeout * 3  # 3 retries max
             deposit_address = await asyncio.wait_for(
@@ -73,6 +90,13 @@ async def deposit_balance(
                 "min_confirmations": min_conf,
                 "message": f"Send XMR to this address. Balance will be credited after {min_conf} confirmations.",
             }
+
+            if idempotency_key:
+                with get_db() as db:
+                    store.store_response(
+                        str(agent.id), "deposit", idempotency_key, response,
+                        db=db, request_hash=req_hash,
+                    )
         else:
             if get_settings().environment not in ("dev",):
                 raise HTTPException(
@@ -82,15 +106,32 @@ async def deposit_balance(
             if req is None or req.amount is None:
                 raise HTTPException(status_code=422, detail="amount is required in ledger mode")
             amount = req.amount
+
+            # Fix 1: single try_reserve inside the same DB session as the balance write.
             with get_db() as db:
+                if idempotency_key:
+                    cached = store.try_reserve(
+                        str(agent.id), "deposit", idempotency_key,
+                        db=db, request_hash=req_hash,
+                    )
+                    if cached is not None:
+                        return cached
+
                 repo = BalanceRepository(db)
                 balance = repo.deposit(agent.id, amount)
-            response = {
-                "status": "deposited",
-                "amount": str(amount),
-                "new_balance": str(balance.available),
-                "token": "XMR",
-            }
+                response = {
+                    "status": "deposited",
+                    "amount": str(amount),
+                    "new_balance": str(balance.available),
+                    "token": "XMR",
+                }
+
+                # Write idempotency row atomically with the balance change (Fix 2).
+                if idempotency_key:
+                    store.store_response(
+                        str(agent.id), "deposit", idempotency_key, response,
+                        db=db, request_hash=req_hash,
+                    )
 
         balance_ops_total.labels(operation="deposit", token="XMR").inc()
         audit_log(
@@ -103,9 +144,6 @@ async def deposit_balance(
                 "amount": str(req.amount) if req and req.amount else None,
             },
         )
-
-        if idempotency_key:
-            store.store_response(str(agent.id), "deposit", idempotency_key, response)
 
         return response
     except Exception:
@@ -227,17 +265,34 @@ async def withdraw_balance(
     idempotency_key: Optional[str] = Header(None, min_length=8, max_length=255),
 ):
     """Withdraw XMR from hub balance to external address."""
-    hub_mode = get_hub_mode()
+    import hashlib as _hashlib
+    import json as _json
 
+    hub_mode = get_hub_mode()
     store = get_idempotency_store() if idempotency_key else None
-    if idempotency_key:
-        cached = store.try_reserve(str(agent.id), "withdraw", idempotency_key)
-        if cached is not None:
-            return cached
+
+    _req_body = _json.dumps(req.dict(), sort_keys=True, separators=(",", ":"), default=str)
+    req_hash = _hashlib.sha256(_req_body.encode()).hexdigest() if idempotency_key else None
 
     pending_id = None
     try:
         amount = req.amount
+
+        # Fix 1: single try_reserve with DB session for F-4 replay detection.
+        # The idempotency check must happen before _deduct_and_create_pending to
+        # avoid double-deducting on replay. We open a fresh session here purely
+        # for the idempotency check; _deduct_and_create_pending opens its own
+        # session (which is correct — the deduction must be atomic with the
+        # pending-withdrawal record, not with the idempotency row).
+        if idempotency_key:
+            with get_db() as db:
+                cached = store.try_reserve(
+                    str(agent.id), "withdraw", idempotency_key,
+                    db=db, request_hash=req_hash,
+                )
+                if cached is not None:
+                    return cached
+
         pending_id = _deduct_and_create_pending(
             agent.id, amount, req.address,
             check_self_send=True,
@@ -264,8 +319,14 @@ async def withdraw_balance(
             details={"amount": str(amount), "to_address": req.address[:8] + "...", "mode": hub_mode},
         )
 
+        # Store idempotency response in a separate session after withdrawal completes
+        # (Fix 1: single try_reserve; Fix 2: re-raises on non-race DB error).
         if idempotency_key:
-            store.store_response(str(agent.id), "withdraw", idempotency_key, response)
+            with get_db() as db:
+                store.store_response(
+                    str(agent.id), "withdraw", idempotency_key, response,
+                    db=db, request_hash=req_hash,
+                )
 
         return response
     except Exception:

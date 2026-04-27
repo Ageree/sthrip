@@ -1241,3 +1241,57 @@ class MultiPartyRecipient(Base):
     __table_args__ = (
         UniqueConstraint("payment_id", "recipient_id", name="uq_multi_party_recipient"),
     )
+
+
+# ---------------------------------------------------------------------------
+# F-4: DB-backed idempotency key store
+# ---------------------------------------------------------------------------
+
+class IdempotencyKey(Base):
+    """Persistent idempotency key store (F-4 fix).
+
+    Authoritative record of every completed mutation request.  Redis is used
+    as a write-through hot-path cache, but THIS table is the source of truth.
+    Keys are retained indefinitely so that replay attacks after Redis TTL expiry
+    are always detected.
+
+    Unique constraint on (agent_id, endpoint, key) preserves the existing
+    three-dimensional scoping: the same key value on /hub-routing and /withdraw
+    are independent entries (matching the Redis key format).
+
+    UUID column type
+    ----------------
+    Uses ``sqlalchemy.dialects.postgresql.UUID(as_uuid=True)`` which renders
+    as the native ``UUID`` type on Postgres and degrades gracefully to a string
+    representation on SQLite (test environment). This is consistent with all
+    other primary-key columns in this file.
+
+    Retention
+    ---------
+    Rows older than ``idempotency_db_retention_days`` (default 90) may be
+    purged by a maintenance cron job (cleanup is out of scope for F-4;
+    see sthrip/config.py). The retention window must be >> any realistic
+    retry window — 90 days is conservative.
+    """
+    __tablename__ = "idempotency_keys"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Scoping dimensions — must match the Redis key composition in IdempotencyStore._key
+    agent_id = Column(String(255), nullable=False)
+    endpoint = Column(String(255), nullable=False)
+    key = Column(String(512), nullable=False)
+
+    # sha256(canonical JSON body) — used to detect same-key + different-body (422)
+    request_hash = Column(String(64), nullable=False)
+
+    # Stored response (authoritative replay payload)
+    response_status = Column(Integer, nullable=False, default=200)
+    response_body = Column(JSON, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "endpoint", "key", name="uq_idempotency_agent_endpoint_key"),
+        Index("ix_idempotency_keys_created_at", "created_at"),
+    )

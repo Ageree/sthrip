@@ -34,6 +34,8 @@ from sthrip.db.models import (
     AgentCreditScore, AgentLoan, LendingOffer,
     ConditionalPayment,
     MultiPartyPayment, MultiPartyRecipient,
+    # F-4: DB-backed idempotency
+    IdempotencyKey,
 )
 
 # Stable Fernet key for tests (base64url-encoded 32-byte key).
@@ -76,6 +78,8 @@ _COMMON_TEST_TABLES = [
     ConditionalPayment.__table__,
     MultiPartyPayment.__table__,
     MultiPartyRecipient.__table__,
+    # F-4: DB-backed idempotency
+    IdempotencyKey.__table__,
 ]
 
 # Modules where get_db must be patched.
@@ -148,11 +152,18 @@ def _ensure_settings_env(monkeypatch):
     import sthrip.crypto as _crypto
     _crypto._fernet_instance = None
 
+    # Reset the IdempotencyStore singleton so each test gets a fresh instance.
+    import sthrip.services.idempotency as _idem_mod
+    _idem_mod._store = None
+
     yield
 
     get_settings.cache_clear()
     import sthrip.crypto as _crypto
     _crypto._fernet_instance = None
+
+    import sthrip.services.idempotency as _idem_mod
+    _idem_mod._store = None
 
 
 # ---------------------------------------------------------------------------

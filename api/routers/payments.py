@@ -223,16 +223,31 @@ async def send_hub_routed_payment(
     x_sthrip_session: Optional[str] = Header(None),
 ):
     """Send payment via hub routing"""
+    import hashlib as _hashlib
+    import json as _json
+
     store = idempotency_store if idempotency_key else None
-    if idempotency_key:
-        cached = store.try_reserve(str(agent.id), "hub-routing", idempotency_key)
-        if cached is not None:
-            return cached
+
+    # Compute canonical request hash for body-mismatch detection (F-4).
+    _req_body = _json.dumps(req.dict(), sort_keys=True, separators=(",", ":"), default=str)
+    req_hash = _hashlib.sha256(_req_body.encode()).hexdigest() if idempotency_key else None
 
     try:
         amount = req.amount
 
+        # Fix 1: open DB session FIRST, then call try_reserve exactly once with db=.
+        # The previous two-call pattern (once without db, once inside with get_db)
+        # caused try_reserve to set the sentinel on call 1, then see its own sentinel
+        # on call 2 and raise 409 — blocking every first production POST with an
+        # Idempotency-Key header.
         with get_db() as db:
+            if idempotency_key:
+                cached = store.try_reserve(
+                    str(agent.id), "hub-routing", idempotency_key,
+                    db=db, request_hash=req_hash,
+                )
+                if cached is not None:
+                    return cached
             # --- Spending policy enforcement ---
             sp_repo = SpendingPolicyRepository(db)
             spending_policy = sp_repo.get_by_agent_id(agent.id)
@@ -269,8 +284,23 @@ async def send_hub_routed_payment(
                 urgency=req.urgency,
             )
             route = _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key, fee_collector=fee_collector)
-        if route.get("duplicate"):
-            return route
+
+            if route.get("duplicate"):
+                return route
+
+            response = _build_hub_payment_response(
+                route, recipient, amount, fee_info, fee_info["total_deduction"],
+            )
+
+            # Write idempotency row INSIDE the same DB session as the payment
+            # so the INSERT is atomic with the balance mutation (Fix 1 + Fix 2).
+            # If _db_create raises (non-race DB error), the whole `with get_db()`
+            # block rolls back — payment is NOT committed. Client retries safely.
+            if idempotency_key:
+                store.store_response(
+                    str(agent.id), "hub-routing", idempotency_key, response,
+                    db=db, request_hash=req_hash,
+                )
 
         background_tasks.add_task(
             queue_webhook, str(agent.id), "payment.sent",
@@ -280,14 +310,7 @@ async def send_hub_routed_payment(
 
         _log_hub_payment(agent, req, route, fee_info, amount)
 
-        response = _build_hub_payment_response(
-            route, recipient, amount, fee_info, fee_info["total_deduction"],
-        )
-
         hub_payments_total.labels(status="completed", tier=agent.tier.value).inc()
-
-        if idempotency_key:
-            store.store_response(str(agent.id), "hub-routing", idempotency_key, response)
 
         return response
     except Exception:

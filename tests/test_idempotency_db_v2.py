@@ -227,7 +227,8 @@ def f4_client(fake_redis_instance, monkeypatch):
     mock_webhook = MagicMock()
     mock_webhook.get_delivery_stats.return_value = {"total": 0}
 
-    # Reset IdempotencyStore singleton so each test gets a fresh instance.
+    # Reset IdempotencyStore singleton and force REDIS_AVAILABLE so each
+    # test gets a fresh store that uses fakeredis, regardless of prior test state.
     import sthrip.services.idempotency as _idem_mod
     _idem_mod._store = None
 
@@ -261,18 +262,35 @@ def f4_client(fake_redis_instance, monkeypatch):
         )
         stack.enter_context(patch("sthrip.services.webhook_service.queue_webhook"))
 
-        # Inject fakeredis into the IdempotencyStore singleton.
-        stack.enter_context(
-            patch(
-                "sthrip.services.idempotency.redis",
-                **{"from_url.return_value": fake_redis_instance},
-            )
-        )
+        # Directly construct an IdempotencyStore that uses fakeredis and
+        # inject it as the singleton. This bypasses all lazy-creation races
+        # and ensures the store is fully initialised before any request hits.
+        fake_store = _idem_mod.IdempotencyStore.__new__(_idem_mod.IdempotencyStore)
+        import threading as _threading
+        fake_store._local_cache = {}
+        fake_store._lock = _threading.Lock()
+        fake_store._last_eviction = 0.0
+        fake_store.use_redis = True
+        fake_store.redis = fake_redis_instance
+        _idem_mod._store = fake_store
+
+        # Patch get_idempotency_store in every module that imported it at
+        # module-level. Module-level imports bind the name locally, so
+        # patching the source module alone is insufficient.
+        def _return_fake_store():
+            return fake_store
+
+        for _mod_path in [
+            "sthrip.services.idempotency.get_idempotency_store",
+            "api.routers.balance.get_idempotency_store",
+            "api.routers.payments.get_idempotency_store",
+        ]:
+            stack.enter_context(patch(_mod_path, side_effect=_return_fake_store))
 
         from api.main_v2 import app
         http_client = TestClient(app, raise_server_exceptions=False)
 
-        yield http_client, engine, fake_redis_instance
+        yield http_client, engine, fake_redis_instance, factory
 
     # Clean up singleton after test
     _idem_mod._store = None
@@ -320,7 +338,7 @@ class TestScenario1FirstCall:
     """Scenario 1: POST with Idempotency-Key K, body B → 200 + payment."""
 
     def test_first_payment_succeeds(self, f4_client):
-        client, engine, fake_redis = f4_client
+        client, engine, fake_redis, db_factory = f4_client
 
         sender_key = _register_agent(client, "f4-sender-s1")
         _register_agent(client, "f4-recipient-s1")
@@ -349,7 +367,7 @@ class TestScenario2ReplayAfterTTL:
     """
 
     def test_replay_after_redis_flush_returns_same_payment_id(self, f4_client):
-        client, engine, fake_redis = f4_client
+        client, engine, fake_redis, db_factory = f4_client
 
         sender_key = _register_agent(client, "f4-sender-s2")
         _register_agent(client, "f4-recipient-s2")
@@ -369,7 +387,7 @@ class TestScenario2ReplayAfterTTL:
         assert payment_id_1, f"No payment_id in first response: {resp1.json()}"
 
         # Count transactions before replay
-        session = sessionmaker(bind=engine)()
+        session = db_factory()
         tx_count_before = session.query(Transaction).count()
         session.close()
 
@@ -385,7 +403,7 @@ class TestScenario2ReplayAfterTTL:
         )
 
         # No new Transaction row should have been created
-        session = sessionmaker(bind=engine)()
+        session = db_factory()
         tx_count_after = session.query(Transaction).count()
         session.close()
 
@@ -399,7 +417,7 @@ class TestScenario2ReplayAfterTTL:
         if not _IDEMPOTENCY_KEY_TABLE_EXISTS:
             pytest.skip("IdempotencyKey model not yet implemented")
 
-        client, engine, fake_redis = f4_client
+        client, engine, fake_redis, db_factory = f4_client
 
         sender_key = _register_agent(client, "f4-sender-s2b")
         _register_agent(client, "f4-recipient-s2b")
@@ -419,7 +437,7 @@ class TestScenario2ReplayAfterTTL:
         # Flush Redis to ensure DB is the only source
         fake_redis.flushall()
 
-        session = sessionmaker(bind=engine)()
+        session = db_factory()
         row = session.query(IdempotencyKey).filter_by(
             endpoint="hub-routing", key=idem_key
         ).first()
@@ -439,7 +457,7 @@ class TestScenario3DifferentBody:
     """
 
     def test_different_body_same_key_returns_422(self, f4_client):
-        client, engine, fake_redis = f4_client
+        client, engine, fake_redis, db_factory = f4_client
 
         sender_key = _register_agent(client, "f4-sender-s3")
         _register_agent(client, "f4-recipient-s3")
@@ -476,7 +494,7 @@ class TestScenario3DifferentBody:
 
     def test_redis_still_present_different_body_returns_422(self, f4_client):
         """Same K, different body while Redis still has the entry → 422."""
-        client, engine, fake_redis = f4_client
+        client, engine, fake_redis, db_factory = f4_client
 
         sender_key = _register_agent(client, "f4-sender-s3b")
         _register_agent(client, "f4-recipient-s3b")
@@ -540,7 +558,7 @@ class TestScenario4Concurrent:
         - Call 2: after sentinel clears (winner committed), returns cached response.
         No duplicate transaction should occur.
         """
-        client, engine, fake_redis = f4_client
+        client, engine, fake_redis, db_factory = f4_client
 
         sender_key = _register_agent(client, "f4-sender-s4")
         _register_agent(client, "f4-recipient-s4")
@@ -558,7 +576,7 @@ class TestScenario4Concurrent:
         assert resp1.status_code == 200, f"Call 1 (winner) failed: {resp1.text}"
         payment_id_1 = resp1.json().get("payment_id")
 
-        tx_count_after_winner = sessionmaker(bind=engine)().query(Transaction).count()
+        tx_count_after_winner = db_factory().query(Transaction).count()
 
         # Call 2: after winner finished — must return cached response (same payment_id)
         resp2 = client.post("/v2/payments/hub-routing", json=payload, headers=headers)
@@ -571,7 +589,7 @@ class TestScenario4Concurrent:
         )
 
         # No additional transaction created by call 2
-        tx_count_final = sessionmaker(bind=engine)().query(Transaction).count()
+        tx_count_final = db_factory().query(Transaction).count()
         assert tx_count_final == tx_count_after_winner, (
             f"Call 2 created a new transaction: was {tx_count_after_winner}, "
             f"now {tx_count_final}"
@@ -589,7 +607,7 @@ class TestScenario4Concurrent:
         from sthrip.services.idempotency import _PROCESSING_SENTINEL, get_idempotency_store
         import hashlib
 
-        client, engine, fake_redis = f4_client
+        client, engine, fake_redis, db_factory = f4_client
 
         sender_key = _register_agent(client, "f4-sender-s4b")
         _register_agent(client, "f4-recipient-s4b")
@@ -607,7 +625,9 @@ class TestScenario4Concurrent:
             me_resp = client.get(
                 "/v2/me", headers={"Authorization": f"Bearer {sender_key}"}
             )
-            agent_id = str(me_resp.json()["id"])
+            me_data = me_resp.json()
+            # /v2/me returns "agent_id" not "id"
+            agent_id = str(me_data.get("agent_id") or me_data.get("id"))
             redis_key = f"idempotency:{agent_id}:hub-routing:{hashed}"
             fake_redis.set(redis_key, _PROCESSING_SENTINEL, ex=60)
 
@@ -703,7 +723,7 @@ class TestFix1SingleTryReserve:
         """
         import sthrip.services.idempotency as _idem_mod
 
-        client, engine, fake_redis = f4_client
+        client, engine, fake_redis, db_factory = f4_client
 
         sender_key = _register_agent(client, "f4-sender-fix1")
         _register_agent(client, "f4-recipient-fix1")
