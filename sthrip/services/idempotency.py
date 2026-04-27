@@ -162,7 +162,12 @@ class IdempotencyStore:
         """
         from sthrip.db.idempotency_repo import IdempotencyKeyRepository
         repo = IdempotencyKeyRepository(db)
-        return repo.create(
+        # Upsert (F-4 v3): withdraw flow writes a 202 in-progress placeholder
+        # atomically with the balance debit, then promotes it to a final 2xx
+        # after the wallet RPC. Without upsert the second call would
+        # IntegrityError on the unique key constraint and the placeholder
+        # would never be overwritten.
+        return repo.upsert(
             agent_id=agent_id,
             endpoint=endpoint,
             key=key,

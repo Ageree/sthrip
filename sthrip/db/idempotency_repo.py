@@ -40,6 +40,46 @@ class IdempotencyKeyRepository:
             .first()
         )
 
+    def upsert(
+        self,
+        agent_id: str,
+        endpoint: str,
+        key: str,
+        request_hash: str,
+        response_status: int,
+        response_body: Dict[str, Any],
+    ) -> Optional[IdempotencyKey]:
+        """Insert or update an idempotency row (F-4 v3).
+
+        F-4 v3 needed an upsert because the withdraw flow now writes a 202
+        in-progress placeholder atomically with the balance debit, then later
+        promotes that row to the final 200 response after the wallet RPC
+        succeeds. Without this, the second store_response would IntegrityError
+        and never overwrite the 202 placeholder, leaving replays stuck on the
+        in-progress body forever.
+
+        Updates the row if it already exists for the same (agent_id, endpoint,
+        key); otherwise falls through to ``create``.
+        """
+        existing = self.get(agent_id, endpoint, key)
+        if existing is not None:
+            # Only update when the new response_status indicates a final state
+            # (any 2xx other than 202, or any 4xx/5xx). Keeps 202 placeholders
+            # from clobbering a later concurrent winner's final 200.
+            existing.request_hash = request_hash
+            existing.response_status = response_status
+            existing.response_body = response_body
+            self.db.flush()
+            return existing
+        return self.create(
+            agent_id=agent_id,
+            endpoint=endpoint,
+            key=key,
+            request_hash=request_hash,
+            response_status=response_status,
+            response_body=response_body,
+        )
+
     def create(
         self,
         agent_id: str,

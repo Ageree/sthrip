@@ -686,9 +686,11 @@ class TestFix2StoreResponseDBFailure:
         mock_db = MagicMock()
         mock_db.bind = None  # causes _is_sqlite() to handle gracefully
 
-        # Patch IdempotencyKeyRepository.create to raise RuntimeError
+        # Patch IdempotencyKeyRepository.upsert (F-4 v3 swap from create) to
+        # raise RuntimeError. store_response must propagate it so the payment
+        # transaction rolls back — Fix 2 contract.
         with patch(
-            "sthrip.db.idempotency_repo.IdempotencyKeyRepository.create",
+            "sthrip.db.idempotency_repo.IdempotencyKeyRepository.upsert",
             side_effect=RuntimeError("DB connection lost"),
         ):
             with pytest.raises(RuntimeError, match="DB connection lost"):
@@ -705,6 +707,74 @@ class TestFix2StoreResponseDBFailure:
 # ===========================================================================
 # Fix 1 — single try_reserve call: verify no double-call pattern
 # ===========================================================================
+
+class TestScenario2WithdrawReplay:
+    """
+    F-4 v3 (Opus reopen fix): /v2/balance/withdraw must close the same
+    replay-after-Redis-flush window as /v2/payments/hub-routing.
+
+    Pre-fix: subagent retry left withdraw in a 3-session split where
+    `store_response` ran AFTER balance debit but in a separate DB session.
+    A failure there released the Redis sentinel without writing the DB row,
+    so a retry double-debited.
+
+    Post-fix: the idempotency row is written atomically with the balance
+    debit + pending withdrawal record. A replay always finds the row.
+    """
+
+    def test_withdraw_replay_after_redis_flush_returns_same_pending(self, f4_client):
+        if not _IDEMPOTENCY_KEY_TABLE_EXISTS:
+            pytest.skip("IdempotencyKey model not yet implemented")
+
+        client, engine, fake_redis, db_factory = f4_client
+
+        # Ledger withdraw (HUB_MODE=ledger in test settings) avoids the wallet
+        # RPC, isolating the idempotency contract.
+        sender_key = _register_agent(client, "f4-withdraw-replayer")
+        _deposit(client, sender_key, 100.0)
+
+        idem_key = "idem-withdraw-replay-001"
+        payload = {"amount": 5.0, "address": _VALID_XMR_ADDR}
+        headers = {
+            "Authorization": f"Bearer {sender_key}",
+            "Idempotency-Key": idem_key,
+        }
+
+        resp1 = client.post("/v2/balance/withdraw", json=payload, headers=headers)
+        # Either 200 (ledger success) or 202 (in-progress placeholder) — both
+        # acceptable since the row is written atomically with the debit.
+        assert resp1.status_code in (200, 202), f"First withdraw failed: {resp1.text}"
+
+        session = db_factory()
+        bal_after_first = session.query(AgentBalance).first()
+        first_available = bal_after_first.available if bal_after_first else None
+        session.close()
+
+        fake_redis.flushall()
+
+        resp2 = client.post("/v2/balance/withdraw", json=payload, headers=headers)
+        assert resp2.status_code in (200, 202), f"Replay failed: {resp2.text}"
+
+        session = db_factory()
+        bal_after_second = session.query(AgentBalance).first()
+        second_available = bal_after_second.available if bal_after_second else None
+        # Critical assertion: balance must NOT have been debited twice.
+        assert first_available == second_available, (
+            f"Withdraw replay double-debited: "
+            f"first={first_available}, after_replay={second_available}"
+        )
+
+        # The DB idempotency row exists regardless of Redis state.
+        idem_row = (
+            session.query(IdempotencyKey)
+            .filter_by(endpoint="withdraw", key=idem_key)
+            .first()
+        )
+        session.close()
+        assert idem_row is not None, (
+            "IdempotencyKey row missing for /v2/balance/withdraw after Redis flush"
+        )
+
 
 class TestFix1SingleTryReserve:
     """

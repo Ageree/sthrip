@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Header, Query
 
@@ -152,10 +152,30 @@ async def deposit_balance(
         raise
 
 
-def _deduct_and_create_pending(agent_id, amount, address, check_self_send: bool = False):
-    """Atomically check self-send, deduct balance, and create pending withdrawal.
+def _deduct_and_create_pending(
+    agent_id,
+    amount,
+    address,
+    check_self_send: bool = False,
+    idempotency_ctx: Optional[Dict[str, Any]] = None,
+):
+    """Atomically check self-send, deduct balance, create pending withdrawal,
+    AND (when ``idempotency_ctx`` is supplied) write an in-progress idempotency
+    row in the SAME DB transaction.
 
-    All operations happen in a single DB session for TOCTOU safety.
+    The idempotency row is committed alongside the balance deduction so a
+    replay can never see the side-effect without also seeing the idempotency
+    row. This closes the F-4 reopen window Opus identified for the
+    multi-session withdraw flow: previously the idempotency row was written in
+    a separate session AFTER the wallet RPC, so a failure between balance
+    deduction and ``store_response`` left the sentinel in Redis but no DB row
+    — a retry treated the request as fresh and double-debited.
+
+    ``idempotency_ctx`` keys: ``store``, ``agent_id``, ``endpoint``, ``key``,
+    ``request_hash``. Provide an in-progress placeholder body the client can
+    use to poll for final status. Caller updates the row on RPC success via
+    ``store.store_response``.
+
     Returns pending_id.
     """
     with get_db() as db:
@@ -175,6 +195,24 @@ def _deduct_and_create_pending(agent_id, amount, address, check_self_send: bool 
         except ValueError:
             raise HTTPException(status_code=400, detail="Insufficient balance for this withdrawal")
         pending = pw_repo.create(agent_id=agent_id, amount=amount, address=address)
+
+        if idempotency_ctx is not None:
+            in_progress = {
+                "status": "in_progress",
+                "pending_id": str(pending.id),
+                "amount": str(amount),
+                "to_address": address[:8] + "...",
+            }
+            # 202 Accepted — body cached in same txn as the side-effect.
+            idempotency_ctx["store"].store_response(
+                idempotency_ctx["agent_id"],
+                idempotency_ctx["endpoint"],
+                idempotency_ctx["key"],
+                in_progress,
+                db=db,
+                request_hash=idempotency_ctx.get("request_hash"),
+                response_status=202,
+            )
         return pending.id
 
 
@@ -278,12 +316,7 @@ async def withdraw_balance(
     try:
         amount = req.amount
 
-        # Fix 1: single try_reserve with DB session for F-4 replay detection.
-        # The idempotency check must happen before _deduct_and_create_pending to
-        # avoid double-deducting on replay. We open a fresh session here purely
-        # for the idempotency check; _deduct_and_create_pending opens its own
-        # session (which is correct — the deduction must be atomic with the
-        # pending-withdrawal record, not with the idempotency row).
+        # Single try_reserve with DB session for F-4 replay detection.
         if idempotency_key:
             with get_db() as db:
                 cached = store.try_reserve(
@@ -293,9 +326,23 @@ async def withdraw_balance(
                 if cached is not None:
                     return cached
 
+        # F-4 v3 (Opus reopen fix): pass the idempotency context into
+        # _deduct_and_create_pending so the idempotency row commits in the SAME
+        # transaction as the balance debit + pending withdrawal. A replay can
+        # never see balance debited without ALSO seeing an idempotency row.
+        idem_ctx: Optional[Dict[str, Any]] = None
+        if idempotency_key:
+            idem_ctx = {
+                "store": store,
+                "agent_id": str(agent.id),
+                "endpoint": "withdraw",
+                "key": idempotency_key,
+                "request_hash": req_hash,
+            }
         pending_id = _deduct_and_create_pending(
             agent.id, amount, req.address,
             check_self_send=True,
+            idempotency_ctx=idem_ctx,
         )
 
         if hub_mode == "onchain":
