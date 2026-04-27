@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # Rate limiting
     rate_limit_fail_open: bool = False
 
+    # Distributed lease (F-1, F-3 security fix)
+    # When True (production default), background loops are skipped if Redis is
+    # unavailable — prevents double-charges in multi-replica deployments.
+    # Set to False only in single-replica environments where Redis is not available.
+    distributed_lease_required: bool = True
+
     # CORS
     cors_origins: str = ""
 

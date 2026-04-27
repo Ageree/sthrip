@@ -125,21 +125,42 @@ class RecurringService:
     def execute_due_payments(self, db: Session) -> int:
         """Execute all due recurring payments.
 
-        For each due payment:
-          1. Check sender has sufficient balance.
-          2. Deduct from sender.
-          3. Calculate 1% fee; credit (amount - fee) to receiver.
-          4. Advance next_payment_at.
-          5. If max_payments reached, cancel the subscription.
+        Security hardening (F-1, F-2, F-6):
+          - Uses ``get_due_payments_for_update()`` (SELECT … FOR UPDATE SKIP LOCKED
+            on PostgreSQL) so concurrent replicas cannot double-process the same row.
+          - Re-validates ``is_active`` on the locked row before deducting balance,
+            closing the TOCTOU window where a user cancels between selection and charge.
+          - The locked row also prevents ``cancel_subscription`` from committing its
+            UPDATE until the charge transaction completes (F-6).
+
+        For each due, active payment:
+          1. Re-validate is_active (skip if cancelled since selection).
+          2. Check sender has sufficient balance.
+          3. Deduct from sender.
+          4. Calculate 1% fee; credit (amount - fee) to receiver.
+          5. Advance next_payment_at.
+          6. If max_payments reached, cancel the subscription.
 
         Returns count of successfully executed payments.
         """
         repo = RecurringPaymentRepository(db)
         bal_repo = BalanceRepository(db)
-        due_payments = repo.get_due_payments()
+        # Use locked select to prevent concurrent replicas processing the same row.
+        due_payments = repo.get_due_payments_for_update()
 
         executed = 0
         for payment in due_payments:
+            # F-2 / F-6: Re-validate is_active inside the locked transaction window.
+            # A concurrent cancel_subscription may have set is_active=False between
+            # the SELECT and this point; skip the charge if so.
+            if not payment.is_active:
+                logger.info(
+                    "Recurring payment %s skipped: subscription cancelled "
+                    "between selection and charge (TOCTOU guard).",
+                    payment.id,
+                )
+                continue
+
             amount = payment.amount or Decimal("0")
             from_id = payment.from_agent_id
             to_id = payment.to_agent_id

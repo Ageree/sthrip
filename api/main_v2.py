@@ -399,17 +399,49 @@ def _recover_pending_withdrawals():
         logger.error("Withdrawal recovery failed (non-fatal): %s", e)
 
 
+def _get_lease_redis():
+    """Return a Redis client for distributed leases, or None if Redis is unconfigured.
+
+    Uses a module-level cache so all loop tasks share the same connection.
+    """
+    settings = get_settings()
+    if not settings.redis_url:
+        return None
+    try:
+        import redis as _redis_lib
+        client = _redis_lib.from_url(settings.redis_url, decode_responses=True)
+        client.ping()
+        return client
+    except Exception:
+        logger.warning("Redis unavailable for distributed lease — loops will run un-leased")
+        return None
+
+
 async def _escrow_resolution_loop():
-    """Resolve expired escrows every 5 minutes."""
+    """Resolve expired escrows every 5 minutes.
+
+    F-3 fix: acquires a distributed Redis lease so only one replica runs
+    the resolution logic per cycle.  Escrow state guards still prevent
+    double-transitions even without the lease (defence in depth).
+    """
     from sthrip.services.escrow_service import EscrowService
+    from sthrip.services.distributed_lease import with_redis_lease
     svc = EscrowService()
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
     while True:
         try:
             await asyncio.sleep(300)  # 5 minutes
-            with get_db() as db:
-                resolved = svc.resolve_expired(db)
-                if resolved > 0:
-                    logger.info("Escrow auto-resolution: resolved %d deals", resolved)
+            with with_redis_lease(
+                _redis, "escrow_resolution_loop", ttl=360, fail_open=_fail_open
+            ) as acquired:
+                if not acquired:
+                    logger.debug("Escrow resolution: lease not acquired, skipping cycle")
+                    continue
+                with get_db() as db:
+                    resolved = svc.resolve_expired(db)
+                    if resolved > 0:
+                        logger.info("Escrow auto-resolution: resolved %d deals", resolved)
         except asyncio.CancelledError:
             break
         except Exception:
@@ -417,15 +449,29 @@ async def _escrow_resolution_loop():
 
 
 async def _sla_enforcement_loop():
+    """Enforce SLA deadlines every 30 seconds.
+
+    F-3 fix: acquires a distributed Redis lease so only one replica runs
+    enforcement per cycle.
+    """
     from sthrip.services.sla_service import SLAService
+    from sthrip.services.distributed_lease import with_redis_lease
     svc = SLAService()
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
     while True:
         try:
             await asyncio.sleep(30)  # 30 seconds per spec
-            with get_db() as db:
-                resolved = svc.enforce_sla(db)
-                if resolved > 0:
-                    logger.info("SLA auto-enforcement: resolved %d contracts", resolved)
+            with with_redis_lease(
+                _redis, "sla_enforcement_loop", ttl=45, fail_open=_fail_open
+            ) as acquired:
+                if not acquired:
+                    logger.debug("SLA enforcement: lease not acquired, skipping cycle")
+                    continue
+                with get_db() as db:
+                    resolved = svc.enforce_sla(db)
+                    if resolved > 0:
+                        logger.info("SLA auto-enforcement: resolved %d contracts", resolved)
         except asyncio.CancelledError:
             break
         except Exception:
@@ -433,16 +479,30 @@ async def _sla_enforcement_loop():
 
 
 async def _recurring_payment_loop():
-    """Execute due recurring payments every 5 minutes."""
+    """Execute due recurring payments every 5 minutes.
+
+    F-1 & F-3 fix: acquires a distributed Redis lease so only one replica
+    executes recurring charges per cycle.  The service layer additionally uses
+    SELECT … FOR UPDATE SKIP LOCKED and re-validates is_active per row.
+    """
     from sthrip.services.recurring_service import RecurringService
+    from sthrip.services.distributed_lease import with_redis_lease
     svc = RecurringService()
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
     while True:
         try:
             await asyncio.sleep(300)  # 5 minutes
-            with get_db() as db:
-                executed = svc.execute_due_payments(db)
-                if executed > 0:
-                    logger.info("Recurring payments: executed %d payments", executed)
+            with with_redis_lease(
+                _redis, "recurring_payment_loop", ttl=360, fail_open=_fail_open
+            ) as acquired:
+                if not acquired:
+                    logger.debug("Recurring payments: lease not acquired, skipping cycle")
+                    continue
+                with get_db() as db:
+                    executed = svc.execute_due_payments(db)
+                    if executed > 0:
+                        logger.info("Recurring payments: executed %d payments", executed)
         except asyncio.CancelledError:
             break
         except Exception:

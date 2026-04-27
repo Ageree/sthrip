@@ -66,6 +66,48 @@ class RecurringPaymentRepository:
             .all()
         )
 
+    def get_due_payments_for_update(self) -> List[RecurringPayment]:
+        """Return due active payments with a row-level lock (SKIP LOCKED on Postgres).
+
+        On PostgreSQL this compiles to ``SELECT ... FOR UPDATE SKIP LOCKED`` which
+        prevents two cron replicas from picking up the same rows simultaneously.
+        On SQLite (used in tests) the lock clause is silently dropped — correctness
+        is guaranteed there by the distributed lease layer instead.
+        """
+        now = datetime.now(timezone.utc)
+        dialect = getattr(self.db.bind, "dialect", None)
+        dialect_name = dialect.name if dialect else ""
+
+        query = self.db.query(RecurringPayment).filter(
+            RecurringPayment.is_active.is_(True),
+            RecurringPayment.next_payment_at <= now,
+        )
+
+        # Only apply SKIP LOCKED on PostgreSQL; SQLite does not support it.
+        if dialect_name == "postgresql":
+            query = query.with_for_update(skip_locked=True)
+
+        return query.all()
+
+    def get_by_id_for_update(self, payment_id: UUID) -> Optional[RecurringPayment]:
+        """Fetch a payment by ID with a row-level lock (FOR UPDATE).
+
+        Used during the charge window so that concurrent ``cancel_subscription``
+        calls must wait for the charge transaction to commit or roll back.
+        On SQLite the lock is silently dropped (single-process test environment).
+        """
+        dialect = getattr(self.db.bind, "dialect", None)
+        dialect_name = dialect.name if dialect else ""
+
+        query = self.db.query(RecurringPayment).filter(
+            RecurringPayment.id == payment_id
+        )
+
+        if dialect_name == "postgresql":
+            query = query.with_for_update()
+
+        return query.first()
+
     def list_by_agent(
         self,
         agent_id: UUID,
