@@ -33,11 +33,17 @@ def _secure_uniform(low: float, high: float) -> float:
     return low + (high - low) * frac
 
 
-def _secure_shuffle(seq: list) -> None:
-    """Fisher-Yates in-place shuffle using ``secrets.randbelow``."""
-    for i in range(len(seq) - 1, 0, -1):
+def _secure_shuffle(seq) -> list:
+    """Return a new shuffled list (Fisher-Yates) using ``secrets.randbelow``.
+
+    Returns a fresh list — never mutates the input — to comply with the
+    project-wide immutability rule.
+    """
+    out = list(seq)
+    for i in range(len(out) - 1, 0, -1):
         j = secrets.randbelow(i + 1)
-        seq[i], seq[j] = seq[j], seq[i]
+        out[i], out[j] = out[j], out[i]
+    return out
 
 
 class TransactionTiming(Enum):
@@ -310,9 +316,7 @@ class MetadataStripper:
         Randomize order of batch requests.
         Prevents sequence-based fingerprinting.
         """
-        shuffled = requests.copy()
-        _secure_shuffle(shuffled)
-        return shuffled
+        return _secure_shuffle(requests)
 
 
 def calculate_privacy_score(

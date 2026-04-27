@@ -8,11 +8,10 @@ All keys and signatures are returned as base64-encoded strings.
 """
 
 import base64
-import binascii
 import logging
 from typing import Tuple
 
-from nacl.exceptions import BadSignatureError
+from nacl.exceptions import BadSignatureError, CryptoError
 from nacl.signing import SigningKey, VerifyKey
 
 logger = logging.getLogger("sthrip.channel_signing")
@@ -91,8 +90,18 @@ def verify_channel_state(
         verify_key.verify(message, sig_bytes)
         return True
     except BadSignatureError:
+        # Expected reject path; logged at DEBUG to avoid alarm-fatigue.
+        logger.debug("Channel signature rejected: BadSignatureError")
         return False
-    except (ValueError, TypeError, binascii.Error) as e:
+    except CryptoError as e:
+        # Catches all PyNaCl C-level failures. BadSignatureError is a subclass
+        # of CryptoError, so the BadSignatureError branch above takes priority.
+        # Without this branch a corrupt key would propagate as an unhandled 500.
+        logger.warning("Channel signature crypto error: %s", type(e).__name__)
+        return False
+    except (ValueError, TypeError) as e:
+        # Note: binascii.Error is a subclass of ValueError in Python 3, so this
+        # also catches base64 decode failures.
         logger.warning("Channel signature input rejected: %s", type(e).__name__)
         return False
 

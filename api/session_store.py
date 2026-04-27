@@ -201,15 +201,22 @@ class AdminSessionStore:
             payload = json.loads(raw)
         except (ValueError, TypeError):
             return False
+        # Reject payloads that are valid JSON but not an object (e.g. a stray
+        # number, string, or array). Without this guard a bare ``payload.get``
+        # would raise AttributeError and surface as a 500.
+        if not isinstance(payload, dict):
+            return False
         bound_ip = payload.get("ip", "")
         bound_ua_hash = payload.get("ua_hash", "")
-        if bound_ip:
-            if not client_ip or not hmac.compare_digest(bound_ip, client_ip):
-                logger.warning(
-                    "Admin session IP mismatch (bound=%s, got=%s)",
-                    bound_ip, client_ip,
-                )
-                return False
+        # Always pass strings to compare_digest so the constant-time guarantee
+        # holds; short-circuiting on a falsy ``client_ip`` would leak the
+        # presence of a bound IP via response timing.
+        got_ip = client_ip or ""
+        if bound_ip and not hmac.compare_digest(bound_ip, got_ip):
+            # Don't log the bound IP — log aggregators (Railway/Logtail) may be
+            # readable to roles who shouldn't see where an admin token was issued.
+            logger.warning("Admin session IP binding mismatch")
+            return False
         if bound_ua_hash:
             got_hash = self._hash(user_agent) if user_agent else ""
             if not hmac.compare_digest(bound_ua_hash, got_hash):

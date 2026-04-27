@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     cors_origins: str = ""
 
     # Proxy
+    # When deployed behind a reverse proxy (Railway, Fly.io, nginx, ...) this
+    # MUST list the proxy IPs whose ``X-Forwarded-For`` header should be
+    # trusted, or ``"*"`` to trust the immediate upstream peer.  Without this,
+    # ``request.client.host`` will be the proxy edge IP and any feature that
+    # binds to client IP (admin sessions, rate limits) will misbehave.
     trusted_proxy_hosts: str = "127.0.0.1"
 
     # Logging

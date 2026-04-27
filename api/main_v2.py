@@ -249,9 +249,11 @@ def _fix_pg_enums():
         "conditionalpaymentstate": ["PENDING", "TRIGGERED", "EXECUTED", "EXPIRED", "CANCELLED"],
         "multipartypaymentstate": ["PENDING", "ACCEPTED", "COMPLETED", "REJECTED", "EXPIRED"],
     }
-    # SQL identifiers cannot be parameterised — assert that ENUM_MAP keys/values
-    # are safe identifiers/literals before string interpolation. This guards
-    # against future contributors adding user-derived values to ENUM_MAP.
+    # SQL identifiers cannot be parameterised, so we whitelist ENUM_MAP keys
+    # and values via regex and **log+skip** unsafe entries. (We don't raise so
+    # one bad future entry can't deadline-block startup; the error log is the
+    # alarm.) This guards against future contributors adding user-derived
+    # values to ENUM_MAP.
     import re as _re
     _SAFE_IDENT = _re.compile(r"\A[a-z_][a-z0-9_]*\Z")
     _SAFE_VALUE = _re.compile(r"\A[A-Z_][A-Z0-9_]*\Z")
