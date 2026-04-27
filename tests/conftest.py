@@ -138,6 +138,7 @@ def _ensure_settings_env(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "dev")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("WEBHOOK_ENCRYPTION_KEY", _TEST_ENCRYPTION_KEY)
+    monkeypatch.setenv("AUDIT_HMAC_KEY", "test-audit-hmac-key-for-tests-32chars")
 
     # Clear the lru_cache so each test gets fresh Settings from its own env
     from sthrip.config import get_settings

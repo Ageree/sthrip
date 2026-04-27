@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     api_key_hmac_secret: str = Field(default="dev-hmac-secret-change-in-prod")
     webhook_encryption_key: str = Field(default="")
 
+    # Audit log HMAC chain (F-11) — MUST be distinct from api_key_hmac_secret.
+    # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+    audit_hmac_key: str = Field(default="dev-audit-hmac-key-change-in-prod")
+
     # Monero
     hub_mode: Literal["onchain", "ledger"] = "onchain"
     monero_rpc_host: str = "127.0.0.1"
@@ -115,6 +119,27 @@ class Settings(BaseSettings):
             raise ValueError(
                 "WEBHOOK_ENCRYPTION_KEY must be set in production. "
                 "Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            )
+        return v
+
+    @field_validator("audit_hmac_key")
+    @classmethod
+    def validate_audit_hmac_key(cls, v: str, info) -> str:
+        env = info.data.get("environment", "production")
+        if env not in ("dev",) and v == "dev-audit-hmac-key-change-in-prod":
+            raise ValueError(
+                "AUDIT_HMAC_KEY must be set to a secure random value in non-dev environments. "
+                "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        if env not in ("dev",) and len(v) < 32:
+            raise ValueError(
+                "AUDIT_HMAC_KEY must be at least 32 characters in non-dev environments"
+            )
+        # Enforce key separation — AUDIT_HMAC_KEY must not equal API_KEY_HMAC_SECRET.
+        api_hmac = info.data.get("api_key_hmac_secret", "")
+        if env not in ("dev",) and v == api_hmac and api_hmac:
+            raise ValueError(
+                "AUDIT_HMAC_KEY must be distinct from API_KEY_HMAC_SECRET for key separation"
             )
         return v
 

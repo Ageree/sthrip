@@ -58,10 +58,10 @@ def _session_factory(engine):
 
 
 def _get_all_rows(session):
-    """Return all AuditLog rows ordered by rowid (insertion order)."""
+    """Return all AuditLog rows ordered by (created_at, id) — insertion order."""
     from sthrip.db.models import AuditLog
 
-    return session.query(AuditLog).order_by(AuditLog.id).all()
+    return session.query(AuditLog).order_by(AuditLog.created_at, AuditLog.id).all()
 
 
 # ---------------------------------------------------------------------------
@@ -251,13 +251,15 @@ def test_entry_hmac_matches_recomputed():
         row = _get_all_rows(session)[0]
         details_json = json.dumps(row.request_body, sort_keys=True, separators=(",", ":"), default=str) \
             if row.request_body is not None else "null"
+        # Use _ts_iso for consistent timezone-stripped timestamp matching
+        from sthrip.services.audit_logger import _ts_iso
         recomputed = _hash_chain_link(
             key=_TEST_AUDIT_KEY,
             prev_hmac=row.prev_hmac,
             action=row.action,
             agent_id=str(row.agent_id) if row.agent_id else "",
             ip=row.ip_address or "",
-            ts_iso=row.created_at.isoformat() if row.created_at else "",
+            ts_iso=_ts_iso(row.created_at),
             details_json=details_json,
         )
         assert row.entry_hmac == recomputed
@@ -429,7 +431,7 @@ def test_delete_row_breaks_chain():
 
         from sthrip.db.models import AuditLog
 
-        rows = session.query(AuditLog).order_by(AuditLog.id).all()
+        rows = session.query(AuditLog).order_by(AuditLog.created_at, AuditLog.id).all()
         # Delete row 1 (middle row)
         session.delete(rows[1])
         session.commit()
@@ -490,20 +492,52 @@ def test_verify_chain_empty_table_ok():
 # ---------------------------------------------------------------------------
 
 
-def test_concurrent_writes_produce_valid_chain():
+def test_concurrent_writes_produce_valid_chain(tmp_path):
     """Two threads calling log_event concurrently still produce a valid chain.
 
-    The per-process threading.Lock() serialises inserts on SQLite.  Each
-    thread writes 5 rows; after both finish the 10 rows must form a
-    contiguous chain.
+    Uses the REAL _acquire_chain_lock / _release_chain_lock (process
+    threading.Lock) to serialise writes.  log_event is called WITHOUT a db
+    parameter (db=None), so each call uses an internal session that commits
+    atomically inside the lock, ensuring the next writer always reads the
+    committed prev_hmac.
+
+    Each thread writes 5 rows; after both finish the 10 rows must form a
+    contiguous valid chain.
     """
-    engine = _make_engine()
-    SessionLocal = _session_factory(engine)
+    from contextlib import contextmanager
+    from sthrip.db.models import Base, AuditLog, Agent
+    from sthrip.db.database import get_db as real_get_db
+
+    db_path = str(tmp_path / "concurrent_test.db")
+    file_engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    from sqlalchemy import event as sa_event
+
+    @sa_event.listens_for(file_engine, "connect")
+    def set_wal_mode(dbapi_connection, connection_record):
+        dbapi_connection.execute("PRAGMA journal_mode=WAL")
+
+    Base.metadata.create_all(file_engine, tables=[Agent.__table__, AuditLog.__table__])
+    FileSession = sessionmaker(bind=file_engine, expire_on_commit=False)
+
+    @contextmanager
+    def test_get_db():
+        session = FileSession()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     errors: list[Exception] = []
 
     with patch("sthrip.services.audit_logger.get_settings") as mock_settings, \
-         patch("sthrip.services.audit_logger._acquire_chain_lock"), \
-         patch("sthrip.services.audit_logger._release_chain_lock"):
+         patch("sthrip.services.audit_logger.get_db", side_effect=test_get_db):
         mock_settings.return_value.audit_hmac_key = _TEST_AUDIT_KEY
         mock_settings.return_value.environment = "dev"
 
@@ -512,10 +546,8 @@ def test_concurrent_writes_produce_valid_chain():
         def _worker(thread_id: int) -> None:
             try:
                 for i in range(5):
-                    s = SessionLocal()
-                    log_event(f"thread.{thread_id}.row.{i}", db=s)
-                    s.commit()
-                    s.close()
+                    # db=None → uses internal session that commits inside the lock
+                    log_event(f"thread.{thread_id}.row.{i}")
             except Exception as exc:
                 errors.append(exc)
 
@@ -528,7 +560,7 @@ def test_concurrent_writes_produce_valid_chain():
 
         assert not errors, f"Thread errors: {errors}"
 
-        check_session = SessionLocal()
+        check_session = FileSession()
         status = verify_chain(check_session, key=_TEST_AUDIT_KEY)
         assert status.ok, (
             f"Chain invalid after concurrent writes: first_bad_id={status.first_bad_id}, "
@@ -536,6 +568,7 @@ def test_concurrent_writes_produce_valid_chain():
         )
         assert status.total_checked == 10
         check_session.close()
+        file_engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -646,7 +679,8 @@ def test_verify_chain_since_limits_scope():
             log_event(f"row.{i}", db=session)
             session.commit()
 
-        rows = session.query(AuditLog).order_by(AuditLog.id).all()
+        # Use same ordering as verify_chain (created_at, id)
+        rows = session.query(AuditLog).order_by(AuditLog.created_at, AuditLog.id).all()
         # Tamper row 0 — tampering should be invisible when since=rows[1].id
         rows[0].action = "tampered"
         session.commit()

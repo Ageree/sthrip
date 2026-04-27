@@ -419,28 +419,54 @@ class WebhookEvent(Base):
 
 
 class AuditLog(Base):
-    """Audit log for all actions"""
+    """Audit log for all actions.
+
+    Tamper-evident chain (F-11):
+    - prev_hmac: HMAC of the previous row's entry_hmac (genesis sentinel for
+      the first row).
+    - entry_hmac: HMAC-SHA256 of (prev_hmac, action, agent_id, ip,
+      timestamp_iso, sanitized_details_json).  Computed in Python before
+      insert so the value is available immediately without a round-trip.
+    - entry_hmac has a UNIQUE index to prevent silent duplicate injection.
+
+    Chain integrity is established from the migration point forward.
+    Pre-migration rows are backfilled with computed values but their
+    tamper-history prior to migration is undetectable.
+    """
     __tablename__ = "audit_log"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True)
 
     action = Column(String(100), nullable=False, index=True)
     resource_type = Column(String(50), nullable=True)
     resource_id = Column(UUID(as_uuid=True), nullable=True)
-    
+
     ip_address = Column(String(45), nullable=True)  # IPv4/IPv6 as string (portable)
     request_method = Column(String(10), nullable=True)
     request_path = Column(Text, nullable=True)
     request_body = Column(JSON, nullable=True)
-    
+
     old_values = Column(JSON, nullable=True)
     new_values = Column(JSON, nullable=True)
-    
+
     success = Column(Boolean, nullable=True)
     error_message = Column(Text, nullable=True)
-    
+
+    # created_at is set explicitly in Python (not server-side) so that the
+    # timestamp is available for HMAC computation before INSERT, and so that
+    # ordering by (created_at, id) provides stable insertion ordering for
+    # chain verification.
     created_at = Column(DateTime(timezone=True), default=func.now())
+
+    # Tamper-evident chain columns (F-11) — nullable to support backfill migration.
+    prev_hmac = Column(String(64), nullable=True)
+    entry_hmac = Column(String(64), nullable=True)
+
+    __table_args__ = (
+        Index("ix_audit_log_entry_hmac", "entry_hmac", unique=True),
+        Index("ix_audit_log_created_at", "created_at"),
+    )
 
 
 class FeeCollection(Base):
