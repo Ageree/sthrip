@@ -28,6 +28,8 @@ CSRF (dashboard only):
 """
 
 import hashlib
+import hmac
+import json
 import logging
 import secrets
 import threading
@@ -108,26 +110,27 @@ class AdminSessionStore:
     def _session_key(self, token_hash: str) -> str:
         return f"{self._key_prefix}{token_hash}"
 
-    def _store_token(self, redis_key: str, local_key: str, ttl: int) -> None:
+    def _store_token(self, redis_key: str, local_key: str, ttl: int, value: str = "1") -> None:
         """Write *redis_key* to Redis or *local_key* to the local dict."""
         if self._redis:
-            self._redis.setex(redis_key, ttl, "1")
+            self._redis.setex(redis_key, ttl, value)
         else:
             if len(self._local) >= self._MAX_LOCAL_ENTRIES:
                 self._evict_expired()
-            self._local[local_key] = {"expires": _time.time() + ttl}
+            self._local[local_key] = {"expires": _time.time() + ttl, "value": value}
 
-    def _read_token(self, redis_key: str, local_key: str) -> bool:
-        """Return True if the token entry exists and has not expired."""
+    def _read_token(self, redis_key: str, local_key: str) -> Optional[str]:
+        """Return stored token value (string) if present and not expired, else None."""
         if self._redis:
-            return bool(self._redis.get(redis_key))
+            raw = self._redis.get(redis_key)
+            return raw if raw else None
         entry = self._local.get(local_key)
         if not entry:
-            return False
+            return None
         if entry["expires"] < _time.time():
             self._local.pop(local_key, None)
-            return False
-        return True
+            return None
+        return entry.get("value", "1")
 
     def _delete_token(self, redis_key: str, local_key: str) -> None:
         """Delete the token entry from Redis or the local dict (no-op if absent)."""
@@ -140,11 +143,23 @@ class AdminSessionStore:
     # API-style interface  (used by api/deps.py)
     # ------------------------------------------------------------------
 
-    def create_session(self, ttl: int) -> str:
-        """Generate a new session token, store its hash, return the plaintext token.
+    def create_session(
+        self,
+        ttl: int,
+        *,
+        client_ip: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> str:
+        """Generate a new session token; optionally bind to client IP and UA hash.
+
+        When ``client_ip`` and/or ``user_agent`` are provided, the session is
+        bound — :meth:`validate_session` will reject mismatching values.  Token
+        rotation on every privilege use is still recommended.
 
         Args:
             ttl: Lifetime in seconds.
+            client_ip: Optional IP literal to pin the session to.
+            user_agent: Optional User-Agent string; only its hash is stored.
 
         Returns:
             URL-safe random token string (plaintext).
@@ -152,20 +167,55 @@ class AdminSessionStore:
         self._ensure_redis()
         token = secrets.token_urlsafe(32)
         token_hash = self._hash(token)
-        self._store_token(self._session_key(token_hash), token_hash, ttl)
+        payload = json.dumps({
+            "ip": client_ip or "",
+            "ua_hash": self._hash(user_agent) if user_agent else "",
+        }, sort_keys=True, separators=(",", ":"))
+        self._store_token(self._session_key(token_hash), token_hash, ttl, payload)
         return token
 
-    def validate_session(self, token: str) -> bool:
-        """Return True if *token* is a live session token.
+    def validate_session(
+        self,
+        token: str,
+        *,
+        client_ip: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> bool:
+        """Return True if *token* is a live session token whose binding matches.
 
-        Args:
-            token: Plaintext token previously returned by :meth:`create_session`.
+        If the session was created with ``client_ip``/``user_agent`` binding,
+        the same values must be supplied on validate or the call returns False.
+        Sessions created without binding accept any caller (legacy behaviour).
         """
         if not token:
             return False
         self._ensure_redis()
         token_hash = self._hash(token)
-        return self._read_token(self._session_key(token_hash), token_hash)
+        raw = self._read_token(self._session_key(token_hash), token_hash)
+        if raw is None:
+            return False
+        # Legacy plain-"1" entries: accept (no binding stored).
+        if raw == "1":
+            return True
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError):
+            return False
+        bound_ip = payload.get("ip", "")
+        bound_ua_hash = payload.get("ua_hash", "")
+        if bound_ip:
+            if not client_ip or not hmac.compare_digest(bound_ip, client_ip):
+                logger.warning(
+                    "Admin session IP mismatch (bound=%s, got=%s)",
+                    bound_ip, client_ip,
+                )
+                return False
+        if bound_ua_hash:
+            got_hash = self._hash(user_agent) if user_agent else ""
+            if not hmac.compare_digest(bound_ua_hash, got_hash):
+                logger.warning("Admin session User-Agent fingerprint mismatch")
+                return False
+        return True
 
     # ------------------------------------------------------------------
     # Dashboard-style interface  (used by api/admin_ui/views.py)
@@ -188,7 +238,7 @@ class AdminSessionStore:
             return False
         self._ensure_redis()
         token_hash = self._hash(token)
-        return self._read_token(self._session_key(token_hash), token_hash)
+        return self._read_token(self._session_key(token_hash), token_hash) is not None
 
     def delete_session(self, token: str) -> None:
         """Remove *token* from the store (no-op if absent).

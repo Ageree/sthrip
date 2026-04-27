@@ -144,11 +144,18 @@ def configure_middleware(app: FastAPI) -> None:
 
 
 def _get_cors_origins() -> list:
-    """Build CORS origins list. Rejects all by default unless configured."""
+    """Build CORS origins list. Rejects all by default unless configured.
+
+    In ``dev`` mode the localhost auto-extension is opt-in via the
+    ``CORS_DEV_AUTOEXTEND`` env var (set to ``1``/``true``/``yes``) so a misset
+    ``ENVIRONMENT=dev`` on a non-dev box does not silently widen origins.
+    """
+    import os as _os
+
     env = get_settings().environment
     configured = get_settings().cors_origins
     origins = [o.strip() for o in configured.split(",") if o.strip()]
-    if env == "dev":
+    if env == "dev" and _os.getenv("CORS_DEV_AUTOEXTEND", "").lower() in ("1", "true", "yes"):
         origins.extend([
             "http://localhost:3000", "http://localhost:8000",
             "http://127.0.0.1:3000", "http://127.0.0.1:8000",

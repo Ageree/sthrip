@@ -249,12 +249,25 @@ def _fix_pg_enums():
         "conditionalpaymentstate": ["PENDING", "TRIGGERED", "EXECUTED", "EXPIRED", "CANCELLED"],
         "multipartypaymentstate": ["PENDING", "ACCEPTED", "COMPLETED", "REJECTED", "EXPIRED"],
     }
+    # SQL identifiers cannot be parameterised — assert that ENUM_MAP keys/values
+    # are safe identifiers/literals before string interpolation. This guards
+    # against future contributors adding user-derived values to ENUM_MAP.
+    import re as _re
+    _SAFE_IDENT = _re.compile(r"\A[a-z_][a-z0-9_]*\Z")
+    _SAFE_VALUE = _re.compile(r"\A[A-Z_][A-Z0-9_]*\Z")
+
     fixed = 0
     with eng.connect() as conn:
         for enum_name, values in ENUM_MAP.items():
+            if not _SAFE_IDENT.match(enum_name):
+                logger.error("Unsafe enum identifier rejected: %r", enum_name)
+                continue
             for val in values:
+                if not _SAFE_VALUE.match(val):
+                    logger.error("Unsafe enum value rejected for %s: %r", enum_name, val)
+                    continue
                 try:
-                    conn.execute(sa_text("ALTER TYPE {} ADD VALUE IF NOT EXISTS '{}'".format(enum_name, val)))
+                    conn.execute(sa_text(f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{val}'"))
                     fixed += 1
                 except Exception:
                     pass

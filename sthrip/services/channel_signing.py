@@ -8,10 +8,14 @@ All keys and signatures are returned as base64-encoded strings.
 """
 
 import base64
+import binascii
+import logging
 from typing import Tuple
 
 from nacl.exceptions import BadSignatureError
 from nacl.signing import SigningKey, VerifyKey
+
+logger = logging.getLogger("sthrip.channel_signing")
 
 
 def generate_channel_keypair() -> Tuple[str, str]:
@@ -86,7 +90,10 @@ def verify_channel_state(
         message = _build_message(channel_id, nonce, balance_a, balance_b)
         verify_key.verify(message, sig_bytes)
         return True
-    except (BadSignatureError, Exception):  # noqa: BLE001
+    except BadSignatureError:
+        return False
+    except (ValueError, TypeError, binascii.Error) as e:
+        logger.warning("Channel signature input rejected: %s", type(e).__name__)
         return False
 
 

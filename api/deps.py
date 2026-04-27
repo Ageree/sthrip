@@ -195,15 +195,20 @@ def get_admin_session_store() -> AdminSessionStore:
 
 
 async def get_admin_session(request: Request) -> bool:
-    """Authenticate admin via bearer session token only.
+    """Authenticate admin via bearer session token bound to IP + User-Agent.
 
     Use POST /v2/admin/auth to obtain a session token, then pass it
-    as ``Authorization: Bearer <token>``.
+    as ``Authorization: Bearer <token>``.  The token only validates from the
+    same IP and User-Agent it was issued to (anti-token-theft).
     """
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        if _admin_session_store.validate_session(token):
+        client_ip = get_client_ip(request)
+        ua = request.headers.get("user-agent", "")
+        if _admin_session_store.validate_session(
+            token, client_ip=client_ip, user_agent=ua
+        ):
             return True
         raise HTTPException(status_code=401, detail="Invalid or expired admin session token")
 

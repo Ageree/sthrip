@@ -1,13 +1,49 @@
 """
 Anti-fingerprinting measures to prevent wallet identification.
 Different wallets have different behaviors - we randomize everything.
+
+All randomness here is privacy-critical. We use the ``secrets`` module so that
+an observer cannot recover the PRNG state from a handful of outputs (Mersenne
+Twister is unsuitable for adversarial-privacy decisions).
 """
 
-import random
+import secrets
 import time
 from typing import Optional, List, Dict
 from enum import Enum
 from dataclasses import dataclass
+
+
+class _SecureRandom:
+    """Cryptographically secure drop-in replacements for the ``random`` API used here."""
+
+    @staticmethod
+    def randint(low: int, high: int) -> int:
+        if high < low:
+            raise ValueError("high must be >= low")
+        return low + secrets.randbelow(high - low + 1)
+
+    @staticmethod
+    def uniform(low: float, high: float) -> float:
+        if high < low:
+            low, high = high, low
+        rand_int = int.from_bytes(secrets.token_bytes(7), "big") >> 3
+        frac = rand_int / (1 << 53)
+        return low + (high - low) * frac
+
+    @staticmethod
+    def random() -> float:
+        rand_int = int.from_bytes(secrets.token_bytes(7), "big") >> 3
+        return rand_int / (1 << 53)
+
+    @staticmethod
+    def choice(seq):
+        if not seq:
+            raise IndexError("Cannot choose from empty sequence")
+        return seq[secrets.randbelow(len(seq))]
+
+
+random = _SecureRandom()  # type: ignore[assignment]
 
 
 class WalletType(Enum):

@@ -47,7 +47,12 @@ async def admin_auth(body: AdminAuthRequest, request: Request):
         raise HTTPException(status_code=401, detail="Invalid admin key")
 
     store = get_admin_session_store()
-    token = store.create_session(_ADMIN_SESSION_TTL)
+    ua = request.headers.get("user-agent", "")
+    token = store.create_session(
+        _ADMIN_SESSION_TTL,
+        client_ip=client_ip,
+        user_agent=ua,
+    )
     return {"token": token, "expires_in": _ADMIN_SESSION_TTL}
 
 

@@ -205,7 +205,8 @@ def generate_node_fingerprint(
     """
     data = f"{user_agent}:{timing_pattern}:{fee_preference}"
     import hashlib
-    return hashlib.md5(data.encode()).hexdigest()[:8]
+    # SHA-256 used for non-security identifier (truncated fingerprint).
+    return hashlib.sha256(data.encode()).hexdigest()[:8]
 
 
 def check_fingerprint_uniformity(

@@ -3,13 +3,41 @@ Advanced privacy enhancements for Sthrip
 Beyond basic Monero privacy
 """
 
-import random
+import secrets
 import time
 import hashlib
 from typing import Optional, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from enum import Enum
+
+
+def _secure_randint(low: int, high: int) -> int:
+    """Cryptographically secure ``random.randint`` replacement (inclusive bounds)."""
+    if high < low:
+        raise ValueError("high must be >= low")
+    return low + secrets.randbelow(high - low + 1)
+
+
+def _secure_uniform(low: float, high: float) -> float:
+    """Cryptographically secure ``random.uniform`` replacement.
+
+    Privacy decisions cannot rely on Mersenne Twister (state recoverable from
+    ~624 outputs); use os.urandom-backed entropy instead.
+    """
+    if high < low:
+        low, high = high, low
+    # 53-bit float in [0, 1) from secure entropy
+    rand_int = int.from_bytes(secrets.token_bytes(7), "big") >> 3
+    frac = rand_int / (1 << 53)
+    return low + (high - low) * frac
+
+
+def _secure_shuffle(seq: list) -> None:
+    """Fisher-Yates in-place shuffle using ``secrets.randbelow``."""
+    for i in range(len(seq) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        seq[i], seq[j] = seq[j], seq[i]
 
 
 class TransactionTiming(Enum):
@@ -61,7 +89,7 @@ class PrivacyEnhancer:
         Randomize mixin size to avoid fingerprinting.
         Different transactions = different ring sizes
         """
-        return random.randint(
+        return _secure_randint(
             self.config.min_mixin,
             self.config.max_mixin
         )
@@ -75,7 +103,7 @@ class PrivacyEnhancer:
             return 0
         
         elif self.config.timing_strategy == TransactionTiming.RANDOM_DELAY:
-            return random.randint(
+            return _secure_randint(
                 self.config.min_delay_minutes * 60,
                 self.config.max_delay_minutes * 60
             )
@@ -89,7 +117,7 @@ class PrivacyEnhancer:
             
             delay = (night_start - now).total_seconds()
             # Add randomness 0-2 hours
-            delay += random.randint(0, 7200)
+            delay += _secure_randint(0, 7200)
             return int(delay)
         
         elif self.config.timing_strategy == TransactionTiming.BATCH:
@@ -106,7 +134,7 @@ class PrivacyEnhancer:
         if not self.config.decoy_amount_variance:
             return amount
         
-        variance = random.uniform(
+        variance = _secure_uniform(
             -self.config.decoy_amount_variance,
             self.config.decoy_amount_variance
         )
@@ -124,8 +152,8 @@ class PrivacyEnhancer:
         Generate small decoy output to confuse analysis.
         Occasionally sends tiny amount to random address.
         """
-        if random.random() < 0.1:  # 10% chance
-            return random.uniform(0.0001, 0.001)
+        if secrets.randbelow(10) == 0:  # 10% chance
+            return _secure_uniform(0.0001, 0.001)
         return None
     
     def create_churn_transaction(
@@ -148,13 +176,13 @@ class PrivacyEnhancer:
         
         for i in range(rounds):
             # Vary amount slightly each round
-            variance = random.uniform(-0.01, 0.01)
+            variance = _secure_uniform(-0.01, 0.01)
             current = current + variance
             amounts.append(current)
-            
+
             # Add delay between churns
             if i < rounds - 1:
-                delay = random.randint(3600, 86400)  # 1-24 hours
+                delay = _secure_randint(3600, 86400)  # 1-24 hours
                 time.sleep(delay)  # In real implementation: schedule
         
         return amounts
@@ -167,7 +195,7 @@ class PrivacyEnhancer:
         Randomize fee slightly to avoid wallet fingerprinting.
         Different wallets use different fee algorithms.
         """
-        variance = random.uniform(-0.0001, 0.0001)
+        variance = _secure_uniform(-0.0001, 0.0001)
         return max(0, base_fee + variance)
 
 
@@ -200,13 +228,13 @@ class TransactionScheduler:
         now = datetime.now()
         
         if privacy_level == "low":
-            delay = random.randint(0, 300)  # 0-5 min
+            delay = _secure_randint(0, 300)  # 0-5 min
         elif privacy_level == "medium":
-            delay = random.randint(300, 3600)  # 5-60 min
+            delay = _secure_randint(300, 3600)  # 5-60 min
         elif privacy_level == "high":
-            delay = random.randint(3600, 14400)  # 1-4 hours
+            delay = _secure_randint(3600, 14400)  # 1-4 hours
         elif privacy_level == "paranoid":
-            delay = random.randint(14400, 86400)  # 4-24 hours
+            delay = _secure_randint(14400, 86400)  # 4-24 hours
         else:
             delay = 0
         
@@ -273,7 +301,7 @@ class MetadataStripper:
         Add small random noise to timestamp.
         Prevents precise timing correlation.
         """
-        noise = random.uniform(-1.0, 1.0)  # +/- 1 second
+        noise = _secure_uniform(-1.0, 1.0)  # +/- 1 second
         return timestamp + noise
     
     @staticmethod
@@ -283,7 +311,7 @@ class MetadataStripper:
         Prevents sequence-based fingerprinting.
         """
         shuffled = requests.copy()
-        random.shuffle(shuffled)
+        _secure_shuffle(shuffled)
         return shuffled
 
 

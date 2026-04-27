@@ -435,7 +435,7 @@ def _keccak256(data: bytes) -> bytes:
     environment is detected loudly rather than silently producing wrong checksums.
     """
     try:
-        from Crypto.Hash import keccak
+        from Crypto.Hash import keccak  # nosec B413 - pycryptodome (maintained), not pycrypto
         k = keccak.new(digest_bits=256)
         k.update(data)
         return k.digest()

@@ -138,7 +138,9 @@ class RateService:
                 "?ids=bitcoin,ethereum,solana,monero"
                 "&vs_currencies=xmr,btc,usd,eur"
             )
-            with urllib.request.urlopen(url, timeout=5) as resp:
+            # B310 false positive: URL is a hardcoded https://api.coingecko.com literal,
+            # not user-influenced; SSRF/file:// schemes not reachable here.
+            with urllib.request.urlopen(url, timeout=5) as resp:  # nosec B310
                 data = json.loads(resp.read().decode())
 
             rates: Dict[str, Decimal] = {}

@@ -97,11 +97,11 @@ pydantic-settings==2.11.0
     # via -r requirements.txt
 pycryptodome==3.23.0
     # via -r requirements.txt
-python-dotenv==1.2.1
+python-dotenv==1.2.2
     # via
     #   -r requirements.txt
     #   uvicorn
-python-multipart==0.0.20
+python-multipart==0.0.26
     # via -r requirements.txt
 pyyaml==6.0.3
     # via
@@ -109,7 +109,7 @@ pyyaml==6.0.3
     #   uvicorn
 redis==7.0.1
     # via -r requirements.txt
-requests==2.32.5
+requests==2.33.0
     # via -r requirements.txt
 sentry-sdk==2.54.0
     # via -r requirements.txt
