@@ -99,11 +99,24 @@ def upgrade() -> None:
 
     # Step 3: Backfill existing rows.
     audit_hmac_key = os.environ.get("AUDIT_HMAC_KEY", "")
+    # Count pre-existing rows that would need backfill — only require the key
+    # if there is actually work to do.  Empty audit_log on first deploy is fine.
+    pending_count = conn.execute(
+        sa.text("SELECT COUNT(*) FROM audit_log WHERE entry_hmac IS NULL")
+    ).scalar() or 0
+    if pending_count and not audit_hmac_key:
+        # Fail-loud: silently skipping leaves NULL rows that confuse the
+        # post-migration verifier (it cannot distinguish legitimately-empty
+        # legacy rows from a skipped backfill, see Opus review F-11 HIGH).
+        raise RuntimeError(
+            f"AUDIT_HMAC_KEY must be set to backfill {pending_count} pre-existing "
+            "audit_log rows. Set the env var (≥32 chars) and re-run the migration. "
+            "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
     if not audit_hmac_key:
-        logger.warning(
-            "AUDIT_HMAC_KEY not set — skipping audit_log HMAC backfill. "
-            "Existing rows will have NULL prev_hmac/entry_hmac. "
-            "The chain will start from the next inserted row."
+        logger.info(
+            "AUDIT_HMAC_KEY not set and audit_log is empty — "
+            "skipping backfill. Chain will start from the first inserted row."
         )
     else:
         # Fetch all existing rows that haven't been backfilled yet, ordered by

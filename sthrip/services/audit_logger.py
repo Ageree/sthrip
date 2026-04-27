@@ -237,7 +237,11 @@ def _get_prev_hmac(db: Any) -> str:
         if hmac_val is None or not isinstance(hmac_val, str):
             return _GENESIS_HMAC
         return hmac_val
-    except Exception:
+    except (AttributeError, TypeError):
+        # Test mocks may not set up the .query(...).order_by(...).with_for_update()
+        # chain — fall back to genesis for unit-test ergonomics.  Real DB errors
+        # (SQLAlchemyError) MUST propagate so a poisoned chain isn't silently
+        # masked as "tampering" — see Opus F-11 review MEDIUM.
         return _GENESIS_HMAC
 
 
@@ -425,6 +429,17 @@ def verify_chain(
     rows = db.query(AuditLog).order_by(AuditLog.created_at, AuditLog.id).all()
 
     if not rows:
+        return ChainStatus(ok=True, first_bad_id=None, total_checked=0)
+
+    # Pre-migration legacy rows have NULL entry_hmac/prev_hmac.  They are NOT
+    # part of the integrity chain (the chain starts at the first row with a
+    # backfilled or freshly-computed HMAC) and must be skipped — propagating
+    # "" through them would corrupt expected_prev_hmac for every subsequent
+    # legitimate row (Opus F-11 MEDIUM).
+    rows = [r for r in rows if r.entry_hmac]
+
+    if not rows:
+        # Table holds only legacy rows — nothing to verify.
         return ChainStatus(ok=True, first_bad_id=None, total_checked=0)
 
     start_index = 0
