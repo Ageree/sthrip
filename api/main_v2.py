@@ -326,13 +326,24 @@ def _run_database_migrations():
     settings = get_settings()
     alembic_ini = pathlib.Path(__file__).resolve().parent.parent / "alembic.ini"
 
-    # Fast path: if schema already exists, just stamp and return
+    # Fast path: if schema already exists, run pending migrations + housekeeping.
+    # Previously we skipped alembic outright when alembic_version was populated,
+    # which meant new migrations (F-4 idempotency_keys, F-11 audit HMAC chain)
+    # never ran on production. Now we run ``alembic upgrade head`` —
+    # idempotent — and fall back to the housekeeping path on failure.
     try:
         with get_db() as db:
             from sqlalchemy import text as sa_text
             ver = db.execute(sa_text("SELECT version_num FROM alembic_version")).scalar()
             if ver:
-                logger.info("Schema at alembic version %s — skipping migrations", ver)
+                logger.info("Schema at alembic version %s — running pending migrations", ver)
+                if alembic_ini.exists() and _ALEMBIC_AVAILABLE:
+                    try:
+                        alembic_cfg = AlembicConfig(str(alembic_ini))
+                        alembic_command.upgrade(alembic_cfg, "head")
+                        logger.info("Alembic upgrade head completed")
+                    except Exception as e:
+                        logger.error("Alembic upgrade failed: %s — continuing with sync hooks", e)
                 # Ensure all PG enum values exist (safe to re-run)
                 _fix_pg_enums()
                 _sync_table_columns()
@@ -340,9 +351,20 @@ def _run_database_migrations():
                     _ensure_pending_withdrawals()
                 except Exception as e:
                     logger.warning("Could not create pending_withdrawals: %s", e)
+                # Belt-and-suspenders: create any tables that the migration didn't
+                # provide (e.g. when running on a database that pre-dates
+                # idempotency_keys but is stamped past the migration that creates it).
+                try:
+                    from sthrip.db.models import Base
+                    from sqlalchemy import create_engine
+                    import os as _os
+                    eng = create_engine(_os.getenv("DATABASE_URL", ""))
+                    Base.metadata.create_all(bind=eng, checkfirst=True)
+                except Exception as e:
+                    logger.warning("Base.metadata.create_all skipped: %s", e)
                 return
     except Exception:
-        pass  # alembic_version table missing — proceed with migration
+        pass  # alembic_version table missing — proceed with full migration path
 
     try:
         if alembic_ini.exists():
