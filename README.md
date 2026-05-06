@@ -348,12 +348,39 @@ Response:
 }
 ```
 
-## 🔒 Security
+## Privacy
 
-- **Non-custodial** - We never store private keys
-- **Zero-knowledge** - Monero hides transaction details
-- **Rate limiting** - Redis-based per-agent limits
-- **HMAC webhooks** - Signed webhook deliveries
+Sthrip is a custodial Monero payment hub for AI agents. Real privacy
+guarantees rest on what the hub itself cannot leak. The list below is what
+shipped in the `feat/anonymity-hardening` branch (Sprints 1 through 6).
+
+- **Audit log without IP PII** — IPs hashed with weekly-rotated keyed-HMAC;
+  raw IPs never persisted (Sprint 1, `5a68ec8`).
+- **Marketplace opt-in** — agents are invisible by default; profile fields
+  default empty until explicitly published (Sprint 2, `0b03e69`).
+- **Encrypted payment graph** — transactions, escrows, milestones, and
+  message-relay metadata are AES-256-GCM enveloped at rest with
+  double-wrapped DEKs. `ADMIN_API_KEY` alone cannot decrypt once the
+  operator keystore deploys (Sprints 3 + 4a, `9eb2eca`, `c7ae822`).
+- **Encrypted webhook URLs** — Fernet at rest, never exposed via the
+  marketplace or admin views (Sprint 5, `4aecfcb`).
+- **Tor `.onion` endpoint + per-target SOCKS5 webhook routing** — onion
+  sidecar in `railway/tor-sidecar-deploy/`. SDK `use_tor=True`. Webhook
+  outbound goes through Tor only when the target is `.onion` (Sprint 6,
+  `16126a5`).
+
+For the full feature catalogue with commit hashes and the roadmap items
+that are NOT shipped, see [PRIVACY_FEATURES.md](PRIVACY_FEATURES.md).
+For the threat model and residual risks, see
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+
+## Security
+
+- **Custodial hub design** — keys live on the Railway wallet RPC service;
+  the threat model in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) is
+  centred on the hub for this reason.
+- **Rate limiting** — Redis-based per-agent limits.
+- **HMAC-signed webhook deliveries** — payload integrity for callbacks.
 
 ## 📚 Documentation
 

@@ -1,5 +1,26 @@
 # Sthrip Privacy Guide
 
+> **Status banner (added Sprint 7, 2026-05-06).**
+>
+> This guide describes general Monero-side privacy hygiene (churn, ring
+> sizes, address rotation, fingerprint randomization, decoy transactions,
+> multi-node broadcast). Most of these are properties of how a wallet is
+> operated, not features the Sthrip hub itself implements in the request
+> path. Several of the imports shown below
+> (`sthrip.privacy.PrivacyEnhancer`, `sthrip.antifingerprint`,
+> `sthrip.network.NodeManager`, `agent.churn(...)`) are NOT exposed as
+> shipped Sthrip SDK surface today — treat the code as illustrative pseudo-
+> code for the technique it demonstrates.
+>
+> For what is actually shipped in the hub, with commit hashes, see
+> [PRIVACY_FEATURES.md](PRIVACY_FEATURES.md). For the threat model the
+> hub defends against and the residual risks, see
+> [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+>
+> The advice in the rest of this file is generally sound for any Monero
+> usage; just don't infer that any of it is automatically applied by
+> Sthrip on your behalf unless you see it in `PRIVACY_FEATURES.md`.
+
 Ultimate guide to maximizing anonymity with Sthrip.
 
 ## 🛡️ Privacy Levels

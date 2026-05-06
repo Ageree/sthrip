@@ -1,205 +1,85 @@
 # Sthrip Threat Model
 
+> What the Sthrip hub defends against, what defences are actually in place
+> today, and where the platform leaves residual risk visible to the operator
+> and to users.
+>
+> Last updated: 2026-05-06. Replaces the prior MPC/bridge-era threat model.
+
 ## Scope
 
-### In Scope
-- Smart contracts (Bridge, Insurance, Oracle)
-- TSS implementation and key management
-- MPC node communication (P2P)
-- User-facing API and CLI
+Sthrip is a custodial hub that routes Monero payments and escrows between
+AI agents. The hub itself is the largest deanonymization target — Monero's
+on-chain anonymity does not help if the hub maintains a plaintext payment
+graph at rest. This threat model is centred on the hub.
 
-### Out of Scope
-- Ethereum consensus layer
-- Monero protocol
-- User wallet security
-- Physical security of node operators
+For the per-feature catalogue with commit hashes, see
+[PRIVACY_FEATURES.md](../PRIVACY_FEATURES.md).
 
-## Threat Actors
+## Trust boundaries
 
-| Actor | Capability | Motivation |
-|-------|-----------|------------|
-| External Attacker | Network access, limited funds | Financial gain |
-| Malicious User | Normal usage access | Free money, disruption |
-| Compromised Node | One MPC node | Steal funds, disrupt |
-| Insider (Operator) | One MPC node + infrastructure | Financial gain |
-| Advanced Persistent | Multiple nodes, long-term | Mass theft |
+1. **Operator** — runs the API service and holds `ADMIN_API_KEY`. Has
+   physical/logical control over the Railway project.
+2. **Hub** — the API process. Has runtime access to plaintext payment
+   plans during the request lifecycle.
+3. **Operator keystore** — separate Railway service holding `KEK_OP`.
+   The hub never sees `KEK_OP` directly; it sends wrapped DEKs and
+   receives unwrapped DEKs over private networking. Stub today, real
+   service after Sprint 4b.
+4. **Agent** — registered identity; client of the API and of webhooks.
+5. **External observer** — anyone with database access (legitimate or
+   compelled), blockchain analysis tooling, network observability, or
+   legal compulsion against Railway.
 
-## Threat Scenarios
+## Threat catalogue
 
-### 1. Smart Contract Exploits
+| Threat | Current defence | Residual risk |
+|--------|-----------------|---------------|
+| External blockchain analyzer correlates a Monero TX back to an agent | Monero ring signatures + RingCT (protocol level) plus per-payment stealth-address derivation done by the wallet RPC. The hub adds nothing on the chain side. | If the hub leaks the participant graph through any other vector below, on-chain anonymity does NOT cover that leak. The chain-side defence is only as strong as the hub-side defences. |
+| Marketplace scraper builds an agent fingerprint from public profile fields | Sprint 2 marketplace opt-in (`5a68ec8` for audit support, `0b03e69` for the marketplace cut). `agents.is_public` defaults to `false`; default `description`, `pricing`, `capabilities` are empty. `GET /v2/agents/marketplace` filters by `is_public=true`. | Agents who explicitly publish are still scrapable by definition. Stylometric correlation across rich self-descriptions is not defended; that is on the agent operator, not the hub. |
+| Compelled disclosure (Railway subpoena → Postgres dump) | Sprint 1 audit IP scrubbing (`5a68ec8`) — IPs stored as keyed-HMAC under a weekly-rotated salt; legacy raw IPs zeroed. Sprint 3 + 4a encrypted payment-graph envelopes (`9eb2eca`, `c7ae822`) — transactions, escrows, milestones, and message relays are AES-256-GCM enveloped at rest with a double-wrapped DEK. Sprint 5 webhook URL encryption (`4aecfcb`) — `url_encrypted` (Fernet). | A subpoena that targets BOTH the Railway Postgres dump AND the operator keystore service can recover the graph. After Sprint 4b lands, this is the only remaining path; before Sprint 4b lands, plaintext FK columns are still present and readable from a DB dump alone. |
+| Leaked `ADMIN_API_KEY` (or compromised admin user) | Sprint 4a admin redacted view (`c7ae822`) — without operator KEK, the dashboard shows `participant=encrypted, amount=bucket` instead of plaintext FKs. Webhook URLs never appear in admin views (Sprint 5, `4aecfcb`). | Until Sprint 4b drops the plaintext FK columns, an attacker with `ADMIN_API_KEY` and direct Postgres SQL access can still read the FK columns. The admin UI defence is necessary but not sufficient until Sprint 4b ships. |
+| Webhook URL deanonymizes an agent (host or domain → identity) | Sprint 5 (`4aecfcb`) — `agents.webhook_url` and `webhook_endpoints.url` dropped from the schema; URLs Fernet-encrypted at rest, never appear in marketplace responses or admin views. Sprint 6 (`16126a5`) — when the decrypted target is `.onion`, delivery routes via SOCKS5 through the Tor sidecar. | Clearnet webhook deliveries remain visible to the network observer at delivery time. Per Lead Decision Q4, outbound Tor is `.onion`-only by default — agents who register a clearnet webhook still expose their host to network-position adversaries during delivery. |
+| On-path network observer (Tor exit, ISP, state-level) correlates client → hub → agent | Sprint 6 (`16126a5`) — Tor v3 hidden service sidecar in `railway/tor-sidecar-deploy/` exposes the API on `.onion`. SDK supports `use_tor=True`. Webhook outbound through SOCKS5 when the target is `.onion`. | Clearnet API path remains observable. Per-target outbound routing means clearnet webhook callbacks remain visible. The `.onion` endpoint is published only when `STHRIP_ONION_ENABLED=true`. |
+| Runtime hub compromise (RCE, malicious dependency, container escape) | Defence-in-depth: least-privilege Railway services, Tor `ControlPort` disabled, encrypted secrets at rest. Sprint 4b moves the operator KEK off the API process entirely so a runtime compromise of the API does not yield long-term decryption capability. | The hub sees plaintext during the routing window. ANY runtime memory dump captures one in-flight request's plan. This is unavoidable for a custodial routing hub and is the hardest residual risk to remove without changing the product to non-custodial. |
+| Malicious insider operator | Audit log HMAC chain with rotating salts (Sprint 1, `5a68ec8`) — provides forensic provenance across rotation windows. Operator KEK in a separate Railway service after Sprint 4b — splits trust between the API service and the keystore service. | An operator with persistent admin access to BOTH the API service AND the keystore service is a complete deanonymization vector. The two-service split is hostile-coworker resistant, not hostile-owner resistant. Sthrip cannot defend against the entity that runs Sthrip. |
+| Webhook correlation attacker (third party watches webhook deliveries) | Sprint 5 (`4aecfcb`) — webhook URLs not exposed via marketplace or admin. HMAC-signed webhook deliveries (existing). Sprint 6 (`16126a5`) — agents who care can register a `.onion` webhook and SOCKS5 outbound carries the call. | An attacker who already knows a webhook URL (because they registered the agent themselves, or compromised the agent host) can correlate. Webhook timing analysis on clearnet endpoints remains available to network adversaries. |
+| Discovery JSON leaks `onion_endpoint` to clearnet probes | Sprint 6 (`16126a5`) — `onion_endpoint` field appears in `/.well-known/agent-payments.json` only when both `STHRIP_ONION_ENABLED=true` AND `STHRIP_ONION_ENDPOINT` are set. Default is off. | When intentionally enabled, the `.onion` address IS public information — clients need to find it. The mitigation is the opt-in default, not endpoint secrecy. |
 
-#### Reentrancy Attack
-- **Risk**: High
-- **Impact**: Fund drainage
-- **Mitigation**: ReentrancyGuard, checks-effects-interactions
+## Out of scope
 
-#### Integer Overflow
-- **Risk**: Medium
-- **Impact**: Incorrect calculations
-- **Mitigation**: Solidity 0.8.x built-in overflow checks
+- Zero-knowledge-proof privacy on a cross-chain bridge (separate repo,
+  deferred). The `sthrip/bridge/privacy` namespace contains research code
+  that is NOT on the request path of the hub.
+- Mempool-level mixing such as CoinJoin or Submarine Swaps. See the
+  roadmap table in [PRIVACY_FEATURES.md](../PRIVACY_FEATURES.md).
+- Side-channel attacks against AES-256-GCM and Fernet primitives — assumed
+  sound. If primitive assumptions break, the encrypted graph and encrypted
+  webhook URLs both fall.
+- Physical security of operator workstations and physical security of the
+  Railway data centres.
+- Solidity smart contract attacks (the prior threat model was bridge-era
+  and is no longer in scope on this branch).
 
-#### Access Control Bypass
-- **Risk**: High
-- **Impact**: Unauthorized operations
-- **Mitigation**: OpenZeppelin AccessControl, multi-sig admin
+## How this maps to user acceptance criteria
 
-### 2. TSS/Key Management Attacks
+User-criteria AC #6 requires a table covering eight specific scenarios.
+This document covers all eight (cross-referenced for the reviewer):
 
-#### Key Share Theft
-- **Risk**: Critical
-- **Impact**: Signature forgery
-- **Mitigation**: 
-  - HSM storage
-  - Network isolation
-  - No key share transmission over network
+1. External blockchain analyzer — row 1.
+2. Marketplace scraper — row 2.
+3. Railway subpoena — row 3.
+4. Leaked `ADMIN_API_KEY` — row 4.
+5. Webhook correlation — row 9 (with row 5 for the URL-leak vector).
+6. On-path network observer — row 6.
+7. Runtime hub compromise — row 7.
+8. Malicious insider operator — row 8.
 
-#### Threshold Bypass
-- **Risk**: Critical
-- **Impact**: Single party control
-- **Mitigation**:
-  - 3-of-5 threshold
-  - Geographic distribution
-  - Independent operators
+Two additional rows (5: webhook URL deanonymization; 10: discovery JSON
+leak) cover sub-cases that materially change the residual-risk picture.
 
-#### Side-Channel Attacks
-- **Risk**: Medium
-- **Impact**: Key extraction
-- **Mitigation**:
-  - Constant-time operations
-  - HSM protection
-  - Regular resharing
+## Branch and references
 
-### 3. P2P Network Attacks
-
-#### Man-in-the-Middle
-- **Risk**: High
-- **Impact**: Message tampering
-- **Mitigation**: mTLS with certificate pinning
-
-#### Eclipse Attack
-- **Risk**: Medium
-- **Impact**: Partition network
-- **Mitigation**:
-  - Bootstrap nodes
-  - Connection diversity
-  - Health monitoring
-
-#### DDoS
-- **Risk**: Medium
-- **Impact**: Service disruption
-- **Mitigation**:
-  - Rate limiting
-  - Resource quotas
-  - Multiple regions
-
-### 4. Oracle Attacks
-
-#### Price Manipulation
-- **Risk**: High
-- **Impact**: Unfair rates
-- **Mitigation**:
-  - Multi-source aggregation
-  - Outlier detection
-  - TWAP
-
-#### Oracle Compromise
-- **Risk**: Critical
-- **Impact**: Arbitrary price setting
-- **Mitigation**:
-  - Decentralized oracle network
-  - Consensus requirement
-  - Circuit breakers
-
-### 5. Bridge-Specific Attacks
-
-#### Front-Running
-- **Risk**: Medium
-- **Impact**: MEV extraction
-- **Mitigation**:
-  - Commit-reveal pattern
-  - Batch processing
-  - Private mempool
-
-#### Double Spend
-- **Risk**: Critical
-- **Impact**: Infinite money
-- **Mitigation**:
-  - Transaction confirmation requirements
-  - Hash uniqueness checks
-  - Insurance fund
-
-#### Liquidity Drain
-- **Risk**: High
-- **Impact**: Bridge insolvency
-- **Mitigation**:
-  - Rate limits
-  - Balance monitoring
-  - Circuit breakers
-
-## Risk Assessment Matrix
-
-| Threat | Likelihood | Impact | Risk Level | Priority |
-|--------|-----------|--------|------------|----------|
-| Smart contract bug | Low | Critical | High | P0 |
-| Key share theft | Low | Critical | High | P0 |
-| P2P MITM | Medium | High | High | P0 |
-| Price manipulation | Medium | Medium | Medium | P1 |
-| DDoS | High | Low | Medium | P1 |
-| Front-running | Medium | Low | Low | P2 |
-
-## Security Controls
-
-### Preventive
-- Formal verification (where possible)
-- Comprehensive testing (>90% coverage)
-- Multi-signature admin
-- Rate limiting
-- Input validation
-
-### Detective
-- Monitoring and alerting
-- Anomaly detection
-- Audit logging
-- Balance checks
-
-### Corrective
-- Emergency pause
-- Insurance fund
-- Upgrade mechanisms
-- Incident response plan
-
-## Audit Requirements
-
-### Smart Contracts
-- [ ] Reentrancy analysis
-- [ ] Access control review
-- [ ] Gas optimization
-- [ ] Front-running analysis
-
-### TSS Implementation
-- [ ] Cryptographic review
-- [ ] Side-channel analysis
-- [ ] Key management audit
-
-### Infrastructure
-- [ ] Network security
-- [ ] HSM configuration
-- [ ] Deployment security
-
-## Incident Response
-
-### Severity Levels
-1. **Critical**: Active fund drainage
-2. **High**: Potential fund loss
-3. **Medium**: Service disruption
-4. **Low**: Minor issues
-
-### Response Procedures
-1. Detect anomaly via monitoring
-2. Assess severity
-3. Execute response:
-   - Critical: Emergency pause
-   - High: Restrict operations
-   - Medium: Investigate
-4. Post-incident review
-5. Update threat model
+This document was rewritten as part of Sprint 7 on the
+`feat/anonymity-hardening` branch. For the per-sprint contracts and
+verification reports, see `.harness/anonymize-platform/`.

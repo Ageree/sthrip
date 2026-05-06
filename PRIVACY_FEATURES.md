@@ -1,126 +1,141 @@
 # Sthrip Privacy Features
 
-## 🔒 INSTANT Maximum Privacy
+> Honest catalog of what is shipped on the `feat/anonymity-hardening` branch
+> versus what is planned. No marketing decoration of unshipped work.
+>
+> Last updated: 2026-05-06 (after Sprint 6 commit `16126a5`).
 
-> **Privacy through cryptography, not obscurity.**
-> Приватность через математику, а не через ожидание.
+## How to read this file
 
-## Принцип
+Sthrip is a custodial Monero payment hub for AI agents. Monero's on-chain
+anonymity is real, but a custodial hub is the dominant deanonymization vector
+for everyone who uses it — if the hub keeps a plaintext payment graph, an
+attacker who reaches the hub gets the graph regardless of how the chain
+behaves. The "Shipped" list below is everything in the hub itself that
+defends against that.
 
-❌ **НЕТ** бесполезных задержек - они не дают реальной безопасности
-✅ **ЕСТЬ** криптографическая защита - математически не взламываемая
+For the threat model and residual risks, see
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
-## Архитектура
+## Shipped
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    INSTANT PRIVACY STACK                        │
-├─────────────────────────────────────────────────────────────────┤
-│  🔐 Stealth Addresses    <1 sec   │  One-time, unlinkable       │
-├─────────────────────────────────────────────────────────────────┤
-│  🌪️ CoinJoin            1-2 min   │  50+ participants, real mix │
-├─────────────────────────────────────────────────────────────────┤
-│  ⚡ Submarine Swaps      1-30 sec  │  Atomic, Lightning-fast     │
-├─────────────────────────────────────────────────────────────────┤
-│  🛡️ ZK Proofs           <1 sec    │  Zero-knowledge verification│
-├─────────────────────────────────────────────────────────────────┤
-│  🕵️ Tor Hidden Service  instant   │  IP hidden, .onion routing  │
-└─────────────────────────────────────────────────────────────────┘
+### Sprint 1 — Audit log IP scrubbing + `request_body` allowlist
 
-Total time: 1-3 minutes for MAXIMUM privacy
-```
+- **Commit**: `5a68ec8`
+- `audit_log.ip_address` removed; replaced by `ip_hmac` (32-byte HMAC under
+  a weekly-rotated keyed salt). Old salts are zeroed after
+  `2 × IP_SALT_ROTATION_DAYS`. Rotation cadence configurable via
+  `IP_SALT_ROTATION_DAYS` (default `7`, range `1..30`).
+- `audit_log.request_body` is filtered through a per-action allowlist of
+  field names — unknown actions default-deny.
+- The HMAC integrity chain across audit rows remains valid; the migration
+  aborts on any chain break instead of silently breaking forensics.
 
-## Компоненты
+### Sprint 2 — Marketplace opt-in (`is_public`)
 
-### 1. Stealth Addresses (Мгновенно)
-```python
-from sthrip.bridge.privacy import StealthAddressGenerator
+- **Commit**: `0b03e69`
+- `agents.is_public` defaults to `false`. The `GET /v2/agents/marketplace`
+  endpoint serves only `is_public=true` rows.
+- Default `description`, `pricing`, and `capabilities` are empty so an
+  agent that does nothing leaks no stylometry on registration.
+- Existing rows hard-cut to `is_public=false` on migration. Operators who
+  want to remain discoverable opt in via SDK `update_profile(is_public=True)`.
 
-generator = StealthAddressGenerator()
-stealth = generator.generate_stealth_address(
-    scan_key=recipient_scan,
-    spend_key=recipient_spend
-)
-# ⏱️ <100ms
-# 🔒 Уникальный адрес каждый раз
-```
+### Sprint 3 — Encrypted payment-graph envelopes (dual-write)
 
-### 2. CoinJoin (1-2 минуты)
-```python
-from sthrip.bridge.mixing import ChaumianCoinJoin
+- **Commit**: `9eb2eca`
+- `transactions`, `escrow_deals`, `escrow_milestones`, and `message_relays`
+  gain an envelope column populated on write: AES-256-GCM ciphertext over a
+  msgpack v1 payload, with a per-row DEK wrapped twice — once with the
+  hub's KEK and once with the operator KEK delivered through the keystore
+  service.
+- Plaintext FK columns (`from_agent_id`, `to_agent_id`, `buyer_id`,
+  `seller_id`, `amount`) are still written in this sprint — dual-write
+  only — so reads remain compatible. The amount field also writes a
+  log-scale `amount_bucket` so admin views can show coarse aggregates
+  without unwrapping the operator KEK.
+- The keystore service exists as a stub in this sprint (identity unwrap);
+  the production deployment is part of Sprint 4b (see "In progress" below).
 
-coinjoin = ChaumianCoinJoin(min_anonymity_set=50)
-round_id = await coinjoin.start_round()
-# ⏱️ 1-2 min (пока наберётся 50 участников)
-# 🔒 Anonymity set = 50+
-```
+### Sprint 4a — Dual-read with feature flag + backfill
 
-### 3. Submarine Swaps (Мгновенно)
-```python
-from sthrip.bridge.mixing import SubmarineSwapService
+- **Commit**: `c7ae822`
+- Read paths try the envelope first and fall back to plaintext FKs only if
+  the envelope is `NULL` or fails to decrypt. Gated behind
+  `STHRIP_READ_FROM_ENVELOPE` (default `false`).
+- `scripts/backfill_payment_envelope.py` populates the envelope on rows
+  written before Sprint 3. Rerun-safe — skips rows where envelope is
+  already present.
+- Admin dashboard (`api/admin_ui/views.py`) gains a redacted view: when
+  the operator KEK is unavailable to the API process, the dashboard shows
+  `participant=encrypted, amount=bucket` instead of the plaintext FKs.
+- Net effect today: with the flag off in production, behaviour is
+  unchanged. With the flag on, an admin holding only `ADMIN_API_KEY`
+  cannot see the participant graph through the dashboard — the operator
+  keystore service is required.
 
-service = SubmarineSwapService()
-swap = await service.create_swap_in(amount, refund_addr)
-# ⏱️ 1-30 sec (atomic)
-# 🔒 Разрыв цепочки анализа
-```
+### Sprint 5 — Encrypted webhook URLs
 
-### 4. Zero-Knowledge Proofs (Мгновенно)
-```python
-from sthrip.bridge.privacy import ZKVerifier
+- **Commit**: `4aecfcb`
+- `agents.webhook_url` and `webhook_endpoints.url` columns dropped.
+  Replaced by `url_encrypted` (Fernet at rest).
+- Marketplace and admin views never expose webhook URLs.
+- Migration is 7-phase and idempotent. The plaintext column is dropped
+  only after the encrypted column is populated and verified.
 
-proof = verifier.generate_ownership_proof(sk, pk)
-# ⏱️ <500ms
-# 🔒 Нулевое разглашение
-```
+### Sprint 6 — Tor `.onion` sidecar + SDK SOCKS5 + per-target webhook routing
 
-## Почему НЕТ time delays?
+- **Commit**: `16126a5`
+- New Railway sidecar `railway/tor-sidecar-deploy/` runs a Tor v3 hidden
+  service mapping `:80 → api:8000`. Persistent volume holds the onion
+  private key; `ControlPort` disabled.
+- `/.well-known/agent-payments.json` publishes `onion_endpoint` ONLY when
+  both `STHRIP_ONION_ENABLED=true` AND `STHRIP_ONION_ENDPOINT` are set.
+  The default is off.
+- SDK supports `Sthrip(use_tor=True)` for inbound calls via the SOCKS5
+  proxy bundled with the sidecar.
+- Webhook outbound: when the decrypted target hostname ends in `.onion`,
+  delivery routes through the SOCKS5 proxy. Clearnet targets continue to
+  go directly per Lead Decision Q4. The invariant "clearnet target with
+  Tor flag on must NOT route via Tor" is asserted in tests.
 
-| Проблема time delays | Решение криптографией |
-|---------------------|----------------------|
-| ⏰ Ждать 24-48 часов | ⚡ <3 минуты |
-| ❌ Ложная безопасность | ✅ Математическая гарантия |
-| 😡 Ужасный UX | 😊 Отличный UX |
-| 🔍 Корреляция видна | 🛡️ Невозможно отследить |
+## In progress
 
-## Сценарии использования
+### Sprint 4b — Drop plaintext FK columns (DESTRUCTIVE)
 
-### Отправка $1000 (Максимальная приватность)
-```python
-# 1. Stealth address (<1 sec)
-# 2. CoinJoin (1-2 min, 50 участников)
-# 3. Submarine swap (optional, 10 sec)
-# 
-# Итого: 2-3 минуты
-# Результат: Невозможно отследить
-```
+- **Status**: deferred. Blocked on real `RemoteKeystore` deployment plus a
+  24-hour soak with `STHRIP_READ_FROM_ENVELOPE=true` in production.
+- Once shipped, plaintext `from_agent_id`, `to_agent_id`, `buyer_id`,
+  `seller_id`, and `amount` columns will be dropped from
+  `transactions`/`escrow_deals`/`escrow_milestones`/`message_relays`.
+  After that, an attacker holding `ADMIN_API_KEY` and the full Railway
+  Postgres dump cannot recover the payment graph without also compromising
+  the separate operator keystore service.
 
-### Трейдинг (Скорость + Приватность)
-```python
-# 1. Stealth address only (<1 sec)
-#
-# Итого: Мгновенно
-# Результат: IP скрыт, адрес уникальный
-```
+## Roadmap (NOT shipped)
 
-## Метрики
+The following items appeared in the legacy `PRIVACY_FEATURES.md` as if they
+were shipped. They are not. They are listed here as roadmap items only.
 
-| Компонент | Время | Anonymity Set |
-|-----------|-------|---------------|
-| Stealth | <1 sec | ∞ (unique) |
-| CoinJoin | 1-2 min | 50-100 |
-| Submarine | 1-30 sec | Chain break |
-| **Combined** | **<3 min** | **50+ × unlinkable** |
+| Item | Status | Why deferred |
+|------|--------|--------------|
+| CoinJoin coordinator | Not shipped on the hub request path. Research code exists in `sthrip/bridge/mixing/coinjoin.py` (`CoinJoinTransaction`, `CoinJoinInput`, `CoinJoinOutput`, `start_round`) but is NOT invoked by any payment, escrow, marketplace, or webhook flow. | Requires off-chain MPC; the coordinator-free version remains research-grade. The bridge namespace is a separate engineering track. |
+| Submarine Swaps | Not shipped on the hub request path. Research code exists in `sthrip/bridge/mixing/`. | Off-chain swap protocol with no production code wired into the hub. |
+| zk-SNARKs / zk proofs in the request path | Not shipped. A Pedersen-commitment helper exists for review payloads (Phase 3a), but full zk verification is out of scope on this branch. | Research-grade. |
+| MPC-based mixing without coordinator | Not shipped. | Listed in user-criteria as out-of-scope. |
+| `WEBHOOK_FORCE_TOR=true` (route all outbound through Tor) | Not shipped. | Per Lead Decision Q4; default routing stays per-target to avoid latency penalties on clearnet agents. |
 
-## Документация
+If older marketing copy advertised any of these as shipped, that copy was
+overpromising. This file is the source of truth.
 
-- [Instant Privacy Guide](docs/PRIVACY_INSTANT.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Threat Model](docs/THREAT_MODEL.md)
+## Public claims that previously overshot reality
 
-## Будущее
+The pre-Sprint-7 version of this file claimed:
 
-- [ ] Ring signatures (Monero-style)
-- [ ] Confidential Transactions
-- [ ] zk-SNARKs для 10ms verification
-- [ ] MPC-based mixing без coordinator
+> **Combined ≤ 3 min, fully unlinkable.**
+> Stealth Addresses + CoinJoin + Submarine Swaps + ZK Proofs + Tor.
+
+Only the Tor leg of that claim is in the request path today (Sprint 6,
+`16126a5`). Stealth addresses are inherited from the underlying Monero
+wallet RPC (a protocol property, not something Sthrip implements). The
+remaining components are roadmap items in the table above.
