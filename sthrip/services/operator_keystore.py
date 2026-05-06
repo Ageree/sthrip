@@ -1,4 +1,4 @@
-"""Operator keystore facade — Sprint 3 stub, Sprint 4 real service.
+"""Operator keystore facade — Sprint 3 stub, Sprint 4b real HTTP client.
 
 Per Lead decision Q1, the operator KEK lives on a separate Railway service
 ``sthrip-op-keystore`` that never touches ``DATABASE_URL`` and has independent
@@ -11,17 +11,28 @@ This keeps the wire-format identical (encrypted blobs in the column) so the
 Sprint 4 cutover is a swap-and-go.
 
 Selection is via env var ``OP_KEYSTORE_MODE``:
-- ``stub`` (default for Sprint 3, also for tests): in-process AES-GCM stub
-- ``remote`` (Sprint 4): proxies to ``sthrip-op-keystore.railway.internal``;
-  raises ``NotImplementedError`` until Sprint 4.
+
+- ``stub`` (default for Sprint 3, also for tests): in-process AES-GCM stub.
+- ``remote`` (Sprint 4b cutover): proxies to ``sthrip-op-keystore``
+  via httpx. Requires ``OP_KEYSTORE_AUTH_TOKEN`` env (shared bearer
+  secret). URL is ``OP_KEYSTORE_URL`` (default
+  ``http://sthrip-op-keystore.railway.internal:8000``). Timeout 5 s.
 
 The stub's KEK is hard-coded as a 32-byte literal — it is **not a secret**.
 The threat model assumes any attacker who reaches Sprint 3 dual-write data
-also reaches the stub KEK. Sprint 4 replaces this with a network round-trip
+also reaches the stub KEK. Sprint 4b replaces this with a network round-trip
 to the operator-only service.
+
+Note on ``get_kek_for_envelope``: by design the hub never sees ``KEK_OP``
+plaintext in remote mode, so the remote implementation raises a clear
+``RuntimeError`` instructing operators to migrate the writer/reader to the
+``wrap_dek``/``unwrap_dek`` API once the real keystore is online. The stub
+keeps the legacy ``get_kek_for_envelope`` path so existing Sprint 3 dual-write
+code continues to work in tests and pre-cutover production.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import secrets
@@ -91,23 +102,104 @@ class StubKeystore:
         return self._KEK
 
 
+#: Default URL for the operator keystore service inside the Railway private
+#: network. Override with ``OP_KEYSTORE_URL`` for local testing or alternate
+#: deployments.
+_DEFAULT_REMOTE_URL = "http://sthrip-op-keystore.railway.internal:8000"
+
+#: HTTP timeout for keystore round-trips. Should be small — the keystore is
+#: a colocated AES-GCM service, not a database.
+_REMOTE_TIMEOUT_SECONDS = 5.0
+
+
 class RemoteKeystore:
-    """Sprint 4 placeholder. Constructing it is fine; calling raises."""
+    """Sprint 4b real keystore client — POSTs wrapped DEKs to the
+    sthrip-op-keystore service over the Railway private network.
 
-    _ERR = (
-        "RemoteKeystore is the Sprint 4 cutover. Until "
-        "sthrip-op-keystore.railway.internal is deployed and reachable, "
-        "set OP_KEYSTORE_MODE=stub."
-    )
+    Auth: shared bearer secret in the ``Authorization`` header. The same
+    token is set on both ends as ``OP_KEYSTORE_AUTH_TOKEN`` (hub) and
+    ``AUTH_TOKEN`` (keystore).
 
-    def wrap_dek(self, dek: bytes) -> bytes:  # noqa: ARG002
-        raise NotImplementedError(self._ERR)
+    URL: ``OP_KEYSTORE_URL`` (default ``sthrip-op-keystore.railway.internal:8000``).
 
-    def unwrap_dek(self, wrapped: bytes) -> bytes:  # noqa: ARG002
-        raise NotImplementedError(self._ERR)
+    The hub never sees ``KEK_OP`` plaintext; ``get_kek_for_envelope`` raises
+    a clear ``RuntimeError``. Code paths that still rely on it must be
+    rewired to ``wrap_dek``/``unwrap_dek`` before flipping
+    ``OP_KEYSTORE_MODE=remote`` in production.
+    """
+
+    def __init__(self) -> None:
+        # Imported here so the module is importable even in environments
+        # that lack httpx (e.g. minimal alembic-only containers).
+        import httpx
+
+        self._url = os.environ.get("OP_KEYSTORE_URL", _DEFAULT_REMOTE_URL).rstrip("/")
+        token = os.environ.get("OP_KEYSTORE_AUTH_TOKEN")
+        if not token:
+            raise RuntimeError(
+                "OP_KEYSTORE_AUTH_TOKEN env not set; required when "
+                "OP_KEYSTORE_MODE=remote. Set the same shared secret on "
+                "both the API service and the sthrip-op-keystore service."
+            )
+        self._token = token
+        self._client = httpx.Client(
+            timeout=_REMOTE_TIMEOUT_SECONDS,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    # -- HTTP helpers --
+
+    def _post(self, path: str, json_body: dict) -> dict:
+        url = f"{self._url}{path}"
+        try:
+            resp = self._client.post(url, json=json_body)
+        except Exception as exc:  # noqa: BLE001 — wrap into clear runtime error
+            raise RuntimeError(
+                f"sthrip-op-keystore unreachable at {url}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        if resp.status_code != 200:
+            # Truncate body to avoid leaking key material in logs.
+            body = resp.text[:200]
+            raise RuntimeError(
+                f"sthrip-op-keystore {path} returned HTTP {resp.status_code}: {body}"
+            )
+        return resp.json()
+
+    # -- Public interface --
+
+    def wrap_dek(self, dek: bytes) -> bytes:
+        if len(dek) != _DEK_LEN:
+            raise ValueError(f"DEK must be exactly {_DEK_LEN} bytes")
+        body = {"dek_b64": base64.b64encode(dek).decode("ascii")}
+        result = self._post("/wrap", body)
+        wrapped_b64 = result.get("wrapped_b64")
+        if not isinstance(wrapped_b64, str):
+            raise RuntimeError("sthrip-op-keystore /wrap response missing wrapped_b64")
+        return base64.b64decode(wrapped_b64)
+
+    def unwrap_dek(self, wrapped: bytes) -> bytes:
+        if len(wrapped) < _NONCE_LEN + 16:
+            raise ValueError("wrapped DEK blob too short")
+        body = {"wrapped_b64": base64.b64encode(wrapped).decode("ascii")}
+        result = self._post("/unwrap", body)
+        dek_b64 = result.get("dek_b64")
+        if not isinstance(dek_b64, str):
+            raise RuntimeError("sthrip-op-keystore /unwrap response missing dek_b64")
+        dek = base64.b64decode(dek_b64)
+        if len(dek) != _DEK_LEN:
+            raise RuntimeError(
+                f"sthrip-op-keystore returned DEK of wrong length: {len(dek)}"
+            )
+        return dek
 
     def get_kek_for_envelope(self) -> bytes:
-        raise NotImplementedError(self._ERR)
+        raise RuntimeError(
+            "RemoteKeystore.get_kek_for_envelope is unsupported by design — "
+            "the hub never sees KEK_OP plaintext in remote mode. "
+            "Migrate the caller to wrap_dek/unwrap_dek before enabling "
+            "OP_KEYSTORE_MODE=remote."
+        )
 
 
 # ---------------------------------------------------------------------------

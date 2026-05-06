@@ -52,6 +52,7 @@ ReadSource = Literal[
     "fallback_fk",
     "fallback_envelope_null",
     "fallback_decrypt_error",
+    "fallback_no_data",
     "flag_off",
 ]
 
@@ -159,7 +160,12 @@ def _coerce_decimal(value: Any) -> Optional[Decimal]:
 
 
 def _row_fallback(row: Any, source: ReadSource) -> ReadResult:
-    """Build a ReadResult from the row's plaintext FK columns."""
+    """Build a ReadResult from the row's plaintext FK columns.
+
+    Uses ``getattr`` for every field so the function is safe against
+    Sprint 4b schemas where the legacy plaintext columns have been
+    dropped — missing attributes resolve to ``None``.
+    """
     # Different models name the columns differently. Probe in priority order.
     from_id = (
         getattr(row, "from_agent_id", None)
@@ -184,6 +190,22 @@ def _row_fallback(row: Any, source: ReadSource) -> ReadResult:
     )
 
 
+def _is_empty_fallback(result: ReadResult) -> bool:
+    """True when every payload field is missing.
+
+    Once the legacy FK columns are dropped (Sprint 4b) and a row has no
+    envelope either, the fallback ReadResult is all-``None``. Surfacing
+    that as ``fallback_no_data`` lets admin views render a placeholder
+    row instead of treating the empty result as a successful decrypt.
+    """
+    return (
+        result.from_agent_id is None
+        and result.to_agent_id is None
+        and result.amount is None
+        and result.description is None
+    )
+
+
 def read_with_fallback(row: Any) -> ReadResult:
     """Resolve participant + amount + description for a payment-graph row.
 
@@ -199,15 +221,44 @@ def read_with_fallback(row: Any) -> ReadResult:
     keeps reads bullet-proof.
     """
     if not feature_flag_enabled():
-        return _row_fallback(row, source="flag_off")
+        result = _row_fallback(row, source="flag_off")
+        if _is_empty_fallback(result):
+            # Flag is off, FK columns are gone, and the envelope path is
+            # not consulted — there is genuinely nothing to surface.
+            return ReadResult(
+                from_agent_id=None,
+                to_agent_id=None,
+                amount=None,
+                description=None,
+                source="fallback_no_data",
+            )
+        return result
 
     blob = getattr(row, "participant_envelope", None)
     if not blob:
-        return _row_fallback(row, source="fallback_envelope_null")
+        result = _row_fallback(row, source="fallback_envelope_null")
+        if _is_empty_fallback(result):
+            return ReadResult(
+                from_agent_id=None,
+                to_agent_id=None,
+                amount=None,
+                description=None,
+                source="fallback_no_data",
+            )
+        return result
 
     payload = read_payload_or_none(row)
     if payload is None:
-        return _row_fallback(row, source="fallback_decrypt_error")
+        result = _row_fallback(row, source="fallback_decrypt_error")
+        if _is_empty_fallback(result):
+            return ReadResult(
+                from_agent_id=None,
+                to_agent_id=None,
+                amount=None,
+                description=None,
+                source="fallback_no_data",
+            )
+        return result
 
     from_id = _coerce_uuid(payload.get("from_agent_id"))
     to_id = _coerce_uuid(payload.get("to_agent_id"))

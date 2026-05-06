@@ -47,24 +47,27 @@ def test_keystore_stub_kek_for_envelope_is_32_bytes():
     assert len(kek) == 32
 
 
-def test_remote_keystore_raises_until_sprint_4():
+def test_remote_keystore_requires_auth_token(monkeypatch):
+    """Sprint 4b: RemoteKeystore refuses to construct without a bearer secret."""
+    monkeypatch.delenv("OP_KEYSTORE_AUTH_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="OP_KEYSTORE_AUTH_TOKEN"):
+        RemoteKeystore()
+
+
+def test_remote_keystore_get_kek_unsupported(monkeypatch):
+    """Hub never sees KEK_OP plaintext in remote mode — the helper raises."""
+    monkeypatch.setenv("OP_KEYSTORE_AUTH_TOKEN", "test-token")
     rk = RemoteKeystore()
-    with pytest.raises(NotImplementedError):
-        rk.wrap_dek(secrets.token_bytes(32))
-    with pytest.raises(NotImplementedError):
-        rk.unwrap_dek(b"x" * 32)
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(RuntimeError, match="get_kek_for_envelope"):
         rk.get_kek_for_envelope()
 
 
 def test_get_keystore_remote_mode(monkeypatch):
     monkeypatch.setenv("OP_KEYSTORE_MODE", "remote")
+    monkeypatch.setenv("OP_KEYSTORE_AUTH_TOKEN", "test-token")
     get_keystore.cache_clear()
     ks = get_keystore()
     assert isinstance(ks, RemoteKeystore)
-    # And calling raises.
-    with pytest.raises(NotImplementedError):
-        ks.unwrap_dek(b"x" * 32)
 
 
 def test_get_keystore_invalid_mode(monkeypatch):
