@@ -557,7 +557,7 @@ class TestProcessEvent:
         mock_agent_repo.get_by_id.return_value = mock_agent
         mock_agent_repo_cls.return_value = mock_agent_repo
 
-        # No registered endpoints
+        # Sprint 5: this test asserts the no-targets branch.
         mock_ep_repo = MagicMock()
         mock_ep_repo.list_by_agent.return_value = []
         mock_ep_repo_cls.return_value = mock_ep_repo
@@ -602,9 +602,23 @@ class TestProcessEvent:
         mock_agent_repo_instance.get_webhook_secret.return_value = "whsec_plaintext"
         mock_agent_repo_cls.return_value = mock_agent_repo_instance
 
-        # No registered endpoints (legacy-only delivery)
+        # Sprint 5: legacy ``Agent.webhook_url`` removed. Replace with a
+        # single registered endpoint that resolves to the same URL via
+        # ``get_url``. ``secret_encrypted`` must be a real Fernet token
+        # because ``WebhookService`` calls ``decrypt_value`` on it directly.
+        from sthrip.crypto import encrypt_value as _enc_for_test
+        mock_endpoint = MagicMock()
+        mock_endpoint.id = "ep_1"
+        mock_endpoint.is_active = True
+        mock_endpoint.failure_count = 0
+        mock_endpoint.event_filters = None
+        mock_endpoint.secret_encrypted = _enc_for_test("whsec_test_secret")
         mock_ep_repo = MagicMock()
-        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo.list_by_agent.return_value = [mock_endpoint]
+        mock_ep_repo.get_url.return_value = "https://example.com/hook"
+        # Phase 3 endpoint update path: returning None skips the failure
+        # counter increment so MagicMock arithmetic doesn't surface.
+        mock_ep_repo.get_by_id.return_value = None
         mock_ep_repo_cls.return_value = mock_ep_repo
 
         # Phase 1 repo: locking read returns the event
@@ -663,9 +677,23 @@ class TestProcessEvent:
         mock_agent_repo_instance.get_webhook_secret.return_value = None
         mock_agent_repo_cls.return_value = mock_agent_repo_instance
 
-        # No registered endpoints (legacy-only delivery)
+        # Sprint 5: legacy ``Agent.webhook_url`` removed. Replace with a
+        # single registered endpoint that resolves to the same URL via
+        # ``get_url``. ``secret_encrypted`` must be a real Fernet token
+        # because ``WebhookService`` calls ``decrypt_value`` on it directly.
+        from sthrip.crypto import encrypt_value as _enc_for_test
+        mock_endpoint = MagicMock()
+        mock_endpoint.id = "ep_1"
+        mock_endpoint.is_active = True
+        mock_endpoint.failure_count = 0
+        mock_endpoint.event_filters = None
+        mock_endpoint.secret_encrypted = _enc_for_test("whsec_test_secret")
         mock_ep_repo = MagicMock()
-        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo.list_by_agent.return_value = [mock_endpoint]
+        mock_ep_repo.get_url.return_value = "https://example.com/hook"
+        # Phase 3 endpoint update path: returning None skips the failure
+        # counter increment so MagicMock arithmetic doesn't surface.
+        mock_ep_repo.get_by_id.return_value = None
         mock_ep_repo_cls.return_value = mock_ep_repo
 
         # Phase 1 repo: locking read returns the event
@@ -821,9 +849,18 @@ class TestProcessEventSessionSplit:
 
         from sthrip.db.models import WebhookStatus
 
-        # No registered endpoints
+        # Sprint 5: legacy single-URL is gone. Use a registered endpoint.
+        from sthrip.crypto import encrypt_value as _enc_for_test
+        mock_endpoint = MagicMock()
+        mock_endpoint.id = "ep_1"
+        mock_endpoint.is_active = True
+        mock_endpoint.failure_count = 0
+        mock_endpoint.event_filters = None
+        mock_endpoint.secret_encrypted = _enc_for_test("whsec_test_secret")
         mock_ep_repo = MagicMock()
-        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo.list_by_agent.return_value = [mock_endpoint]
+        mock_ep_repo.get_url.return_value = "https://example.com/hook"
+        mock_ep_repo.get_by_id.return_value = None
         mock_ep_repo_cls.return_value = mock_ep_repo
 
         # Phase 1 repo: locking read
@@ -881,7 +918,7 @@ class TestProcessEventSessionSplit:
         mock_agent_repo.get_by_id.return_value = mock_agent
         mock_agent_repo_cls.return_value = mock_agent_repo
 
-        # No registered endpoints
+        # Sprint 5: this test asserts the no-targets short-circuit branch.
         mock_ep_repo = MagicMock()
         mock_ep_repo.list_by_agent.return_value = []
         mock_ep_repo_cls.return_value = mock_ep_repo
@@ -930,9 +967,18 @@ class TestProcessEventSessionSplit:
         mock_agent.webhook_url = "https://example.com/hook"
         mock_agent.id = "agent_1"
 
-        # No registered endpoints
+        # Sprint 5: legacy single-URL is gone. Use a registered endpoint.
+        from sthrip.crypto import encrypt_value as _enc_for_test
+        mock_endpoint = MagicMock()
+        mock_endpoint.id = "ep_1"
+        mock_endpoint.is_active = True
+        mock_endpoint.failure_count = 0
+        mock_endpoint.event_filters = None
+        mock_endpoint.secret_encrypted = _enc_for_test("whsec_test_secret")
         mock_ep_repo = MagicMock()
-        mock_ep_repo.list_by_agent.return_value = []
+        mock_ep_repo.list_by_agent.return_value = [mock_endpoint]
+        mock_ep_repo.get_url.return_value = "https://example.com/hook"
+        mock_ep_repo.get_by_id.return_value = None
         mock_ep_repo_cls.return_value = mock_ep_repo
 
         # Phase 1 webhook repo (read) -- locking read

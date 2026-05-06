@@ -502,9 +502,38 @@ async def update_agent_settings(
     old_values = {}
     new_values = {}
 
-    # Scalar fields (coerce privacy_level to enum)
+    # Sprint 5 (anonymity-hardening): webhook_url is no longer a column on
+    # ``agents``. When the caller supplies one we upsert it as an encrypted
+    # WebhookEndpoint row instead. The PATCH still accepts the field for
+    # backward compatibility with older SDK / CLI clients.
+    if settings.webhook_url is not None:
+        from sthrip.db.webhook_endpoint_repo import WebhookEndpointRepository
+        from sthrip.crypto import encrypt_value
+        endpoint_repo = WebhookEndpointRepository(db)
+        # Reuse the agent's existing webhook_secret if present (so the agent
+        # can keep verifying signatures). Otherwise mint a fresh one. We
+        # only generate-and-store; we never echo the new secret here -- the
+        # dedicated /v2/webhook-endpoints/* routes are the canonical place
+        # to mint+receive secrets.
+        secret_blob = db_agent.webhook_secret
+        if not secret_blob:
+            import secrets as _secrets
+            fresh = f"whsec_{_secrets.token_hex(24)}"
+            secret_blob = encrypt_value(fresh)
+            db_agent.webhook_secret = secret_blob
+        endpoint_repo.upsert_by_url(
+            agent_id=db_agent.id,
+            url=settings.webhook_url,
+            secret_encrypted=secret_blob,
+            description="legacy-patch",
+        )
+        # Surface the change in the audit trail without leaking the URL.
+        old_values["webhook_url"] = "[encrypted]"
+        new_values["webhook_url"] = "[encrypted]"
+
+    # Scalar fields (coerce privacy_level to enum). webhook_url is handled
+    # above via the endpoint repo, NOT as a scalar Agent column.
     scalar_fields = {
-        "webhook_url": settings.webhook_url,
         "privacy_level": settings.privacy_level,
         "xmr_address": settings.xmr_address,
         "base_address": settings.base_address,

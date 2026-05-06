@@ -88,13 +88,32 @@ def _serialize_agent(agent: Agent) -> dict:
 
     Keeps native Python types (datetime, enum, UUID, Decimal) so Jinja2
     templates can call .strftime(), .value, etc. without changes.
+
+    Sprint 5 (anonymity-hardening): the legacy ``agents.webhook_url`` column
+    was dropped. The admin UI never renders raw webhook URLs anymore -- it
+    surfaces a simple "encrypted webhook" indicator with a count of active
+    endpoints. The plaintext URL is only retrievable by the owning agent
+    via the authenticated ``GET /v2/webhook-endpoints`` route, never via
+    the admin dashboard.
     """
+    endpoint_count = 0
+    try:
+        # Lazy attribute may raise DetachedInstanceError outside a session;
+        # guard so the admin view stays robust.
+        endpoints = getattr(agent, "webhook_endpoints", []) or []
+        endpoint_count = sum(1 for ep in endpoints if getattr(ep, "is_active", True))
+    except Exception:
+        endpoint_count = 0
     return {
         "id": agent.id,
         "agent_name": agent.agent_name,
         "tier": agent.tier,
         "xmr_address": agent.xmr_address,
-        "webhook_url": agent.webhook_url,
+        # Sprint 5: never expose the URL. Templates that previously read
+        # `agent.webhook_url` will get None and fall back to the badge.
+        "webhook_url": None,
+        "webhook_endpoint_count": endpoint_count,
+        "has_encrypted_webhook": endpoint_count > 0,
         "is_active": getattr(agent, "is_active", True),
         "created_at": agent.created_at,
         "last_seen_at": agent.last_seen_at,

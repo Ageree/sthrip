@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("sthrip.webhook")
 from typing import Dict, Optional, List
+from uuid import UUID as UUID_Type
 from dataclasses import dataclass, field
 
 from ..db.database import get_db
@@ -284,15 +285,13 @@ class WebhookService:
                 webhook_repo.mark_delivered(event_id, 0, "Agent not found")
                 return WebhookResult(success=True)
 
-            # Capture legacy single-URL config (backward compat)
-            legacy_url = agent.webhook_url
-            legacy_secret = (
-                agent_repo.get_webhook_secret(agent.id) if legacy_url else None
-            )
-
-            # Gather registered endpoints: active, under failure threshold, matching event type
+            # Sprint 5: legacy ``agents.webhook_url`` column dropped.
+            # All targets come from ``webhook_endpoints`` only. URLs are
+            # decrypted in-memory via ``WebhookEndpointRepository.get_url``;
+            # any decrypt failure → endpoint disabled (defense in depth).
             registered_endpoints = endpoint_repo.list_by_agent(agent.id)
             delivery_targets: List[Dict] = []
+            disabled_endpoint_ids: List[UUID_Type] = []
 
             for ep in registered_endpoints:
                 if not ep.is_active:
@@ -300,6 +299,20 @@ class WebhookService:
                 if ep.failure_count >= self._MAX_ENDPOINT_FAILURES:
                     continue
                 if not self._matches_event_filter(event.event_type, ep.event_filters):
+                    continue
+                ep_url = endpoint_repo.get_url(ep)
+                if not ep_url:
+                    # Decrypt failure: disable the endpoint inline so it is
+                    # never delivered to with an unknown target. The
+                    # endpoint stays in the DB for operator inspection.
+                    logger.warning(
+                        "Endpoint %s (agent %s) has unreadable url_encrypted; "
+                        "disabling.",
+                        ep.id, agent.id,
+                    )
+                    ep.is_active = False
+                    ep.disabled_at = datetime.now(timezone.utc)
+                    disabled_endpoint_ids.append(ep.id)
                     continue
                 try:
                     ep_secret = decrypt_value(ep.secret_encrypted)
@@ -311,19 +324,9 @@ class WebhookService:
                     continue
                 delivery_targets.append({
                     "endpoint_id": ep.id,
-                    "url": ep.url,
+                    "url": ep_url,
                     "secret": ep_secret,
                     "is_legacy": False,
-                })
-
-            # Add legacy URL if present (only when it is not already covered by a registered endpoint)
-            registered_urls = {t["url"] for t in delivery_targets}
-            if legacy_url and legacy_url not in registered_urls:
-                delivery_targets.append({
-                    "endpoint_id": None,
-                    "url": legacy_url,
-                    "secret": legacy_secret,
-                    "is_legacy": True,
                 })
 
             # If nothing to deliver to, mark as delivered
@@ -425,9 +428,12 @@ class WebhookService:
                     if ep.failure_count >= self._MAX_ENDPOINT_FAILURES:
                         ep.is_active = False
                         ep.disabled_at = now
+                        # Sprint 5: do NOT log the URL (it's encrypted at rest;
+                        # logging the plaintext here would defeat that). Log
+                        # the endpoint id only.
                         logger.warning(
-                            "Endpoint %s (url=%s) disabled after %d consecutive failures",
-                            ep.id, ep.url, ep.failure_count,
+                            "Endpoint %s disabled after %d consecutive failures",
+                            ep.id, ep.failure_count,
                         )
 
         return WebhookResult(success=any_success)

@@ -62,7 +62,9 @@ class Agent(Base):
     
     # Authentication
     api_key_hash = Column(String(255), nullable=True, index=True)
-    webhook_url = Column(Text, nullable=True)
+    # Sprint 5 (anonymity-hardening): webhook_url legacy column removed.
+    # All webhook URLs now live encrypted in webhook_endpoints.url_encrypted.
+    # See migration u2v3w4x5y6z7_drop_legacy_webhook_url.
     webhook_secret = Column(String(255), nullable=True)
     
     # Settings
@@ -647,7 +649,10 @@ class WebhookEndpoint(Base):
         nullable=False,
         index=True,
     )
-    url = Column(String(2048), nullable=False)
+    # Sprint 5 (anonymity-hardening): URL is encrypted at rest using the
+    # WEBHOOK_ENCRYPTION_KEY Fernet key (same key as secret_encrypted).
+    # Plaintext `url` column dropped in migration u2v3w4x5y6z7.
+    url_encrypted = Column(Text, nullable=False)
     description = Column(String(256), nullable=True)
     secret_encrypted = Column(Text, nullable=False)
     event_filters = Column(JSON, nullable=True)  # ["payment.*", "escrow.*"] or null=all
@@ -661,9 +666,10 @@ class WebhookEndpoint(Base):
     # Relationships
     agent = relationship("Agent", backref="webhook_endpoints")
 
-    __table_args__ = (
-        UniqueConstraint("agent_id", "url", name="uq_agent_webhook_url"),
-    )
+    # Note: the legacy UniqueConstraint("agent_id", "url") was dropped in
+    # Sprint 5 -- Fernet ciphertexts are non-deterministic so a uniqueness
+    # constraint on the encrypted column would be meaningless. Duplicate
+    # detection is enforced at the repo layer via decrypt-and-compare.
 
 
 class MessageRelay(Base):

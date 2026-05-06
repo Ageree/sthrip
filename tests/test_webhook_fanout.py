@@ -95,7 +95,11 @@ def get_test_db(db_session_factory):
 
 @pytest.fixture
 def agent(db_session) -> Agent:
-    """Create a basic test agent with no legacy webhook_url."""
+    """Create a basic test agent.
+
+    Sprint 5: ``webhook_url`` is no longer a column on Agent. URLs live in
+    encrypted ``WebhookEndpoint`` rows.
+    """
     ag = Agent(
         agent_name="fanout-test-agent",
         api_key_hash="fanout-test-hash",
@@ -103,7 +107,6 @@ def agent(db_session) -> Agent:
         rate_limit_tier=RateLimitTier.STANDARD,
         privacy_level=PrivacyLevel.MEDIUM,
         is_active=True,
-        webhook_url=None,
         webhook_secret=None,
     )
     db_session.add(ag)
@@ -113,7 +116,13 @@ def agent(db_session) -> Agent:
 
 @pytest.fixture
 def agent_with_legacy_url(db_session) -> Agent:
-    """Create a test agent with legacy webhook_url set."""
+    """Create a test agent + a single 'legacy' encrypted webhook endpoint.
+
+    Sprint 5 dropped ``Agent.webhook_url``; what callers used to write into
+    that column now lives in an encrypted ``WebhookEndpoint`` row. Tests
+    that previously asserted "legacy single URL" semantics now assert
+    delivery to that single endpoint instead.
+    """
     secret_enc = encrypt_value("legacy-secret")
     ag = Agent(
         agent_name="legacy-url-agent",
@@ -122,10 +131,19 @@ def agent_with_legacy_url(db_session) -> Agent:
         rate_limit_tier=RateLimitTier.STANDARD,
         privacy_level=PrivacyLevel.MEDIUM,
         is_active=True,
-        webhook_url="https://legacy.example.com/webhook",
         webhook_secret=secret_enc,
     )
     db_session.add(ag)
+    db_session.flush()
+    # Create the encrypted endpoint that supplants the legacy column.
+    ep = WebhookEndpoint(
+        agent_id=ag.id,
+        url_encrypted=encrypt_value("https://legacy.example.com/webhook"),
+        secret_encrypted=secret_enc,
+        is_active=True,
+        failure_count=0,
+    )
+    db_session.add(ep)
     db_session.flush()
     return ag
 
@@ -139,10 +157,10 @@ def _create_endpoint(
     is_active: bool = True,
     failure_count: int = 0,
 ) -> WebhookEndpoint:
-    """Helper to insert a WebhookEndpoint row."""
+    """Helper to insert a WebhookEndpoint row (URL stored encrypted)."""
     ep = WebhookEndpoint(
         agent_id=agent_id,
-        url=url,
+        url_encrypted=encrypt_value(url),
         secret_encrypted=encrypt_value(secret),
         event_filters=event_filters,
         is_active=is_active,
@@ -509,10 +527,15 @@ class TestBackwardCompatSingleUrl:
     async def test_legacy_url_deduped_with_registered(
         self, db_session, agent_with_legacy_url, get_test_db
     ):
-        """If a registered endpoint has the same URL as legacy, deliver only once."""
+        """Sprint 5: dedup is enforced at the API layer (upsert_by_url), not
+        the service layer. Bypassing the API and inserting duplicate endpoint
+        rows directly delivers to each row -- the service is no longer
+        responsible for dedup. The test now asserts the behaviour the
+        service actually offers: each active endpoint receives the event.
+        """
         _create_endpoint(
             db_session, agent_with_legacy_url.id,
-            "https://legacy.example.com/webhook",  # same URL as legacy
+            "https://legacy.example.com/webhook",  # same URL as the legacy fixture
         )
         event = _create_event(db_session, agent_with_legacy_url.id, "payment.received")
         db_session.commit()
@@ -530,9 +553,10 @@ class TestBackwardCompatSingleUrl:
                 result = await svc.process_event(str(event.id))
 
         assert result.success is True
-        # Should not duplicate: registered endpoint covers the URL
-        assert len(delivered_urls) == 1
-        assert delivered_urls[0] == "https://legacy.example.com/webhook"
+        # Two endpoint rows → two deliveries (service-level dedup removed in
+        # Sprint 5 because there is no longer a "legacy single URL" path).
+        assert len(delivered_urls) == 2
+        assert all(u == "https://legacy.example.com/webhook" for u in delivered_urls)
 
 
 class TestNoTargetsMarksDelivered:

@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from sthrip.db.models import Base, Agent, AgentReputation
+from sthrip.db.models import Base, Agent, AgentReputation, WebhookEndpoint
 
 
 @pytest.fixture
@@ -14,7 +14,16 @@ def db_session():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(engine, tables=[Agent.__table__, AgentReputation.__table__])
+    # Sprint 5: legacy ``webhook_url`` arg now creates a WebhookEndpoint row,
+    # so the fixture must include the table.
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Agent.__table__,
+            AgentReputation.__table__,
+            WebhookEndpoint.__table__,
+        ],
+    )
     Session = sessionmaker(bind=engine)
     session = Session()
     try:

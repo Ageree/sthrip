@@ -46,7 +46,13 @@ class AgentRepository:
         privacy_level: str = "medium",
         tier: str = "free"
     ) -> Tuple[models.Agent, Dict[str, str]]:
-        """Create new agent with API key. Returns (agent, credentials_dict)."""
+        """Create new agent with API key. Returns (agent, credentials_dict).
+
+        Sprint 5 (anonymity-hardening): ``webhook_url`` is still accepted on
+        the call boundary for backwards compatibility, but the legacy
+        ``agents.webhook_url`` column was dropped. When provided, the URL is
+        registered as an encrypted ``WebhookEndpoint`` row instead.
+        """
         api_key = f"sk_{secrets.token_hex(32)}"
         api_key_hash = self._hash_api_key(api_key)
 
@@ -58,7 +64,6 @@ class AgentRepository:
         agent = models.Agent(
             agent_name=agent_name,
             api_key_hash=api_key_hash,
-            webhook_url=webhook_url,
             webhook_secret=encrypted_secret,
             privacy_level=privacy_level,
             tier=tier,
@@ -70,6 +75,20 @@ class AgentRepository:
 
         reputation = models.AgentReputation(agent_id=agent.id)
         self.db.add(reputation)
+
+        # Sprint 5: if a legacy webhook_url was supplied, persist it as an
+        # encrypted endpoint row. The per-endpoint signing secret is the same
+        # webhook_secret we just generated for backwards compat (the agent
+        # learns it via the registration response).
+        if webhook_url:
+            from .webhook_endpoint_repo import WebhookEndpointRepository
+            endpoint_repo = WebhookEndpointRepository(self.db)
+            endpoint_repo.create(
+                agent_id=agent.id,
+                url=webhook_url,
+                secret_encrypted=encrypted_secret,
+                description="legacy",
+            )
 
         credentials = {
             "api_key": api_key,
