@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any
 
 from sqlalchemy import (
     create_engine, Column, String, Integer, BigInteger, Boolean,
-    DateTime, ForeignKey, Numeric, Text, JSON, Enum as SQLEnum,
+    DateTime, ForeignKey, LargeBinary, Numeric, Text, JSON, Enum as SQLEnum,
     Index, UniqueConstraint, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -418,6 +418,27 @@ class WebhookEvent(Base):
     )
 
 
+class IpSalt(Base):
+    """Rotating salt used to keyed-HMAC raw client IPs before persistence.
+
+    Sprint 1 (anonymity-hardening), AD-1 — see
+    ``sthrip/services/ip_salt_service.py`` for rotation/lookup semantics.
+    """
+    __tablename__ = "ip_salts"
+
+    salt_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    secret = Column(LargeBinary(32), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    # ``retired_at IS NULL`` ⇒ active salt; non-null ⇒ retired (no longer
+    # used for new writes, but still referenced by audit_log rows that were
+    # written under it).
+    retired_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_ip_salts_retired_at", "retired_at"),
+    )
+
+
 class AuditLog(Base):
     """Audit log for all actions.
 
@@ -428,6 +449,13 @@ class AuditLog(Base):
       timestamp_iso, sanitized_details_json).  Computed in Python before
       insert so the value is available immediately without a round-trip.
     - entry_hmac has a UNIQUE index to prevent silent duplicate injection.
+
+    Privacy (Sprint 1, AD-1):
+    - ``ip_hmac`` (32-byte HMAC-SHA256 of the raw IP under a rotating salt)
+      replaces the legacy ``ip_address`` column.  ``ip_salt_id`` references
+      the salt row used so abuse forensics can correlate within a window.
+    - The chain link feeds ``ip_hmac.hex()`` into ``_hash_chain_link`` to
+      preserve the existing string-based canonical message format.
 
     Chain integrity is established from the migration point forward.
     Pre-migration rows are backfilled with computed values but their
@@ -442,7 +470,9 @@ class AuditLog(Base):
     resource_type = Column(String(50), nullable=True)
     resource_id = Column(UUID(as_uuid=True), nullable=True)
 
-    ip_address = Column(String(45), nullable=True)  # IPv4/IPv6 as string (portable)
+    # IP scrubbing (Sprint 1, AD-1).  Raw IPs are NEVER stored.
+    ip_hmac = Column(LargeBinary(32), nullable=True)
+    ip_salt_id = Column(UUID(as_uuid=True), ForeignKey("ip_salts.salt_id"), nullable=True)
     request_method = Column(String(10), nullable=True)
     request_path = Column(Text, nullable=True)
     request_body = Column(JSON, nullable=True)

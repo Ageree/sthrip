@@ -209,12 +209,25 @@ class TestModelCleanup:
             "ApiSession model should be removed (IMP-6)"
 
     def test_audit_log_ip_address_is_string(self):
-        """AuditLog.ip_address should be String, not INET."""
+        """Sprint 1 (anonymity-hardening, AD-1): the legacy ``ip_address``
+        column was *removed* from ``audit_log``.  Raw IPs are PII; the
+        replacement is ``ip_hmac`` (LargeBinary) + ``ip_salt_id`` (UUID FK).
+
+        This test guards the original IMP-6 intent (no INET column) and
+        also asserts the new privacy-preserving columns exist.
+        """
         from sthrip.db.models import AuditLog
-        col = AuditLog.__table__.columns["ip_address"]
-        from sqlalchemy import String
-        assert isinstance(col.type, String), \
-            f"AuditLog.ip_address should be String, got {type(col.type)}"
+        from sqlalchemy import LargeBinary
+
+        cols = AuditLog.__table__.columns
+        assert "ip_address" not in cols, (
+            "Legacy raw-IP column must be removed (Sprint 1, AD-1)"
+        )
+        assert "ip_hmac" in cols, "AuditLog must expose ip_hmac (HMAC of raw IP)"
+        assert isinstance(cols["ip_hmac"].type, LargeBinary), (
+            f"ip_hmac must be LargeBinary, got {type(cols['ip_hmac'].type)}"
+        )
+        assert "ip_salt_id" in cols, "AuditLog must expose ip_salt_id FK"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
