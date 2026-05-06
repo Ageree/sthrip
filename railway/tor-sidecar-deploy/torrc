@@ -1,0 +1,36 @@
+# Sthrip Tor sidecar config — v3 Hidden Service + outbound SOCKS5.
+#
+# Hardening choices:
+# - RunAsDaemon 0           : tor stays in the foreground so the container
+#                             supervisor sees the process and gets clean exits.
+# - SocksPort 0.0.0.0:9050  : the API container connects over the Railway
+#                             private network only; Railway services are not
+#                             exposed to the public internet by default.
+# - ControlPort 0           : disabled. No remote NEWNYM, no signal control.
+#                             A compromised process cannot retarget Tor.
+# - HiddenServiceVersion 3  : v3 onion (ed25519 keys, 56-char address).
+# - HiddenServicePort       : 80 -> sthrip-api.railway.internal:8000
+# - Log notice stdout       : noisy enough for ops, no circuit detail leakage.
+#
+# DO NOT enable ExitPolicy / set this as a relay. We are an onion service
+# and a SOCKS client only.
+
+RunAsDaemon 0
+DataDirectory /var/lib/tor
+
+SocksPort 0.0.0.0:9050
+ControlPort 0
+
+HiddenServiceDir /var/lib/tor/sthrip-hsv3
+HiddenServiceVersion 3
+HiddenServicePort 80 sthrip-api.railway.internal:8000
+
+# Reasonable client defaults: low latency, no exit-policy footprint.
+ClientOnly 1
+
+# Reduce log surface — never log handshake-level data.
+Log notice stdout
+SafeLogging 1
+
+# Disable IPv6 outbound by default; Railway internal networking is v4.
+ClientUseIPv6 0

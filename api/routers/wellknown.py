@@ -1,9 +1,34 @@
 """Well-known discovery endpoint for agent payment protocol."""
 
+import os
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 router = APIRouter(tags=["discovery"])
+
+# Sprint 6: Tor `.onion` discovery flag.
+# When STHRIP_ONION_ENABLED is truthy AND STHRIP_ONION_ENDPOINT is set, the
+# discovery JSON advertises the onion endpoint. Both must be set — having the
+# flag without the env var is treated as "not configured yet".
+_ONION_FLAG_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+def _onion_endpoint_or_none():
+    # type: () -> str | None
+    """Return the configured ``.onion`` endpoint, or None when disabled.
+
+    The function reads env vars on every call so operators can flip the flag
+    without redeploying. Reads are cheap (single dict lookup) and the route
+    handler returns a static dict otherwise, so caching is unnecessary.
+    """
+    flag_raw = os.environ.get("STHRIP_ONION_ENABLED", "").strip().lower()
+    if flag_raw not in _ONION_FLAG_TRUE:
+        return None
+    endpoint = os.environ.get("STHRIP_ONION_ENDPOINT", "").strip()
+    if not endpoint:
+        return None
+    return endpoint
 
 # Frozen discovery payload — returned verbatim on every request.
 # Defined as a module-level constant so the dict is never mutated at runtime.
@@ -228,11 +253,25 @@ _AGENT_PAYMENTS_DISCOVERY = {
 async def agent_payments_discovery():
     """Public discovery document for the agent-payments protocol.
 
-    Returns a static JSON manifest that clients and other agents can use
-    to discover the Sthrip API capabilities, endpoints, and connection
-    details without any authentication.
+    Returns a JSON manifest that clients and other agents can use to discover
+    the Sthrip API capabilities, endpoints, and connection details without any
+    authentication.
+
+    Sprint 6: when ``STHRIP_ONION_ENABLED=true`` AND ``STHRIP_ONION_ENDPOINT``
+    is set, the response includes an ``onion_endpoint`` field. Otherwise the
+    field is omitted entirely (no leak of "we have a tor sidecar available").
     """
+    onion = _onion_endpoint_or_none()
+    if onion is None:
+        return JSONResponse(
+            content=_AGENT_PAYMENTS_DISCOVERY,
+            media_type="application/json",
+        )
+
+    # Build a NEW dict — never mutate the module-level constant.
+    payload = dict(_AGENT_PAYMENTS_DISCOVERY)
+    payload["onion_endpoint"] = onion
     return JSONResponse(
-        content=_AGENT_PAYMENTS_DISCOVERY,
+        content=payload,
         media_type="application/json",
     )

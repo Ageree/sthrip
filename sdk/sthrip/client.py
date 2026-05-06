@@ -45,6 +45,13 @@ _USER_AGENT = "sthrip-sdk/{}".format(_VERSION)
 _DEFAULT_API_URL = "https://sthrip-api-production.up.railway.app"
 _REQUEST_TIMEOUT = 30  # seconds
 
+# Sprint 6: opt-in Tor SOCKS5 routing for the SDK.
+# When ``Sthrip(use_tor=True)``, the underlying ``requests.Session`` mounts a
+# SOCKS5h proxy adapter. ``socks5h://`` (vs plain ``socks5://``) makes the Tor
+# client resolve the hostname so DNS doesn't leak. Default proxy points at the
+# loopback Tor SOCKS port; override with STHRIP_TOR_SOCKS_PROXY.
+_DEFAULT_TOR_SOCKS_PROXY = "socks5h://127.0.0.1:9050"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -121,6 +128,12 @@ class Sthrip(object):
         Glob patterns for agents this client may pay.
     require_escrow_above : float or Decimal, optional
         Require escrow for payments above this amount.
+    use_tor : bool, optional
+        When True, route all SDK HTTP traffic through a SOCKS5h proxy
+        (default ``socks5h://127.0.0.1:9050``, override with
+        ``STHRIP_TOR_SOCKS_PROXY``). Useful for clients that resolve a
+        ``.onion`` API URL or that want to anonymise their network path.
+        When False (default), behaves exactly as before — no proxy.
     """
 
     def __init__(
@@ -132,9 +145,16 @@ class Sthrip(object):
         daily_limit=None,
         allowed_agents=None,
         require_escrow_above=None,
+        use_tor=False,
     ):
-        # type: (str, str, ..., ..., ..., list, ...) -> None
+        # type: (str, str, ..., ..., ..., list, ..., bool) -> None
         self._api_url = _resolve_api_url(api_url)
+        self._use_tor = bool(use_tor)
+        self._tor_proxy = (
+            os.environ.get("STHRIP_TOR_SOCKS_PROXY", _DEFAULT_TOR_SOCKS_PROXY)
+            if self._use_tor
+            else None
+        )
         self._session = self._build_session()
 
         # Session tracking
@@ -280,6 +300,15 @@ class Sthrip(object):
             "User-Agent": _USER_AGENT,
             "Accept": "application/json",
         })
+        # Sprint 6: when use_tor=True, route both http and https through
+        # the SOCKS5h proxy. ``requests.Session.proxies`` is a per-session
+        # dict; we only set it when explicitly opted in, so the default
+        # path is byte-for-byte unchanged.
+        if self._use_tor and self._tor_proxy:
+            session.proxies = {
+                "http": self._tor_proxy,
+                "https": self._tor_proxy,
+            }
         return session
 
     def _headers(self, authenticated):
