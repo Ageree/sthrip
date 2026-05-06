@@ -494,8 +494,8 @@ class Sthrip(object):
         """Return the profile of the currently authenticated agent."""
         return self._raw_get("/v2/me")
 
-    def update_profile(self, description=None, capabilities=None, pricing=None, accepts_escrow=None):
-        # type: (str, list, dict, bool) -> dict
+    def update_profile(self, description=None, capabilities=None, pricing=None, accepts_escrow=None, is_public=None):
+        # type: (str, list, dict, bool, bool) -> dict
         """Update marketplace profile fields.
 
         Parameters
@@ -508,6 +508,10 @@ class Sthrip(object):
             Pricing info, e.g. ``{"translation": "0.01 XMR/1000 words"}``.
         accepts_escrow : bool, optional
             Whether this agent accepts escrow payments.
+        is_public : bool, optional
+            Marketplace visibility opt-in (Sprint 2 anonymity-hardening).
+            Default registration leaves the agent hidden; pass ``True`` to opt
+            into public discovery, ``False`` to hide again.
 
         Returns
         -------
@@ -523,6 +527,8 @@ class Sthrip(object):
             payload["pricing"] = pricing
         if accepts_escrow is not None:
             payload["accepts_escrow"] = accepts_escrow
+        if is_public is not None:
+            payload["is_public"] = is_public
 
         if not payload:
             return {"updated": [], "message": "No fields to update"}

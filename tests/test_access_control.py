@@ -280,57 +280,61 @@ class TestDiscoveryRateLimiting:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _register_and_publish(client, name: str, privacy_level: str, xmr_address: str) -> str:
+    """Register an agent and flip ``is_public=true`` so they appear publicly.
+
+    Sprint 2 (anonymity-hardening) made marketplace visibility opt-in. The
+    privacy-gating tests below assert ``xmr_address`` redaction in the public
+    profile/discover responses, which presumes the agent is reachable. We
+    explicitly opt them in so the assertions remain about address-redaction
+    only, not visibility.
+    """
+    reg = client.post("/v2/agents/register", json={
+        "agent_name": name,
+        "xmr_address": xmr_address,
+        "privacy_level": privacy_level,
+    })
+    assert reg.status_code == 201, f"Registration of '{name}' failed: {reg.text}"
+    api_key = reg.json()["api_key"]
+    pub = client.patch(
+        "/v2/me/settings",
+        json={"is_public": True},
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert pub.status_code == 200, f"publish '{name}' failed: {pub.text}"
+    return api_key
+
+
 class TestPrivacyGating:
     """xmr_address should be hidden for agents with high or paranoid privacy."""
 
     def test_xmr_address_visible_for_low_privacy(self, client):
-        reg = client.post("/v2/agents/register", json={
-            "agent_name": "low-privacy-agent",
-            "xmr_address": _FAKE_XMR_ADDR,
-            "privacy_level": "low",
-        })
-        assert reg.status_code == 201, f"Registration failed: {reg.text}"
+        _register_and_publish(client, "low-privacy-agent", "low", _FAKE_XMR_ADDR)
         r = client.get("/v2/agents/low-privacy-agent")
         assert r.status_code == 200
         assert r.json()["xmr_address"] == _FAKE_XMR_ADDR
 
     def test_xmr_address_visible_for_medium_privacy(self, client):
-        client.post("/v2/agents/register", json={
-            "agent_name": "medium-privacy-agent",
-            "xmr_address": _FAKE_XMR_ADDR,
-            "privacy_level": "medium",
-        })
+        _register_and_publish(client, "medium-privacy-agent", "medium", _FAKE_XMR_ADDR)
         r = client.get("/v2/agents/medium-privacy-agent")
         assert r.status_code == 200
         assert r.json()["xmr_address"] == _FAKE_XMR_ADDR
 
     def test_xmr_address_hidden_for_high_privacy(self, client):
-        client.post("/v2/agents/register", json={
-            "agent_name": "high-privacy-agent",
-            "xmr_address": _FAKE_XMR_ADDR,
-            "privacy_level": "high",
-        })
+        _register_and_publish(client, "high-privacy-agent", "high", _FAKE_XMR_ADDR)
         r = client.get("/v2/agents/high-privacy-agent")
         assert r.status_code == 200
         assert r.json()["xmr_address"] is None
 
     def test_xmr_address_hidden_for_paranoid_privacy(self, client):
-        client.post("/v2/agents/register", json={
-            "agent_name": "paranoid-privacy-agent",
-            "xmr_address": _FAKE_XMR_ADDR,
-            "privacy_level": "paranoid",
-        })
+        _register_and_publish(client, "paranoid-privacy-agent", "paranoid", _FAKE_XMR_ADDR)
         r = client.get("/v2/agents/paranoid-privacy-agent")
         assert r.status_code == 200
         assert r.json()["xmr_address"] is None
 
     def test_xmr_address_hidden_in_discover_list(self, client):
         """discover_agents should also hide xmr_address for high/paranoid."""
-        client.post("/v2/agents/register", json={
-            "agent_name": "hidden-in-list",
-            "xmr_address": _FAKE_XMR_ADDR,
-            "privacy_level": "high",
-        })
+        _register_and_publish(client, "hidden-in-list", "high", _FAKE_XMR_ADDR)
         r = client.get("/v2/agents")
         assert r.status_code == 200
         data = r.json()

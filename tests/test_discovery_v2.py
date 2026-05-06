@@ -212,11 +212,27 @@ def discovery_client_and_session(discovery_engine, discovery_session_factory):
 # ---------------------------------------------------------------------------
 
 def _register(client: TestClient, name: str, **kwargs) -> dict:
-    """Register an agent and return the full JSON response."""
+    """Register an agent, opt them into the marketplace, return the JSON response.
+
+    Sprint 2 (anonymity-hardening) made marketplace visibility opt-in
+    (``is_public=False`` by default). All discovery_v2 tests assume the
+    registered agents are visible in the marketplace, so we explicitly flip
+    the flag right after registration.
+    """
     payload = {"agent_name": name, "xmr_address": _VALID_XMR_ADDR, **kwargs}
     r = client.post("/v2/agents/register", json=payload)
     assert r.status_code == 201, f"Registration of '{name}' failed: {r.text}"
-    return r.json()
+    body = r.json()
+
+    publish_resp = client.patch(
+        "/v2/me/settings",
+        json={"is_public": True},
+        headers={"Authorization": f"Bearer {body['api_key']}"},
+    )
+    assert publish_resp.status_code == 200, (
+        f"publish '{name}' failed: {publish_resp.text}"
+    )
+    return body
 
 
 def _get_agent_id(client: TestClient, agent_name: str) -> str:

@@ -142,6 +142,8 @@ async def register_agent(reg: AgentRegistration, request: Request):
             api_key=result["api_key"],
             webhook_secret=result["webhook_secret"],
             created_at=result["created_at"],
+            # Sprint 2: registration never opts into marketplace.
+            is_public=False,
         )
     except ValueError as e:
         logger.warning("Registration failed: %s", e)
@@ -347,6 +349,7 @@ async def marketplace(
             "capabilities": p.capabilities,
             "pricing": p.pricing,
             "accepts_escrow": p.accepts_escrow,
+            "is_public": p.is_public,
             "tier": p.tier,
             "trust_score": p.trust_score,
             "verified_at": p.verified_at,
@@ -368,6 +371,8 @@ async def get_agent_profile(agent_name: str, request: Request):
     """Get public agent profile"""
     _check_ip_rate_limit(request, "discovery", per_ip_limit=60, global_limit=1000, window_seconds=60)
 
+    # Sprint 2: anonymous endpoint — no requesting_agent_id, gate enforces 404
+    # for non-public agents. Self-lookup uses /v2/me which has auth.
     registry = get_registry()
     profile = registry.get_profile(agent_name)
     if not profile:
@@ -385,6 +390,7 @@ async def get_agent_profile(agent_name: str, request: Request):
         pricing=profile.pricing,
         description=profile.description,
         accepts_escrow=profile.accepts_escrow,
+        is_public=profile.is_public,
     )
 
 
@@ -434,6 +440,7 @@ async def discover_agents(
                 pricing=p.pricing,
                 description=p.description,
                 accepts_escrow=p.accepts_escrow,
+                is_public=p.is_public,
             )
             for p in profiles
         ],
@@ -473,6 +480,8 @@ async def get_current_agent_info(agent: Agent = Depends(get_current_agent)):
         "pricing": agent.pricing if agent.pricing else {},
         "description": agent.description,
         "accepts_escrow": agent.accepts_escrow if agent.accepts_escrow is not None else True,
+        # Sprint 2: surface visibility flag on /v2/me so the agent can introspect.
+        "is_public": bool(agent.is_public),
     }
 
 
@@ -502,6 +511,8 @@ async def update_agent_settings(
         "solana_address": settings.solana_address,
         "description": settings.description,
         "accepts_escrow": settings.accepts_escrow,
+        # Sprint 2: marketplace visibility opt-in / opt-out.
+        "is_public": settings.is_public,
     }
     for field, value in scalar_fields.items():
         if value is not None:

@@ -87,6 +87,16 @@ class Agent(Base):
     pricing = Column(JSON, default=dict)       # {"translation": "0.01 XMR/1000 words"}
     description = Column(Text, nullable=True)  # max 500 chars, enforced at API layer
     accepts_escrow = Column(Boolean, default=True)
+    # Sprint 2 (anonymity-hardening): explicit opt-in for marketplace visibility.
+    # Default false — discovery/marketplace/profile lookup require this to be true
+    # for non-self callers. Existing rows are hard-cut to false on migration.
+    is_public = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        index=True,
+    )
 
     # E2E Encrypted Messaging
     encryption_public_key = Column(Text, nullable=True)  # base64-encoded Curve25519 public key
