@@ -50,6 +50,17 @@ class TransactionRepository:
             memo=memo,
             metadata=metadata or {}
         )
+        # Sprint 3 dual-write: encrypted participant envelope alongside FKs.
+        # Sprint 4 will cut reads over and drop the FKs. Lazy import keeps
+        # the db package free of a service-layer cycle (services import db).
+        from sthrip.services.payment_envelope_writer import apply_envelope
+        apply_envelope(
+            tx,
+            from_agent_id=from_agent_id,
+            to_agent_id=to_agent_id,
+            amount=amount,
+            description=memo,
+        )
         self.db.add(tx)
         return tx
 

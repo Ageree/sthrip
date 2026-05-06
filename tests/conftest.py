@@ -143,6 +143,13 @@ def _ensure_settings_env(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("WEBHOOK_ENCRYPTION_KEY", _TEST_ENCRYPTION_KEY)
     monkeypatch.setenv("AUDIT_HMAC_KEY", "test-audit-hmac-key-for-tests-32chars")
+    # Sprint 3: anonymity-hardening payment-graph envelope. Stable hex KEK
+    # for the test suite; production uses real entropy in env.
+    monkeypatch.setenv(
+        "STHRIP_HUB_KEK",
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    )
+    monkeypatch.setenv("OP_KEYSTORE_MODE", "stub")
 
     # Clear the lru_cache so each test gets fresh Settings from its own env
     from sthrip.config import get_settings
@@ -156,6 +163,13 @@ def _ensure_settings_env(monkeypatch):
     import sthrip.services.idempotency as _idem_mod
     _idem_mod._store = None
 
+    # Sprint 3: reset envelope-key caches so each test re-reads STHRIP_HUB_KEK
+    # and OP_KEYSTORE_MODE from its own env.
+    import sthrip.services.envelope_crypto as _env_mod
+    _env_mod.load_hub_kek.cache_clear()
+    import sthrip.services.operator_keystore as _ks_mod
+    _ks_mod.get_keystore.cache_clear()
+
     yield
 
     get_settings.cache_clear()
@@ -164,6 +178,11 @@ def _ensure_settings_env(monkeypatch):
 
     import sthrip.services.idempotency as _idem_mod
     _idem_mod._store = None
+
+    import sthrip.services.envelope_crypto as _env_mod
+    _env_mod.load_hub_kek.cache_clear()
+    import sthrip.services.operator_keystore as _ks_mod
+    _ks_mod.get_keystore.cache_clear()
 
 
 # ---------------------------------------------------------------------------

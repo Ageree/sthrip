@@ -183,6 +183,12 @@ class Transaction(Base):
     memo = Column(Text, nullable=True)
     tx_metadata = Column("metadata", JSON, default=dict)
 
+    # Sprint 3 anonymity-hardening: dual-write encrypted participant envelope.
+    # Decrypting requires both hub_kek and op_kek (operator keystore service).
+    # Plaintext FK columns above stay populated until Sprint 4 cutover.
+    participant_envelope = Column(LargeBinary, nullable=True)
+    amount_bucket = Column(String(32), nullable=True)
+
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
 
@@ -242,6 +248,10 @@ class EscrowDeal(Base):
 
     deal_metadata = Column("metadata", JSON, default=dict)
 
+    # Sprint 3 anonymity-hardening: dual-write encrypted participant envelope.
+    participant_envelope = Column(LargeBinary, nullable=True)
+    amount_bucket = Column(String(32), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=func.now())
     accepted_at = Column(DateTime(timezone=True), nullable=True)
@@ -290,6 +300,11 @@ class EscrowMilestone(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Sprint 3 anonymity-hardening: dual-write encrypted participant envelope.
+    # Inherits buyer/seller from parent EscrowDeal at write time.
+    participant_envelope = Column(LargeBinary, nullable=True)
+    amount_bucket = Column(String(32), nullable=True)
 
     # Relationships
     escrow = relationship("EscrowDeal", back_populates="milestones")
@@ -666,6 +681,12 @@ class MessageRelay(Base):
     delivered_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
+
+    # Sprint 3 anonymity-hardening: dual-write encrypted participant envelope.
+    # Closes the metadata-graph leak — content is already encrypted via
+    # NaCl Box (`ciphertext`); this hides who-messaged-whom from anyone with
+    # ADMIN_API_KEY alone (per Lead Q5).
+    participant_envelope = Column(LargeBinary, nullable=True)
 
 
 class MultisigEscrow(Base):

@@ -52,6 +52,17 @@ class EscrowRepository:
             expires_at=accept_deadline,
         )
 
+        # Sprint 3 dual-write: encrypted participant envelope alongside FKs.
+        # Lazy import to avoid services↔db circular dependency.
+        from sthrip.services.payment_envelope_writer import apply_envelope
+        apply_envelope(
+            deal,
+            from_agent_id=buyer_id,
+            to_agent_id=seller_id,
+            amount=amount,
+            description=description,
+        )
+
         self.db.add(deal)
         self.db.flush()
         return deal
