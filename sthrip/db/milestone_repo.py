@@ -85,10 +85,15 @@ class MilestoneRepository:
         self, escrow_id: UUID, sequence: int,
     ) -> Optional[models.EscrowMilestone]:
         """Get a milestone by escrow ID and sequence number."""
-        return self.db.query(models.EscrowMilestone).filter(
+        ms = self.db.query(models.EscrowMilestone).filter(
             models.EscrowMilestone.escrow_id == escrow_id,
             models.EscrowMilestone.sequence == sequence,
         ).first()
+        if ms is not None:
+            # Sprint 4a dual-read: feature-flag-gated envelope swap.
+            from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+            apply_envelope_to_row(ms)
+        return ms
 
     def get_by_escrow_and_sequence_for_update(
         self, escrow_id: UUID, sequence: int,
@@ -105,12 +110,17 @@ class MilestoneRepository:
 
     def get_by_escrow(self, escrow_id: UUID) -> List[models.EscrowMilestone]:
         """Get all milestones for an escrow, ordered by sequence."""
-        return (
+        rows = (
             self.db.query(models.EscrowMilestone)
             .filter(models.EscrowMilestone.escrow_id == escrow_id)
             .order_by(models.EscrowMilestone.sequence)
             .all()
         )
+        # Sprint 4a dual-read: feature-flag-gated envelope swap.
+        from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+        for ms in rows:
+            apply_envelope_to_row(ms)
+        return rows
 
     # ── State transitions ────────────────────────────────────────────────
 

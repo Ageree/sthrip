@@ -66,9 +66,16 @@ class TransactionRepository:
 
     def get_by_hash(self, tx_hash: str) -> Optional[models.Transaction]:
         """Get transaction by hash"""
-        return self.db.query(models.Transaction).filter(
+        tx = self.db.query(models.Transaction).filter(
             models.Transaction.tx_hash == tx_hash
         ).first()
+        # Sprint 4a dual-read: when STHRIP_READ_FROM_ENVELOPE is on, swap
+        # row attributes to the envelope-decrypted values. Off by default,
+        # so legacy callers get unchanged behaviour.
+        if tx is not None:
+            from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+            apply_envelope_to_row(tx)
+        return tx
 
     def _agent_direction_filter(self, query, agent_id: UUID, direction: Optional[str]):
         """Apply direction filter to a transaction query."""
@@ -108,7 +115,17 @@ class TransactionRepository:
                 (models.Transaction.to_agent_id == agent_id)
             )
 
-        return query.order_by(desc(models.Transaction.created_at)).offset(offset).limit(limit).all()
+        rows = (
+            query.order_by(desc(models.Transaction.created_at))
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        # Sprint 4a dual-read: feature-flag-gated post-process.
+        from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+        for row in rows:
+            apply_envelope_to_row(row)
+        return rows
 
     def confirm_transaction(
         self,
