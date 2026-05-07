@@ -619,3 +619,238 @@ async def get_rate_limit_status(agent: Agent = Depends(get_current_agent)):
         agent_id=str(agent.id),
         tier=agent.rate_limit_tier.value,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2 Sprint 3 — subscription tier self-service endpoints.
+#
+# Tier naming (locked in lead-decisions.md):
+#   AgentTier.FREE      -> "Free"        $0       100 tx/month
+#   AgentTier.VERIFIED  -> "Pro"         $29/mo   unlimited
+#   AgentTier.PREMIUM   -> "Enterprise"  $999/mo  unlimited
+#
+# Endpoints accept BOTH the user-facing label ("pro"/"enterprise") and the
+# enum value ("verified"/"premium"); case-insensitive on both forms.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_TIER_ALIAS_TO_ENUM: Dict[str, "AgentTier"] = {}
+_TIER_LABEL: Dict[str, str] = {}
+_TIER_PRICE_USD: Dict[str, int] = {}
+_TIER_LIMIT: Dict[str, Optional[int]] = {}
+
+
+def _init_tier_tables() -> None:
+    # Lazy import to avoid circulars during module import.
+    from sthrip.db.enums import AgentTier as _T
+
+    aliases = {
+        "free": _T.FREE,
+        "pro": _T.VERIFIED,
+        "verified": _T.VERIFIED,
+        "enterprise": _T.PREMIUM,
+        "premium": _T.PREMIUM,
+    }
+    _TIER_ALIAS_TO_ENUM.update(aliases)
+    _TIER_LABEL.update({
+        _T.FREE.value: "Free",
+        _T.VERIFIED.value: "Pro",
+        _T.PREMIUM.value: "Enterprise",
+        _T.ENTERPRISE.value: "Enterprise",
+    })
+    _TIER_PRICE_USD.update({
+        _T.FREE.value: 0,
+        _T.VERIFIED.value: 29,
+        _T.PREMIUM.value: 999,
+        _T.ENTERPRISE.value: 999,
+    })
+    _TIER_LIMIT.update({
+        _T.FREE.value: 100,
+        _T.VERIFIED.value: None,
+        _T.PREMIUM.value: None,
+        _T.ENTERPRISE.value: None,
+    })
+
+
+_init_tier_tables()
+
+
+# Strict ordering for "lower" / "higher" comparisons in upgrade/downgrade.
+def _tier_rank(tier_value: str) -> int:
+    """Rank tiers for upgrade/downgrade direction checks."""
+    from sthrip.db.enums import AgentTier as _T
+
+    order = {
+        _T.FREE.value: 0,
+        _T.VERIFIED.value: 1,
+        _T.PREMIUM.value: 2,
+        _T.ENTERPRISE.value: 2,  # alias of PREMIUM in label space
+    }
+    return order.get(tier_value, 0)
+
+
+def _parse_tier(raw: Any) -> "AgentTier":
+    """Convert label/enum input to ``AgentTier``. Raises 400 on invalid."""
+    from sthrip.db.enums import AgentTier as _T
+
+    if not isinstance(raw, str) or not raw.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="tier is required (one of: free, pro, enterprise, verified, premium)",
+        )
+    key = raw.strip().lower()
+    if key not in _TIER_ALIAS_TO_ENUM:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid tier. Accepted: free, pro, enterprise, verified, "
+                "premium (case-insensitive)."
+            ),
+        )
+    return _TIER_ALIAS_TO_ENUM[key]
+
+
+@router.post("/v2/me/upgrade")
+async def upgrade_tier(
+    body: Dict[str, Any],
+    request: Request,
+    agent: Agent = Depends(get_current_agent),
+    db: Session = Depends(get_db_session),
+):
+    """Upgrade subscription tier.
+
+    Body: ``{"tier": "pro"|"enterprise"|"verified"|"premium"}``.
+
+    Sprint 3 scope: flips ``Agent.tier`` and writes an audit log entry.
+    Sprint 4 will wire the actual XMR auto-deduction (see TODO).
+    """
+    new_tier = _parse_tier(body.get("tier"))
+
+    db_agent = db.query(Agent).filter(Agent.id == agent.id).first()
+    if not db_agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    old_tier_value = db_agent.tier.value if db_agent.tier else "free"
+
+    # Direction check — upgrade endpoint accepts equal or higher tier only.
+    if _tier_rank(new_tier.value) < _tier_rank(old_tier_value):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Use POST /v2/me/downgrade to move from {_TIER_LABEL[old_tier_value]} "
+                f"to {_TIER_LABEL[new_tier.value]}."
+            ),
+        )
+
+    db_agent.tier = new_tier
+    # TODO: Sprint 4 wires XMR auto-deduction (pro-rated to month boundary).
+    # For Sprint 3 we only flip the tier column; balance stays untouched.
+
+    audit_log(
+        "tier_upgrade",
+        agent_id=agent.id,
+        ip_address=get_client_ip(request),
+        request_method="POST",
+        request_path="/v2/me/upgrade",
+        details={
+            "old_tier": old_tier_value,
+            "new_tier": new_tier.value,
+            "price_usd_per_month": _TIER_PRICE_USD[new_tier.value],
+        },
+        db=db,
+    )
+
+    return {
+        "agent_id": str(agent.id),
+        "tier": new_tier.value,
+        "label": _TIER_LABEL[new_tier.value],
+        "price_usd_per_month": _TIER_PRICE_USD[new_tier.value],
+        "limit": _TIER_LIMIT[new_tier.value],
+        "message": "Tier upgraded. XMR auto-deduction wires in Sprint 4.",
+    }
+
+
+@router.post("/v2/me/downgrade")
+async def downgrade_tier(
+    body: Dict[str, Any],
+    request: Request,
+    agent: Agent = Depends(get_current_agent),
+    db: Session = Depends(get_db_session),
+):
+    """Downgrade subscription tier.
+
+    Body: ``{"tier": "free"|"pro"|"verified"}`` (target must be lower).
+    """
+    new_tier = _parse_tier(body.get("tier"))
+
+    db_agent = db.query(Agent).filter(Agent.id == agent.id).first()
+    if not db_agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    old_tier_value = db_agent.tier.value if db_agent.tier else "free"
+    if _tier_rank(new_tier.value) >= _tier_rank(old_tier_value):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Target tier must be lower than current. Use /v2/me/upgrade "
+                f"to move from {_TIER_LABEL[old_tier_value]} to {_TIER_LABEL[new_tier.value]}."
+            ),
+        )
+
+    db_agent.tier = new_tier
+    # TODO: Sprint 4 wires XMR refund of unused portion to balance.
+
+    audit_log(
+        "tier_downgrade",
+        agent_id=agent.id,
+        ip_address=get_client_ip(request),
+        request_method="POST",
+        request_path="/v2/me/downgrade",
+        details={
+            "old_tier": old_tier_value,
+            "new_tier": new_tier.value,
+        },
+        db=db,
+    )
+
+    return {
+        "agent_id": str(agent.id),
+        "tier": new_tier.value,
+        "label": _TIER_LABEL[new_tier.value],
+        "limit": _TIER_LIMIT[new_tier.value],
+        "message": "Tier downgraded. XMR refund of unused portion wires in Sprint 4.",
+    }
+
+
+@router.get("/v2/me/tier")
+async def get_tier_status(
+    agent: Agent = Depends(get_current_agent),
+    db: Session = Depends(get_db_session),
+):
+    """Return the agent's current tier + month-to-date usage.
+
+    Response shape:
+    ``{tier, label, current_month_count, limit, remaining, tier_grace_until}``.
+    """
+    from sthrip.services.agent_stats_service import get_current_month_count
+
+    tier_value = agent.tier.value if agent.tier else "free"
+    limit = _TIER_LIMIT[tier_value]
+    count = get_current_month_count(agent.id, db)
+    remaining: Optional[int]
+    if limit is None:
+        remaining = None
+    else:
+        remaining = max(0, limit - count)
+
+    grace = agent.tier_grace_until
+    grace_iso = grace.isoformat() if grace is not None else None
+
+    return {
+        "tier": tier_value,
+        "label": _TIER_LABEL[tier_value],
+        "current_month_count": count,
+        "limit": limit,
+        "remaining": remaining,
+        "tier_grace_until": grace_iso,
+    }

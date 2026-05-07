@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy import (
-    create_engine, Column, String, Integer, BigInteger, Boolean,
+    create_engine, Column, String, Integer, BigInteger, Boolean, Date,
     DateTime, ForeignKey, LargeBinary, Numeric, Text, JSON, Enum as SQLEnum,
     Index, UniqueConstraint, CheckConstraint
 )
@@ -79,6 +79,12 @@ class Agent(Base):
     tier = Column(SQLEnum(AgentTier), default=AgentTier.FREE)
     verified_at = Column(DateTime(timezone=True), nullable=True)
     verified_by = Column(String(255), nullable=True)
+
+    # Phase 2 Sprint 3: subscription billing grace window. When set, tier-limit
+    # enforcement honors the agent's declared tier until ``tier_grace_until``
+    # passes; after expiry the agent is treated as FREE for limit checks even
+    # if the ``tier`` column has not yet been downgraded by the billing cron.
+    tier_grace_until = Column(DateTime(timezone=True), nullable=True)
     
     # Staking
     staked_amount = Column(Numeric(20, 8), default=Decimal('0'))
@@ -1434,3 +1440,41 @@ class CanaryState(Base):
     signed_at = Column(DateTime(timezone=True), nullable=False)
     payload_json = Column(Text, nullable=False)
     signature_b64 = Column(Text, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Sprint 3: per-agent monthly transaction counter for tier enforcement.
+# ---------------------------------------------------------------------------
+
+class AgentMonthlyStats(Base):
+    """Per-agent rolling monthly transaction counter.
+
+    Phase 2 Sprint 3: tier-limit enforcement reads ``transaction_count`` for
+    the current UTC month to gate FREE-tier accounts at 100 transfers/month.
+    Rows are upserted atomically by ``record_transaction`` via INSERT ... ON
+    CONFLICT (Postgres) or INSERT-OR-UPDATE (SQLite). One row per
+    ``(agent_id, month_start)``; rolls over naturally on the 1st of each
+    month UTC because ``month_start`` is the natural sharding key.
+    """
+
+    __tablename__ = "agent_monthly_stats"
+
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    # DATE column — first day of month UTC. Stored as ``datetime.date``.
+    # Composite PK with ``agent_id``; indexed via the table_args index below.
+    month_start = Column(Date, primary_key=True, nullable=False)
+    transaction_count = Column(Integer, nullable=False, default=0)
+    last_updated = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+    __table_args__ = (
+        Index(
+            "ix_agent_monthly_stats_agent_month_desc",
+            "agent_id",
+            "month_start",
+        ),
+    )

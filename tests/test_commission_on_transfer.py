@@ -17,7 +17,8 @@ from sqlalchemy.pool import StaticPool
 
 from sthrip.db.enums import AgentTier, FeeCollectionStatus
 from sthrip.db.models import (
-    Agent, AgentBalance, AgentReputation, Base, FeeCollection, Transaction,
+    Agent, AgentBalance, AgentMonthlyStats, AgentReputation, Base,
+    FeeCollection, Transaction,
 )
 from sthrip.db.transaction_repo import (
     InsufficientBalanceError,
@@ -44,6 +45,9 @@ def db_session():
         AgentBalance.__table__,
         Transaction.__table__,
         FeeCollection.__table__,
+        # Phase 2 Sprint 3: commission path bumps the monthly counter, so
+        # the table must exist for create_with_commission() to succeed.
+        AgentMonthlyStats.__table__,
     ])
     Session = sessionmaker(bind=engine, expire_on_commit=False)
     session = Session()

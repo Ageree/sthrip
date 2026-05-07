@@ -38,6 +38,8 @@ from sthrip.db.models import (
     IdempotencyKey,
     # Phase 2 Sprint 1: auto-purge + warrant canary
     AuditLog, IpSalt, PurgeMetadata, CanaryState,
+    # Phase 2 Sprint 3: per-agent monthly transaction counter
+    AgentMonthlyStats,
 )
 
 # Stable Fernet key for tests (base64url-encoded 32-byte key).
@@ -87,6 +89,8 @@ _COMMON_TEST_TABLES = [
     IpSalt.__table__,
     PurgeMetadata.__table__,
     CanaryState.__table__,
+    # Phase 2 Sprint 3: subscription tier monthly counter
+    AgentMonthlyStats.__table__,
 ]
 
 # Modules where get_db must be patched.

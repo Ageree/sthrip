@@ -208,6 +208,14 @@ class TransactionRepository:
         self.db.add(fee_row)
         self.db.flush()
 
+        # Phase 2 Sprint 3: increment the sender's monthly transaction
+        # counter for tier-limit enforcement. Same DB transaction as the
+        # transfer + fee, so rollback rewinds all three together.
+        # System-op writers (deposit_monitor, recurring cron, etc.) call the
+        # legacy ``create()`` and intentionally do NOT bump this counter.
+        from sthrip.services.agent_stats_service import record_transaction
+        record_transaction(from_agent_id, self.db)
+
         return tx
 
     def get_by_hash(self, tx_hash: str) -> Optional[models.Transaction]:

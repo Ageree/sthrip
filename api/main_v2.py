@@ -36,6 +36,7 @@ from sthrip.services.webhook_service import get_webhook_service
 from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 
 from api.middleware import configure_middleware
+from api.middleware.tier_limit import configure_tier_limit_middleware
 from api.helpers import get_hub_mode, get_wallet_service, create_deposit_monitor
 from api.docs import setup_docs
 from api.routers import health, agents, payments, balance, webhooks, admin, wellknown, escrow, spending_policy, webhook_endpoints, messages, reputation, multisig_escrow, sla, reviews, matchmaking, subscriptions, channels, streams, conversion, swap, lending, treasury, multi_party, conditional_payments, split_payments
@@ -944,6 +945,10 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
     configure_middleware(application)
+    # Phase 2 Sprint 3: tier-limit middleware. Registered AFTER the
+    # core middleware (request id / metrics / auth) so that
+    # ``request.state.agent`` and Bearer headers are available.
+    configure_tier_limit_middleware(application)
 
     application.include_router(health.router)
     application.include_router(wellknown.router)
