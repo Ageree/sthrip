@@ -22,6 +22,7 @@ from sthrip.db.enums import AgentTier
 from sthrip.db.models import (
     Agent,
     AgentBalance,
+    AgentBillingHistory,
     AgentMonthlyStats,
     AgentReputation,
     Base,
@@ -58,6 +59,8 @@ def db_session():
             Transaction.__table__,
             FeeCollection.__table__,
             AgentMonthlyStats.__table__,
+            # Sprint 4 — upgrade/downgrade endpoints write to this ledger
+            AgentBillingHistory.__table__,
         ],
     )
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
@@ -379,6 +382,13 @@ def app_client(db_session, monkeypatch):
         audit_calls.append((action, kwargs))
 
     monkeypatch.setattr(agents_module, "audit_log", _fake_audit_log)
+
+    # Sprint 4 — pin rate so upgrade/downgrade tests don't hit the network.
+    monkeypatch.setattr(
+        agents_module,
+        "get_xmr_usd_rate",
+        lambda *a, **kw: Decimal("200"),
+    )
 
     with TestClient(app) as client:
         client.audit_calls = audit_calls  # type: ignore[attr-defined]

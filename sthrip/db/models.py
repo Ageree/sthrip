@@ -1478,3 +1478,60 @@ class AgentMonthlyStats(Base):
             "month_start",
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Sprint 4: append-only ledger of XMR subscription billing events.
+# ---------------------------------------------------------------------------
+
+class AgentBillingHistory(Base):
+    """Append-only XMR subscription billing ledger.
+
+    One row per billing event:
+
+    * ``monthly_charge`` — successful 1st-of-month deduction
+    * ``monthly_grace_started`` — insufficient balance at billing time
+    * ``monthly_grace_retry`` — successful charge during grace window
+    * ``monthly_grace_expired_downgrade`` — auto-downgrade after 7d grace
+    * ``upgrade_charge`` — pro-rated mid-month upgrade
+    * ``downgrade_refund`` — pro-rated mid-month downgrade refund
+    * ``monthly_failure_alerted`` — non-billing operational alert
+
+    Idempotency anchor: ``(agent_id, month_start)`` is unique within
+    ``status='monthly_charge'`` (Postgres partial unique index;
+    SQLite enforces equivalent semantics in the service layer).
+    """
+
+    __tablename__ = "agent_billing_history"
+
+    # NOTE: ``Integer`` (not ``BigInteger``) because SQLite only autoincrements
+    # plain INTEGER PRIMARY KEY rows. On Postgres the column is widened to
+    # BIGSERIAL by the migration so production capacity is unaffected.
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    month_start = Column(Date, nullable=False)
+    amount_usd = Column(Numeric(12, 2), nullable=False)
+    amount_piconero = Column(BigInteger, nullable=False)
+    rate_applied = Column(Numeric(20, 8), nullable=False)
+    status = Column(String(64), nullable=False)
+    tier_at_event = Column(String(32), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_agent_billing_history_agent_created",
+            "agent_id",
+            "created_at",
+        ),
+        Index(
+            "ix_agent_billing_history_status_created",
+            "status",
+            "created_at",
+        ),
+    )

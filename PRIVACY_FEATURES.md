@@ -139,3 +139,29 @@ Only the Tor leg of that claim is in the request path today (Sprint 6,
 `16126a5`). Stealth addresses are inherited from the underlying Monero
 wallet RPC (a protocol property, not something Sthrip implements). The
 remaining components are roadmap items in the table above.
+
+## Subscription Billing Retention (Phase 2 Sprint 4 — 2026-05-07)
+
+The `agent_billing_history` ledger records every XMR subscription billing
+event (monthly charge, grace start/retry, expiry downgrade, mid-month
+upgrade, mid-month refund). Each row stores:
+
+* `agent_id` (FK)
+* `month_start` (calendar month)
+* `amount_usd` and `amount_piconero`
+* `rate_applied` (XMR/USD spot rate at the moment of the event)
+* `status` (event type)
+* `tier_at_event` (snapshot of the tier at billing time)
+* `created_at`
+
+This is custodial pricing data. The hub already sees plaintext routed
+amounts in RAM during transfer routing (closed by Phase 3 TEE migration);
+billing is no different in privacy posture, just less frequent. The
+ledger is subject to the **same Phase 1 auto-purge** cron as
+`transactions` and `audit_log`: rows older than `STHRIP_DATA_RETENTION_DAYS`
+(default 60) are deleted on the daily 03:00 UTC sweep. Operators can
+shorten retention but should not lengthen it without an updated
+disclosure.
+
+No bank, card, or off-chain identity is ever stored — billing is
+XMR-native and anonymous beyond the agent's hub identity.

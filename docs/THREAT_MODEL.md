@@ -100,3 +100,33 @@ fee.
 This document was rewritten as part of Sprint 7 on the
 `feat/anonymity-hardening` branch. For the per-sprint contracts and
 verification reports, see `.harness/anonymize-platform/`.
+
+## Subscription billing (Phase 2 Sprint 4 — 2026-05-07)
+
+`agent_billing_history` records monthly XMR subscription charges,
+grace-period transitions, and self-service mid-month upgrade/downgrade
+events. Each row holds USD amount, XMR amount in piconero, rate applied,
+status, and tier snapshot — but no off-chain identity, bank, or card
+data (billing is XMR-native).
+
+Threats and mitigations:
+
+* **Double-charge from cron retries**: anchored by a partial unique
+  index on `(agent_id, month_start) WHERE status='monthly_charge'` on
+  Postgres and a guarded SELECT on SQLite. Re-runs on the same UTC day
+  are no-ops.
+* **External rate-feed outage cascading into mass-downgrades**: the
+  XMR/USD spot price is cached for 5 minutes; on CoinGecko outage the
+  cache extends to 24h. Beyond 24h the billing cron raises
+  `RateUnavailableError` and aborts the run rather than silently using
+  an ancient rate.
+* **Insufficient balance on billing day**: opens a 7-day grace period
+  during which the agent retains paid-tier behavior. The daily 04:30
+  UTC `handle_grace_expiry` pass downgrades agents whose grace window
+  has fully elapsed.
+* **Atomicity**: balance deduct + ledger insert + tier mutation share
+  a single DB transaction; any raise rolls back the entire block.
+
+Retention follows the Phase 1 auto-purge contract (default 60 days), so
+the billing ledger is bounded by the same operator-controlled retention
+window as the rest of the audit-relevant data.

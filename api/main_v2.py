@@ -605,6 +605,96 @@ async def _purge_loop():
             logger.exception("Purge loop error")
 
 
+async def _subscription_billing_loop():
+    """Phase 2 Sprint 4: monthly XMR subscription billing on the 1st @ 04:00 UTC.
+
+    Distributed lease ensures only one replica runs the cycle. Idempotency
+    is anchored on ``(agent_id, month_start, status='monthly_charge')`` —
+    re-runs on the same day are no-ops.
+
+    The 04:00 UTC timing is intentionally one hour after the purge/canary
+    pair (03:00 / 03:05) and 30 min before the grace-expiry pass
+    (04:30) so the daily clock has clear, non-overlapping windows.
+    """
+    from sthrip.services.subscription_billing_service import (
+        bill_pro_subscriptions,
+    )
+    from sthrip.services.distributed_lease import with_redis_lease
+    from datetime import datetime, timezone
+
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
+    while True:
+        try:
+            sleep_seconds = _seconds_until_utc(hour=4, minute=0)
+            await asyncio.sleep(sleep_seconds)
+            now = datetime.now(timezone.utc)
+            # Only fire on the 1st of the month UTC.
+            if now.day != 1:
+                continue
+            with with_redis_lease(
+                _redis, "subscription_billing_loop", ttl=3600,
+                fail_open=_fail_open,
+            ) as acquired:
+                if not acquired:
+                    logger.debug(
+                        "Subscription billing: lease not acquired, skipping"
+                    )
+                    continue
+                with get_db() as db:
+                    summary = bill_pro_subscriptions(now, db=db)
+                    db.commit()
+                logger.info("Subscription billing run complete: %s", summary)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Subscription billing loop error")
+
+
+async def _grace_expiry_loop():
+    """Phase 2 Sprint 4: daily 04:30 UTC grace-expiry sweep.
+
+    Runs after the monthly cron so that an agent who topped up overnight
+    gets a successful retry first. Idempotent — only downgrades agents
+    whose ``tier_grace_until`` is strictly in the past.
+    """
+    from sthrip.services.subscription_billing_service import (
+        bill_pro_subscriptions,
+        handle_grace_expiry,
+    )
+    from sthrip.services.distributed_lease import with_redis_lease
+    from datetime import datetime, timezone
+
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
+    while True:
+        try:
+            sleep_seconds = _seconds_until_utc(hour=4, minute=30)
+            await asyncio.sleep(sleep_seconds)
+            now = datetime.now(timezone.utc)
+            with with_redis_lease(
+                _redis, "grace_expiry_loop", ttl=900, fail_open=_fail_open,
+            ) as acquired:
+                if not acquired:
+                    logger.debug(
+                        "Grace expiry: lease not acquired, skipping"
+                    )
+                    continue
+                with get_db() as db:
+                    # Daily retry — top-ups during grace are charged here.
+                    retry_summary = bill_pro_subscriptions(now, db=db)
+                    expiry_summary = handle_grace_expiry(now, db=db)
+                    db.commit()
+                logger.info(
+                    "Grace expiry run complete: retry=%s expiry=%s",
+                    retry_summary, expiry_summary,
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Grace expiry loop error")
+
+
 async def _canary_loop():
     """Phase 2 Sprint 1: daily canary signing at 03:05 UTC.
 
@@ -743,6 +833,18 @@ def _startup_services(hub_mode):
     canary_task = asyncio.create_task(_canary_loop())
     logger.info("Warrant canary task scheduled (daily 03:05 UTC)")
 
+    # Phase 2 Sprint 4: monthly XMR subscription billing (1st of month, 04:00 UTC)
+    subscription_billing_task = asyncio.create_task(
+        _subscription_billing_loop()
+    )
+    logger.info(
+        "Subscription billing task scheduled (1st of month 04:00 UTC)"
+    )
+
+    # Phase 2 Sprint 4: daily grace-expiry sweep (04:30 UTC)
+    grace_expiry_task = asyncio.create_task(_grace_expiry_loop())
+    logger.info("Grace expiry task scheduled (daily 04:30 UTC)")
+
     return {
         "monitor": monitor,
         "webhook_service": webhook_service,
@@ -756,6 +858,8 @@ def _startup_services(hub_mode):
         "conditional_payment_task": conditional_payment_task,
         "purge_task": purge_task,
         "canary_task": canary_task,
+        "subscription_billing_task": subscription_billing_task,
+        "grace_expiry_task": grace_expiry_task,
     }
 
 
@@ -851,6 +955,22 @@ async def _shutdown_services(services):
         canary_task.cancel()
         try:
             await canary_task
+        except asyncio.CancelledError:
+            pass
+
+    subscription_billing_task = services.get("subscription_billing_task")
+    if subscription_billing_task is not None:
+        subscription_billing_task.cancel()
+        try:
+            await subscription_billing_task
+        except asyncio.CancelledError:
+            pass
+
+    grace_expiry_task = services.get("grace_expiry_task")
+    if grace_expiry_task is not None:
+        grace_expiry_task.cancel()
+        try:
+            await grace_expiry_task
         except asyncio.CancelledError:
             pass
 

@@ -117,7 +117,19 @@ def _current_count(agent_id) -> int:
         with get_db() as db:
             return get_current_month_count(agent_id, db)
     except Exception as exc:  # noqa: BLE001 — fail open on infra error
-        logger.warning("tier_limit: count query failed: %s", exc)
+        # Sprint 3 carry-over: surface fail-open events to ops so a chronic
+        # DB outage doesn't silently let FREE-tier agents over the limit.
+        logger.warning(
+            "tier_limit: count query failed (failing open): %s", exc
+        )
+        try:
+            from sthrip.services import metrics as _metrics
+
+            counter = getattr(_metrics, "tier_limit_fail_open_total", None)
+            if counter is not None:
+                counter.inc()
+        except Exception:  # noqa: BLE001 — metrics MUST never break middleware
+            pass
         return 0
 
 

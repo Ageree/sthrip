@@ -32,6 +32,19 @@ try:
         "Balance operations (deposit/withdraw)",
         ["operation", "token"],
     )
+    # Sprint 4 (carry-over from Sprint 3): tier-limit middleware fail-open
+    # observability. Increments when the DB-backed tier counter lookup
+    # fails and the middleware lets the request through.
+    tier_limit_fail_open_total = Counter(
+        "tier_limit_fail_open_total",
+        "Times the tier-limit middleware failed open due to DB error",
+    )
+    # Sprint 4: subscription billing observability.
+    subscription_billing_total = Counter(
+        "subscription_billing_total",
+        "Subscription billing events by status",
+        ["status"],
+    )
 
     PROMETHEUS_AVAILABLE = True
 
@@ -51,6 +64,8 @@ except ImportError:
     http_request_duration = _Noop()  # type: ignore[assignment]
     hub_payments_total = _Noop()  # type: ignore[assignment]
     balance_ops_total = _Noop()  # type: ignore[assignment]
+    tier_limit_fail_open_total = _Noop()  # type: ignore[assignment]
+    subscription_billing_total = _Noop()  # type: ignore[assignment]
 
 
 def get_metrics_response() -> Optional[tuple]:

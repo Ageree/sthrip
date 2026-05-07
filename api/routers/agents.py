@@ -1,7 +1,9 @@
 """Agent registry endpoints: registration, discovery, profiles."""
 
+import calendar
 import logging
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 
@@ -13,6 +15,20 @@ from sthrip.db.models import Agent, AgentRatingSummary, SLATemplate
 from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 from sthrip.services.agent_registry import get_registry
 from sthrip.services.audit_logger import log_event as audit_log
+from sthrip.services.xmr_rate_service import (
+    RateUnavailableError,
+    get_xmr_usd_rate,
+    usd_to_xmr_piconero,
+)
+from sthrip.services.subscription_billing_service import (
+    PREMIUM_USD_MONTHLY,
+    VERIFIED_USD_MONTHLY,
+    compute_refund,
+    prorate_charge,
+    record_downgrade_refund,
+    record_upgrade_charge,
+)
+from sthrip.db.balance_repo import BalanceRepository
 from api.deps import get_current_agent, get_db_session
 from api.helpers import get_client_ip
 from api.schemas import (
@@ -22,6 +38,19 @@ from api.schemas import (
 from sthrip.services.pow_service import get_pow_service
 from sthrip.db.enums import PrivacyLevel
 from sthrip.db.repository import AgentRepository
+
+
+def _billing_now() -> datetime:
+    """Test seam — patched by tests so proration math is deterministic."""
+    return datetime.now(timezone.utc)
+
+
+def _tier_monthly_usd(tier_value: str) -> Decimal:
+    if tier_value == "verified":
+        return VERIFIED_USD_MONTHLY
+    if tier_value in ("premium", "enterprise"):
+        return PREMIUM_USD_MONTHLY
+    return Decimal("0")
 
 logger = logging.getLogger("sthrip")
 
@@ -742,9 +771,69 @@ async def upgrade_tier(
             ),
         )
 
+    # Sprint 4: pro-rated XMR auto-deduction.
+    # Same-tier "upgrade" (e.g. PRO -> PRO) is a no-op: no charge, no audit.
+    if _tier_rank(new_tier.value) == _tier_rank(old_tier_value):
+        return {
+            "agent_id": str(agent.id),
+            "tier": new_tier.value,
+            "label": _TIER_LABEL[new_tier.value],
+            "price_usd_per_month": _TIER_PRICE_USD[new_tier.value],
+            "limit": _TIER_LIMIT[new_tier.value],
+            "amount_charged_usd": "0.00",
+            "amount_charged_piconero": 0,
+            "message": "Already on this tier; no charge applied.",
+        }
+
+    monthly_usd = _tier_monthly_usd(new_tier.value)
+    now = _billing_now()
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    charge_usd = prorate_charge(monthly_usd, now.day, days_in_month)
+
+    try:
+        rate = get_xmr_usd_rate(now=now)
+    except RateUnavailableError:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "XMR/USD rate unavailable. Please retry in a few minutes."
+            ),
+        )
+
+    charge_pico = usd_to_xmr_piconero(charge_usd, rate)
+    charge_xmr = Decimal(charge_pico) / (Decimal(10) ** 12)
+
+    # Atomic block: deduct + tier flip + history insert all roll back together
+    # if any step raises.
+    bal_repo = BalanceRepository(db)
+    try:
+        bal_repo.deduct(agent.id, charge_xmr, token="XMR")
+    except ValueError:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "insufficient_balance",
+                "amount_required_usd": str(charge_usd),
+                "amount_required_piconero": charge_pico,
+                "rate_applied": str(rate),
+                "message": (
+                    "Insufficient XMR balance for upgrade. Top up and retry."
+                ),
+            },
+        )
+
     db_agent.tier = new_tier
-    # TODO: Sprint 4 wires XMR auto-deduction (pro-rated to month boundary).
-    # For Sprint 3 we only flip the tier column; balance stays untouched.
+    db_agent.tier_grace_until = None
+
+    record_upgrade_charge(
+        db,
+        agent_id=agent.id,
+        amount_usd=charge_usd,
+        amount_piconero=charge_pico,
+        rate_applied=rate,
+        tier_at_event=new_tier.value,
+        now=now,
+    )
 
     audit_log(
         "tier_upgrade",
@@ -756,6 +845,9 @@ async def upgrade_tier(
             "old_tier": old_tier_value,
             "new_tier": new_tier.value,
             "price_usd_per_month": _TIER_PRICE_USD[new_tier.value],
+            "amount_charged_usd": str(charge_usd),
+            "amount_charged_piconero": charge_pico,
+            "rate_applied": str(rate),
         },
         db=db,
     )
@@ -766,7 +858,14 @@ async def upgrade_tier(
         "label": _TIER_LABEL[new_tier.value],
         "price_usd_per_month": _TIER_PRICE_USD[new_tier.value],
         "limit": _TIER_LIMIT[new_tier.value],
-        "message": "Tier upgraded. XMR auto-deduction wires in Sprint 4.",
+        "amount_charged_usd": str(charge_usd),
+        "amount_charged_piconero": charge_pico,
+        "rate_applied": str(rate),
+        "message": (
+            f"Tier upgraded to {_TIER_LABEL[new_tier.value]}. "
+            f"Charged ${charge_usd} ({charge_pico} piconero) at "
+            f"{rate} USD/XMR."
+        ),
     }
 
 
@@ -797,8 +896,46 @@ async def downgrade_tier(
             ),
         )
 
+    # Sprint 4: pro-rated refund of unused portion of the current month.
+    monthly_usd = _tier_monthly_usd(old_tier_value)
+    now = _billing_now()
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    refund_usd = (
+        compute_refund(monthly_usd, now.day, days_in_month)
+        if monthly_usd > Decimal("0")
+        else Decimal("0.00")
+    )
+
+    refund_pico = 0
+    rate_applied = Decimal("0")
+    if refund_usd > Decimal("0"):
+        try:
+            rate_applied = get_xmr_usd_rate(now=now)
+        except RateUnavailableError:
+            # Don't block the downgrade if we can't price the refund —
+            # log a zero-refund record so the operator can settle later.
+            rate_applied = Decimal("0")
+            refund_usd = Decimal("0.00")
+
+        if rate_applied > Decimal("0"):
+            refund_pico = usd_to_xmr_piconero(refund_usd, rate_applied)
+            refund_xmr = Decimal(refund_pico) / (Decimal(10) ** 12)
+            BalanceRepository(db).credit(
+                agent.id, refund_xmr, token="XMR"
+            )
+
     db_agent.tier = new_tier
-    # TODO: Sprint 4 wires XMR refund of unused portion to balance.
+    db_agent.tier_grace_until = None
+
+    record_downgrade_refund(
+        db,
+        agent_id=agent.id,
+        amount_usd=refund_usd,
+        amount_piconero=refund_pico,
+        rate_applied=rate_applied,
+        tier_at_event=old_tier_value,
+        now=now,
+    )
 
     audit_log(
         "tier_downgrade",
@@ -809,6 +946,9 @@ async def downgrade_tier(
         details={
             "old_tier": old_tier_value,
             "new_tier": new_tier.value,
+            "amount_refunded_usd": str(refund_usd),
+            "amount_refunded_piconero": refund_pico,
+            "rate_applied": str(rate_applied),
         },
         db=db,
     )
@@ -818,7 +958,13 @@ async def downgrade_tier(
         "tier": new_tier.value,
         "label": _TIER_LABEL[new_tier.value],
         "limit": _TIER_LIMIT[new_tier.value],
-        "message": "Tier downgraded. XMR refund of unused portion wires in Sprint 4.",
+        "amount_refunded_usd": str(refund_usd),
+        "amount_refunded_piconero": refund_pico,
+        "rate_applied": str(rate_applied),
+        "message": (
+            f"Tier downgraded to {_TIER_LABEL[new_tier.value]}. "
+            f"Refunded ${refund_usd} to balance."
+        ),
     }
 
 
