@@ -4,7 +4,9 @@
 > today, and where the platform leaves residual risk visible to the operator
 > and to users.
 >
-> Last updated: 2026-05-06. Replaces the prior MPC/bridge-era threat model.
+> Last updated: 2026-05-07. Phase 2 Sprint 1: data minimization via 60-day
+> rolling auto-purge + Ed25519-signed warrant canary at
+> `/.well-known/canary.txt`. Replaces the prior MPC/bridge-era threat model.
 
 ## Scope
 

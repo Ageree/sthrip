@@ -77,6 +77,20 @@ class Settings(BaseSettings):
     # Alerting (optional)
     alert_webhook_url: str = ""
 
+    # Phase 2 Sprint 1: data retention for the daily auto-purge job.
+    # Default 60 days. Operators may tighten/relax via env, but only within
+    # 7..365 — values outside this range raise ValueError at startup so the
+    # operator cannot accidentally configure unbounded retention or a window
+    # so short it deletes data still needed for dispute resolution.
+    sthrip_data_retention_days: int = Field(default=60)
+
+    # Phase 2 Sprint 1: Ed25519 private key (32-byte raw, base64-encoded) for
+    # signing the daily warrant canary. Distinct from WEBHOOK_ENCRYPTION_KEY
+    # and AUDIT_HMAC_KEY by design — compromise of one key must not affect
+    # any other subsystem (see Lead Decision: "dedicated key, чтобы canary
+    # compromise не affected webhook integrity").
+    canary_signing_key: str = Field(default="")
+
     # Bitcoin regtest (legacy CLI/swap tooling — not used by active API)
     btc_regtest_host: str = "localhost"
     btc_regtest_port: int = 18443
@@ -140,6 +154,52 @@ class Settings(BaseSettings):
         if env not in ("dev",) and v == api_hmac and api_hmac:
             raise ValueError(
                 "AUDIT_HMAC_KEY must be distinct from API_KEY_HMAC_SECRET for key separation"
+            )
+        return v
+
+    @field_validator("sthrip_data_retention_days")
+    @classmethod
+    def validate_retention_days(cls, v: int, info) -> int:
+        """Phase 2 Sprint 1: enforce 7..365 day retention bounds.
+
+        Out-of-range values raise immediately so operators cannot accidentally
+        configure unbounded retention (privacy risk) or a window so short it
+        deletes data still needed for dispute resolution.
+        """
+        if not isinstance(v, int):
+            raise ValueError(
+                f"STHRIP_DATA_RETENTION_DAYS must be an integer, got {type(v).__name__}"
+            )
+        if v < 7 or v > 365:
+            raise ValueError(
+                f"STHRIP_DATA_RETENTION_DAYS must be between 7 and 365 days "
+                f"(got {v})"
+            )
+        return v
+
+    @field_validator("canary_signing_key")
+    @classmethod
+    def validate_canary_signing_key(cls, v: str, info) -> str:
+        """Phase 2 Sprint 1: validate Ed25519 private key (32 raw bytes b64).
+
+        Empty string is accepted (canary is opt-in: operators that haven't
+        configured the key simply don't publish a canary; the endpoint
+        returns 503). When set, MUST decode to exactly 32 bytes — otherwise
+        the SigningKey constructor would silently re-derive a different key.
+        """
+        if v == "":
+            return v
+        import base64
+        try:
+            raw = base64.b64decode(v, validate=True)
+        except Exception as e:
+            raise ValueError(
+                f"CANARY_SIGNING_KEY must be valid base64: {type(e).__name__}"
+            )
+        if len(raw) != 32:
+            raise ValueError(
+                f"CANARY_SIGNING_KEY must decode to exactly 32 bytes "
+                f"(Ed25519 seed); got {len(raw)} bytes"
             )
         return v
 

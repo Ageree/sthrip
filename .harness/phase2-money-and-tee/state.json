@@ -1,0 +1,20 @@
+{
+  "phase": "Phase 1 — Data minimization",
+  "current_sprint": 1,
+  "sprint_status": "starting",
+  "branch": "feat/revenue-and-tee",
+  "branched_from": "feat/anonymity-hardening",
+  "sprints": {
+    "1": {"title": "Auto-purge + warrant canary", "phase": 1, "status": "starting"},
+    "2": {"title": "Commission on transfers", "phase": 2, "status": "pending"},
+    "3": {"title": "Subscription tier + enforcement", "phase": 2, "status": "pending"},
+    "4": {"title": "XMR billing cron + grace handling", "phase": 2, "status": "pending"},
+    "5": {"title": "GCP project + Confidential VM template", "phase": 3, "status": "pending"},
+    "6": {"title": "Payment proxy from Railway to GCP", "phase": 3, "status": "pending"},
+    "7": {"title": "Remote attestation + cutover docs", "phase": 3, "status": "pending"}
+  },
+  "lead_log": [
+    {"ts": "2026-05-07", "event": "branch created feat/revenue-and-tee from feat/anonymity-hardening (Phase 1 not merged to main per lead-decisions)"},
+    {"ts": "2026-05-07", "event": "Sprint 1 starting — Generator about to be spawned"}
+  ]
+}

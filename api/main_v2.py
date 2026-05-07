@@ -568,6 +568,95 @@ async def _recurring_payment_loop():
             logger.exception("Recurring payment loop error")
 
 
+async def _purge_loop():
+    """Phase 2 Sprint 1: daily auto-purge at 03:00 UTC.
+
+    Deletes terminal-state records older than ``STHRIP_DATA_RETENTION_DAYS``
+    from transactions, escrow_deals, escrow_milestones, message_relays, and
+    rolling-resets the audit_log HMAC chain. Writes one ``purge_metadata``
+    row per run.
+
+    Distributed lease ensures only one replica runs the purge per day.
+    """
+    from sthrip.services.purge_service import run_full_purge
+    from sthrip.services.distributed_lease import with_redis_lease
+
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
+    while True:
+        try:
+            sleep_seconds = _seconds_until_utc(hour=3, minute=0)
+            await asyncio.sleep(sleep_seconds)
+            with with_redis_lease(
+                _redis, "purge_loop", ttl=3600, fail_open=_fail_open
+            ) as acquired:
+                if not acquired:
+                    logger.debug("Purge loop: lease not acquired, skipping cycle")
+                    continue
+                retention = get_settings().sthrip_data_retention_days
+                with get_db() as db:
+                    summary = run_full_purge(retention, db=db)
+                    db.commit()
+                logger.info("Purge run complete: %s", summary)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Purge loop error")
+
+
+async def _canary_loop():
+    """Phase 2 Sprint 1: daily canary signing at 03:05 UTC.
+
+    Sequential to the purge job (5-minute gap) to avoid contention on the
+    audit_log table. Skipped silently when ``CANARY_SIGNING_KEY`` is not
+    configured — operators opt in by setting the env var.
+    """
+    from sthrip.services.canary_service import publish_daily_canary
+    from sthrip.services.distributed_lease import with_redis_lease
+
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
+    while True:
+        try:
+            sleep_seconds = _seconds_until_utc(hour=3, minute=5)
+            await asyncio.sleep(sleep_seconds)
+            settings = get_settings()
+            if not settings.canary_signing_key:
+                logger.debug("Canary loop: CANARY_SIGNING_KEY not set, skipping")
+                continue
+            with with_redis_lease(
+                _redis, "canary_loop", ttl=600, fail_open=_fail_open
+            ) as acquired:
+                if not acquired:
+                    logger.debug("Canary loop: lease not acquired, skipping cycle")
+                    continue
+                with get_db() as db:
+                    publish_daily_canary(
+                        db=db, signing_key_b64=settings.canary_signing_key,
+                    )
+                    db.commit()
+                logger.info("Canary published")
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Canary loop error")
+
+
+def _seconds_until_utc(*, hour: int, minute: int) -> float:
+    """Return seconds until the next ``hour:minute`` UTC instant.
+
+    Defined here (rather than as a free helper in the service) because
+    the calculation only matters to the cron loop and depends on a
+    monotonic UTC clock the service tier doesn't otherwise need.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target = target + timedelta(days=1)
+    return max(1.0, (target - now).total_seconds())
+
+
 async def _conditional_payment_loop():
     """Evaluate conditional payment conditions every 30 seconds.
 
@@ -645,6 +734,14 @@ def _startup_services(hub_mode):
     conditional_payment_task = asyncio.create_task(_conditional_payment_loop())
     logger.info("Conditional payment evaluation task started")
 
+    # Phase 2 Sprint 1: daily auto-purge at 03:00 UTC
+    purge_task = asyncio.create_task(_purge_loop())
+    logger.info("Auto-purge task scheduled (daily 03:00 UTC)")
+
+    # Phase 2 Sprint 1: daily canary signing at 03:05 UTC
+    canary_task = asyncio.create_task(_canary_loop())
+    logger.info("Warrant canary task scheduled (daily 03:05 UTC)")
+
     return {
         "monitor": monitor,
         "webhook_service": webhook_service,
@@ -656,6 +753,8 @@ def _startup_services(hub_mode):
         "sla_enforcement_task": sla_enforcement_task,
         "recurring_payment_task": recurring_payment_task,
         "conditional_payment_task": conditional_payment_task,
+        "purge_task": purge_task,
+        "canary_task": canary_task,
     }
 
 
@@ -735,6 +834,22 @@ async def _shutdown_services(services):
         conditional_task.cancel()
         try:
             await conditional_task
+        except asyncio.CancelledError:
+            pass
+
+    purge_task = services.get("purge_task")
+    if purge_task is not None:
+        purge_task.cancel()
+        try:
+            await purge_task
+        except asyncio.CancelledError:
+            pass
+
+    canary_task = services.get("canary_task")
+    if canary_task is not None:
+        canary_task.cancel()
+        try:
+            await canary_task
         except asyncio.CancelledError:
             pass
 

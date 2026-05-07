@@ -1362,3 +1362,50 @@ class IdempotencyKey(Base):
         UniqueConstraint("agent_id", "endpoint", "key", name="uq_idempotency_agent_endpoint_key"),
         Index("ix_idempotency_keys_created_at", "created_at"),
     )
+
+
+class PurgeMetadata(Base):
+    """Audit trail for the daily auto-purge job (Phase 2 Sprint 1).
+
+    One row per scheduled purge run. Counts deleted rows per source table
+    and records the synthetic audit_log "chain reset" row id when the purge
+    swept any audit log entries. Operators query this table to verify the
+    purge is running on schedule and how much data each run swept.
+    """
+
+    __tablename__ = "purge_metadata"
+
+    # BigInteger autoincrement on Postgres (BIGSERIAL behaviour); on SQLite
+    # we fall back to INTEGER PRIMARY KEY which the engine auto-increments.
+    # ``with_variant`` keeps a single column definition while letting each
+    # dialect resolve to its native auto-increment idiom.
+    id = Column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    run_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    transactions_deleted = Column(Integer, nullable=False, default=0)
+    escrow_deals_deleted = Column(Integer, nullable=False, default=0)
+    escrow_milestones_deleted = Column(Integer, nullable=False, default=0)
+    message_relays_deleted = Column(Integer, nullable=False, default=0)
+    audit_log_deleted = Column(Integer, nullable=False, default=0)
+    # Stringified UUID of the synthetic chain-reset row, NULL when no audit
+    # rows were purged.
+    audit_chain_reset_at_id = Column(String(64), nullable=True)
+
+
+class CanaryState(Base):
+    """Single-row warrant canary store (Phase 2 Sprint 1).
+
+    Holds the most recently signed canary payload + Ed25519 detached
+    signature. Always upsert with id=1 — older runs are overwritten in
+    place. Stale-detection is a function of ``signed_at`` vs now.
+    """
+
+    __tablename__ = "canary_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=False)
+    signed_at = Column(DateTime(timezone=True), nullable=False)
+    payload_json = Column(Text, nullable=False)
+    signature_b64 = Column(Text, nullable=False)
