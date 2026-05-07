@@ -45,6 +45,20 @@ try:
         "Subscription billing events by status",
         ["status"],
     )
+    # Phase 3 Sprint 6: TEE proxy observability. Increments whenever the
+    # dispatcher falls back to the local handler because the TEE is
+    # unreachable (network) or returned 5xx, AND when /health probes fail.
+    tee_unreachable_total = Counter(
+        "tee_unreachable_total",
+        "Times the TEE was unreachable (fall-back to local) or /health failed",
+        ["reason"],
+    )
+    # Phase 3 Sprint 6: TEE dispatch outcomes (success / fallback / 4xx).
+    tee_dispatch_total = Counter(
+        "tee_dispatch_total",
+        "TEE proxy dispatch outcomes",
+        ["outcome"],
+    )
 
     PROMETHEUS_AVAILABLE = True
 
@@ -66,6 +80,8 @@ except ImportError:
     balance_ops_total = _Noop()  # type: ignore[assignment]
     tier_limit_fail_open_total = _Noop()  # type: ignore[assignment]
     subscription_billing_total = _Noop()  # type: ignore[assignment]
+    tee_unreachable_total = _Noop()  # type: ignore[assignment]
+    tee_dispatch_total = _Noop()  # type: ignore[assignment]
 
 
 def get_metrics_response() -> Optional[tuple]:

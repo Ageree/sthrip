@@ -329,7 +329,14 @@ async def send_hub_routed_payment(
                 from_agent_tier=agent.tier.value,
                 urgency=req.urgency,
             )
-            route = _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key, fee_collector=fee_collector)
+            # Phase 3 Sprint 6: route through the dispatcher so flag-on
+            # traffic goes to the GCP TEE proxy, flag-off traffic stays on
+            # the legacy local handler. Fall-back is transparent.
+            from sthrip.services import payment_dispatch
+            route = payment_dispatch.dispatch_hub_routing(
+                db, agent, recipient, amount, fee_info, req,
+                idempotency_key, fee_collector=fee_collector,
+            )
 
             if route.get("duplicate"):
                 return route

@@ -845,6 +845,12 @@ def _startup_services(hub_mode):
     grace_expiry_task = asyncio.create_task(_grace_expiry_loop())
     logger.info("Grace expiry task scheduled (daily 04:30 UTC)")
 
+    # Phase 3 Sprint 6: TEE proxy health-check loop (60s).  No-op if
+    # STHRIP_PAYMENT_VIA_TEE is off.
+    from sthrip.services.payment_dispatch import health_check_loop as _tee_health_loop
+    tee_health_task = asyncio.create_task(_tee_health_loop())
+    logger.info("TEE health-check task scheduled (60s; gated by STHRIP_PAYMENT_VIA_TEE)")
+
     return {
         "monitor": monitor,
         "webhook_service": webhook_service,
@@ -860,6 +866,7 @@ def _startup_services(hub_mode):
         "canary_task": canary_task,
         "subscription_billing_task": subscription_billing_task,
         "grace_expiry_task": grace_expiry_task,
+        "tee_health_task": tee_health_task,
     }
 
 
@@ -971,6 +978,14 @@ async def _shutdown_services(services):
         grace_expiry_task.cancel()
         try:
             await grace_expiry_task
+        except asyncio.CancelledError:
+            pass
+
+    tee_health_task = services.get("tee_health_task")
+    if tee_health_task is not None:
+        tee_health_task.cancel()
+        try:
+            await tee_health_task
         except asyncio.CancelledError:
             pass
 
