@@ -29,6 +29,7 @@ Design notes
 """
 from __future__ import annotations
 
+import json as json_lib
 import logging
 import os
 import ssl
@@ -64,6 +65,23 @@ class TEEServerError(Exception):
         super().__init__(f"TEE {status_code}: {body[:200]}")
         self.status_code = status_code
         self.body = body
+
+
+class TEEUserError(Exception):
+    """The TEE returned a 4xx with a body the client could not tag.
+
+    Phase 3 Sprint 7 carry-over from Sprint 6.  When the TEE responds 4xx
+    with a non-dict JSON body (e.g. a bare ``"insufficient balance"``
+    string), we cannot tag ``_status_code`` into the body — there is no
+    dict to mutate.  Raising this exception lets the dispatcher surface
+    the real status as an HTTPException while still distinguishing
+    user-error from server-error (the latter would unsafely fall back).
+    """
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(f"TEE {status_code}: {detail[:200]}")
+        self.status_code = status_code
+        self.detail = detail
 
 
 # ---------------------------------------------------------------------------
@@ -202,11 +220,22 @@ def dispatch_hub_routing(
         raise TEEServerError(resp.status_code, resp.text) from exc
 
     if 400 <= resp.status_code < 500:
-        # Legitimate user-error — caller decides what to do. Tag the
-        # status so the dispatcher can detect it without re-parsing.
+        # Legitimate user-error — caller decides what to do.
         if isinstance(parsed, dict):
-            parsed = {**parsed, "_status_code": resp.status_code}
-        return parsed
+            # Tag the status so the dispatcher can detect it without
+            # re-parsing.
+            return {**parsed, "_status_code": resp.status_code}
+        # Non-dict 4xx body (string, list, ...) — we cannot embed
+        # `_status_code` so we raise a structured TEEUserError instead of
+        # silently returning an untagged value that the dispatcher would
+        # then misroute as success (Sprint 6 → Sprint 7 carry-over fix).
+        detail = parsed if isinstance(parsed, str) else json_lib.dumps(parsed)[:200]
+        logger.warning(
+            "TEE %s with non-dict body: %s",
+            resp.status_code,
+            detail[:120],
+        )
+        raise TEEUserError(resp.status_code, detail)
 
     return parsed
 

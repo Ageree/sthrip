@@ -1,20 +1,25 @@
 {
-  "phase": "Phase 1 — Data minimization",
-  "current_sprint": 1,
+  "phase": "Phase 3 — TEE migration",
+  "current_sprint": 7,
   "sprint_status": "starting",
   "branch": "feat/revenue-and-tee",
   "branched_from": "feat/anonymity-hardening",
   "sprints": {
-    "1": {"title": "Auto-purge + warrant canary", "phase": 1, "status": "starting"},
-    "2": {"title": "Commission on transfers", "phase": 2, "status": "pending"},
-    "3": {"title": "Subscription tier + enforcement", "phase": 2, "status": "pending"},
-    "4": {"title": "XMR billing cron + grace handling", "phase": 2, "status": "pending"},
-    "5": {"title": "GCP project + Confidential VM template", "phase": 3, "status": "pending"},
-    "6": {"title": "Payment proxy from Railway to GCP", "phase": 3, "status": "pending"},
-    "7": {"title": "Remote attestation + cutover docs", "phase": 3, "status": "pending"}
+    "1": {"title": "Auto-purge + warrant canary", "phase": 1, "status": "completed", "commit": "a3a6e38", "result": "PASS", "new_tests": 17, "regressions": 0},
+    "2": {"title": "Commission on transfers", "phase": 2, "status": "completed", "commits": ["768d0ea", "b1d05a3"], "result": "PASS (after iter 2)", "new_tests": 30, "regressions": 0},
+    "3": {"title": "Subscription tier + enforcement", "phase": 2, "status": "completed", "commit": "dd29657", "result": "PASS", "new_tests": 14, "regressions": 0},
+    "4": {"title": "XMR billing cron + grace handling", "phase": 2, "status": "completed", "commit": "959377a", "result": "PASS", "new_tests": 15, "regressions": 0},
+    "5": {"title": "GCP project + Confidential VM template", "phase": 3, "status": "completed", "commit": "ed3821c", "result": "PASS", "new_tests": 8, "regressions": 0},
+    "6": {"title": "Payment proxy from Railway to GCP", "phase": 3, "status": "completed", "commit": "6fee072", "result": "PASS", "new_tests": 12, "regressions": 0, "suite_total": 2891, "m1_fix": "HubRoute row written Railway-side after TEE success"},
+    "7": {"title": "Remote attestation + cutover docs", "phase": 3, "status": "starting"}
   },
   "lead_log": [
-    {"ts": "2026-05-07", "event": "branch created feat/revenue-and-tee from feat/anonymity-hardening (Phase 1 not merged to main per lead-decisions)"},
-    {"ts": "2026-05-07", "event": "Sprint 1 starting — Generator about to be spawned"}
-  ]
+    {"ts": "2026-05-07", "event": "Phase 1 + Phase 2 + Phase 3 sprints 5-6 complete (88 new tests, 0 regressions, suite at 2891)"},
+    {"ts": "2026-05-07", "event": "Sprint 6 PASS — commit 6fee072, 12 tests, dispatcher 4xx/5xx routing verified, M-1 closed, idempotency safe"},
+    {"ts": "2026-05-07", "event": "Sprint 7 starting — FINAL sprint: attestation + SDK verify + CUTOVER.md"}
+  ],
+  "carry_overs_to_sprint_7": {
+    "sprint_6_minor": "4xx non-dict body would misroute as success in dispatcher (theoretical — Sprint 5 TEE always returns JSON dict). Add defensive check in Sprint 7 if quick.",
+    "sprint_5_overrides": "ALLOWED_OVERRIDES carve-out for sthrip.swaps.* + sthrip.db.*_repo. True extraction to sthrip/payment_core/ deferred beyond Phase 2 (out of scope of Sprint 7 too)."
+  }
 }

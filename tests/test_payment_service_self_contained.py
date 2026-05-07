@@ -205,21 +205,38 @@ def test_payment_service_health_endpoint():
 
 
 # ---------------------------------------------------------------------------
-# Test 3 — /attestation stub.
+# Test 3 — /attestation now serves the Sprint 7 payload (or 503 if unset).
 # ---------------------------------------------------------------------------
 
-def test_payment_service_attestation_stub():
-    from fastapi.testclient import TestClient
-    sys.path.insert(0, str(REPO_ROOT))
-    from gcp.payment_tee_deploy.payment_service import app  # type: ignore
+def test_payment_service_attestation_stub(monkeypatch):
+    """Sprint 7 superseded the stub.  When the signing key is set, the
+    endpoint returns the canonical Sprint 7 payload; when it is unset it
+    returns 503 (operator must explicitly opt in to attestation).
+    """
+    import base64
+    import importlib
 
-    client = TestClient(app)
+    from fastapi.testclient import TestClient
+    from nacl.signing import SigningKey
+
+    sys.path.insert(0, str(REPO_ROOT))
+
+    sk = SigningKey.generate()
+    monkeypatch.setenv(
+        "STHRIP_TEE_ATTESTATION_KEY", base64.b64encode(sk.encode()).decode()
+    )
+    monkeypatch.setenv("STHRIP_TEE_IMAGE_HASH", "sha256:" + "0" * 64)
+
+    from gcp.payment_tee_deploy import payment_service  # type: ignore
+    importlib.reload(payment_service)
+
+    client = TestClient(payment_service.app)
     resp = client.get("/attestation")
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body.get("status") == "stub"
-    assert "todo" in body
-    assert "Sprint 7" in body["todo"]
+    for key in ("quote_b64", "image_hash_sha256", "timestamp", "signature_b64", "mode"):
+        assert key in body, body
+    assert body["mode"] in ("snp_real", "snp_stub")
 
 
 # ---------------------------------------------------------------------------

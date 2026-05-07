@@ -108,12 +108,30 @@ async def health() -> dict:
 
 @app.get("/attestation")
 async def attestation() -> dict:
-    """Stub — Sprint 7 wires real AMD SEV-SNP attestation report fetching."""
-    return {
-        "status": "stub",
-        "todo": "Sprint 7 wires real SEV-SNP attestation",
-        "image": os.getenv("TEE_IMAGE_DIGEST", "unknown"),
-    }
+    """Sprint 7 — real (or stub) AMD SEV-SNP attestation report.
+
+    Delegates to :func:`attestation_service.collect_attestation`.  In
+    test/CI without ``STHRIP_TEE_ATTESTATION_KEY``, returns a 503 so
+    callers can detect the misconfiguration explicitly rather than
+    silently signing a deceptive payload.
+    """
+    return await _serve_attestation()
+
+
+@app.get("/.well-known/attestation.json")
+async def well_known_attestation() -> dict:
+    """Operator-discoverable attestation endpoint (the SDK fetches here)."""
+    return await _serve_attestation()
+
+
+async def _serve_attestation() -> dict:
+    """Shared attestation handler used by both endpoints."""
+    from gcp.payment_tee_deploy import attestation_service
+
+    try:
+        return attestation_service.collect_attestation()
+    except attestation_service.AttestationConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.post("/v2/payments/hub-routing", response_model=HubPaymentResponse)

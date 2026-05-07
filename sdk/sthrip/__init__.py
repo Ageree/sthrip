@@ -19,9 +19,11 @@ from .exceptions import (
     PaymentError,
     RateLimitError,
     StrhipError,
+    TEEAttestationStaleError,
+    TEEMismatchError,
 )
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "Sthrip",
@@ -32,4 +34,6 @@ __all__ = [
     "AgentNotFound",
     "RateLimitError",
     "NetworkError",
+    "TEEMismatchError",
+    "TEEAttestationStaleError",
 ]

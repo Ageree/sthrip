@@ -27,6 +27,7 @@ from sthrip.services.metrics import tee_dispatch_total, tee_unreachable_total
 from sthrip.services.payment_tee_client import (
     TEEServerError,
     TEEUnreachableError,
+    TEEUserError,
 )
 
 logger = logging.getLogger("sthrip.payment_dispatch")
@@ -273,6 +274,15 @@ def _tee_dispatch(
             db, agent, recipient, amount, fee_info, req, idempotency_key,
             fee_collector=fee_collector,
         )
+    except TEEUserError as exc:
+        # Sprint 7 carry-over: TEE returned 4xx with a non-dict body that
+        # the client could not tag.  Surface the real status code as an
+        # HTTPException — NEVER fall back, otherwise we'd re-charge the
+        # user on the local path after the TEE already rejected them.
+        from fastapi import HTTPException
+
+        tee_dispatch_total.labels(outcome="user_error").inc()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
     # 4xx — legitimate user-error from the TEE (e.g. insufficient balance).
     # Bubble it up exactly like the local handler would: as an HTTPException

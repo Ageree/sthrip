@@ -61,3 +61,43 @@ class NetworkError(StrhipError):
     def __init__(self, detail="Network error", status_code=None):
         # type: (str, int) -> None
         super(NetworkError, self).__init__(detail, status_code)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 Sprint 7 — TEE attestation errors
+# ---------------------------------------------------------------------------
+
+
+class TEEMismatchError(StrhipError):
+    """Attestation payload failed image-hash or signature verification.
+
+    Raised by :meth:`Sthrip.verify_tee_attestation` when ``verify_tee=True``
+    and either:
+
+    * the signed payload does not verify under the pinned attestation
+      pubkey, or
+    * the ``image_hash_sha256`` field does not match the SDK's
+      ``expected_image_hash``.
+
+    In both cases the SDK refuses to send payments — the operator may
+    have rolled to an unaudited image, or the endpoint may have been
+    spoofed.
+    """
+
+    def __init__(self, detail="TEE attestation mismatch", status_code=None):
+        # type: (str, int) -> None
+        super(TEEMismatchError, self).__init__(detail, status_code)
+
+
+class TEEAttestationStaleError(StrhipError):
+    """No fresh attestation could be obtained.
+
+    Raised when the attestation endpoint is unreachable / returns a
+    non-2xx and the SDK has no cached attestation younger than 5 minutes.
+    The SDK refuses to send a payment under uncertainty rather than
+    silently falling through.
+    """
+
+    def __init__(self, detail="TEE attestation stale (no fresh fetch)", status_code=None):
+        # type: (str, int) -> None
+        super(TEEAttestationStaleError, self).__init__(detail, status_code)
