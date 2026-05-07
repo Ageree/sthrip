@@ -1,0 +1,87 @@
+# Dockerignore for sthrip-payment-tee.
+#
+# Goal: keep the TEE image as small and narrow as possible. Every line below
+# excludes a directory or file pattern that has NO place inside the TEE
+# trust boundary.
+
+# --- Python / build artefacts ---------------------------------------------
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.egg-info/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg
+
+# --- VCS / IDE -------------------------------------------------------------
+.git/
+.gitignore
+.gitattributes
+.github/
+.idea/
+.vscode/
+
+# --- Tests, docs, examples (NEVER inside TEE) ------------------------------
+tests/
+docs/
+examples/
+benchmarks/
+scripts/
+.harness/
+.pi/
+.codex/
+.claude/
+
+# --- Sthrip subsystems that MUST NOT enter the TEE -------------------------
+api/admin_ui/
+api/routers/marketplace.py
+api/routers/escrow.py
+api/routers/milestones.py
+api/routers/sla.py
+api/routers/reviews.py
+api/routers/channels.py
+api/routers/swaps.py
+api/routers/stablecoin.py
+api/routers/matchmaking.py
+integrations/sthrip_mcp/
+sthrip/services/escrow_service.py
+sthrip/services/sla_service.py
+sthrip/services/review_service.py
+sthrip/services/matchmaking_service.py
+sthrip/services/messaging_service.py
+sthrip/services/swap_service.py
+sthrip/services/channel_service.py
+sthrip/services/multi_party_service.py
+sthrip/services/treasury_service.py
+sthrip/services/stream_service.py
+sthrip/services/recurring_service.py
+sthrip/services/conditional_payment_service.py
+sthrip/services/credit_service.py
+sthrip/services/subscription_billing_service.py
+sthrip/services/zk_reputation_service.py
+
+# --- Local secrets, certs, dotfiles ----------------------------------------
+.env
+.env.*
+secrets/
+**/mtls/certs/
+*.pem
+*.key
+*.crt
+
+# --- Local DB / logs -------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# --- Docker noise ----------------------------------------------------------
+Dockerfile.dev
+docker-compose*.yml

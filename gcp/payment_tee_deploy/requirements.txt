@@ -1,0 +1,17 @@
+# sthrip-payment-tee — minimal pinned runtime dependencies.
+#
+# This list intentionally diverges from the main project's ``requirements.lock``
+# to keep the TEE image small and the supply-chain surface narrow. Add a
+# package here ONLY if the payment hot path needs it at runtime.
+#
+# Operator: re-pin via ``pip-compile gcp/payment_tee_deploy/requirements.in``
+# in a clean venv when bumping. Sprint 7 adds a CI lockfile diff check.
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+SQLAlchemy==2.0.35
+psycopg2-binary==2.9.9
+cryptography==43.0.1
+msgpack==1.1.0
+python-dotenv==1.0.1
