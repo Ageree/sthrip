@@ -80,6 +80,21 @@ This document covers all eight (cross-referenced for the reviewer):
 Two additional rows (5: webhook URL deanonymization; 10: discovery JSON
 leak) cover sub-cases that materially change the residual-risk picture.
 
+## Revenue / commission (Phase 2 Sprint 2)
+
+0.3% Free / 0.1% Pro+ commission on internal transfers; deducted from
+sender at write time; recorded in fee_collections aggregation table;
+per-agent caching prevents tier-bypass across a single request. Commission
+is computed in integer piconero with ROUND_HALF_UP (no float drift) and
+floored at 1 piconero so dust transfers cannot bypass revenue accounting.
+The commission deduction is atomic with the balance update: ``SELECT
+... FOR UPDATE`` on the sender row, ``balance >= amount + fee`` check,
+``deduct(amount + fee)`` from sender, ``credit(amount)`` to receiver,
+insert ``FeeCollection`` row — all in one DB transaction so a failure
+rolls everything back. Idempotency: client retries with a known
+``idempotency_key`` return the cached transaction without re-deducting
+fee.
+
 ## Branch and references
 
 This document was rewritten as part of Sprint 7 on the

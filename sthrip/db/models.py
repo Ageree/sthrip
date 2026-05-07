@@ -527,7 +527,14 @@ class AuditLog(Base):
 
 
 class FeeCollection(Base):
-    """Revenue tracking"""
+    """Revenue tracking.
+
+    Phase 2 Sprint 2 added the integer ``amount_piconero``, ``rate_applied_bps``,
+    ``payer_agent_id``, and ``transaction_ref`` columns for the new
+    commission-on-transfer subsystem. Legacy ``amount``/``token``/``source_*``
+    columns remain so the original ``fee_collector.py`` (1% flat hub-routing
+    fee) keeps working without modification.
+    """
     __tablename__ = "fee_collections"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -546,8 +553,26 @@ class FeeCollection(Base):
 
     created_at = Column(DateTime(timezone=True), default=func.now())
 
+    # Phase 2 Sprint 2 commission fields. Nullable so legacy fee_collector
+    # rows keep working unchanged. New commission rows always populate them.
+    payer_agent_id = Column(
+        UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True
+    )
+    amount_piconero = Column(BigInteger, nullable=True)
+    rate_applied_bps = Column(Integer, nullable=True)
+    transaction_ref = Column(String(255), nullable=True)
+    collected_at = Column(DateTime(timezone=True), nullable=True)
+
     __table_args__ = (
         Index("ix_fee_collections_status_created", "status", "created_at"),
+        # Per-agent revenue aggregation (Sprint 4 admin dashboard).
+        Index(
+            "ix_fee_collections_payer_collected",
+            "payer_agent_id",
+            "collected_at",
+        ),
+        # Global MTD / period revenue queries.
+        Index("ix_fee_collections_collected_at", "collected_at"),
     )
 
 
