@@ -54,7 +54,18 @@ def db_session():
         engine.dispose()
 
 
+_PICO = Decimal(10) ** 12  # 1 XMR = 10**12 piconero.
+
+
 def _make_agent(db, name: str, tier: AgentTier, balance_piconero: int) -> Agent:
+    """Seed an agent and AgentBalance row.
+
+    ``balance_piconero`` is the integer piconero amount the test wants to
+    seed; it is converted to XMR Decimal at scale 12 to match the real
+    BalanceRepository ledger schema. This keeps test assertions in piconero
+    terms (the natural unit for fee math) while still exercising the same
+    XMR-Decimal arithmetic the production code uses.
+    """
     agent = Agent(
         id=uuid.uuid4(),
         agent_name=name,
@@ -67,7 +78,7 @@ def _make_agent(db, name: str, tier: AgentTier, balance_piconero: int) -> Agent:
     bal = AgentBalance(
         agent_id=agent.id,
         token="XMR",
-        available=Decimal(balance_piconero),
+        available=Decimal(balance_piconero) / _PICO,
         pending=Decimal(0),
     )
     db.add(bal)
@@ -76,8 +87,11 @@ def _make_agent(db, name: str, tier: AgentTier, balance_piconero: int) -> Agent:
 
 
 def _balance_for(db, agent_id) -> int:
+    """Return balance as integer piconero (for piconero-scale assertions)."""
     bal = db.query(AgentBalance).filter(AgentBalance.agent_id == agent_id).first()
-    return int(bal.available) if bal else 0
+    if bal is None:
+        return 0
+    return int((bal.available or Decimal(0)) * _PICO)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,7 +119,8 @@ class TestCommissionDeduction:
         assert _balance_for(db_session, sender.id) == 1_000_000 - 100_000 - 300
         assert _balance_for(db_session, sender.id) == 899_700
         assert _balance_for(db_session, receiver.id) == 100_000
-        assert int(tx.fee) == 300
+        # tx.fee is stored in XMR Decimal; 300 piconero = 0.0000000003 XMR.
+        assert int(Decimal(tx.fee) * _PICO) == 300
 
     def test_commission_deducted_pro_tier(self, db_session):
         """Verified (Pro) tier: 0.1% deducted."""
@@ -344,6 +359,198 @@ class TestConcurrencyAndIdempotency:
             FeeCollection.payer_agent_id == sender.id
         ).all()
         assert len(rows) == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 2 iter 2 — hub-routing wiring: end-to-end via _execute_hub_transfer
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestHubRoutingWiring:
+    """Verifies that the production hub-routing path
+    (``api/routers/payments.py::_execute_hub_transfer``) was cut over from
+    the legacy 1% ``confirm_hub_route`` path to the new
+    ``create_with_commission`` path.
+
+    Asserts:
+    * exactly ONE FeeCollection row per transfer (no duplicate / stacked fees)
+    * the row carries Sprint-2 columns (rate_applied_bps in {30, 10})
+    * the rate matches sender tier
+    * sender pays exactly amount + commission (not amount + 1%)
+    """
+
+    def _setup(self, db_session, sender_tier: AgentTier, sender_balance: int):
+        """Build agents, balances, HubRoute table, and request stubs.
+        HubRoute is added because the hub-routing path persists rows there."""
+        from sthrip.db.models import HubRoute
+        HubRoute.__table__.create(db_session.bind, checkfirst=True)
+
+        sender = _make_agent(db_session, "alice", sender_tier, sender_balance)
+        receiver = _make_agent(db_session, "bob", AgentTier.FREE, 0)
+
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class _RecipientProfile:
+            id: str
+            agent_name: str
+            xmr_address: str
+            trust_score: int
+
+        recipient_profile = _RecipientProfile(
+            id=str(receiver.id),
+            agent_name="bob",
+            xmr_address=receiver.xmr_address,
+            trust_score=0,
+        )
+
+        @dataclass
+        class _Req:
+            urgency: str = "normal"
+            memo: str = ""
+
+        return sender, receiver, recipient_profile, _Req()
+
+    def test_hub_transfer_charges_commission_only_free_tier(self, db_session):
+        """End-to-end: _execute_hub_transfer charges 0.3% commission ONLY
+        (no legacy 1% double-charge) when sender is FREE."""
+        from decimal import Decimal as D
+        from api.routers.payments import _execute_hub_transfer
+        from sthrip.services.fee_collector import FeeCollector
+
+        # Seed sender with 2 XMR so ANY accidental 1% double-charge would
+        # show up clearly in the balance assertion below.
+        sender, receiver, recipient_profile, req = self._setup(
+            db_session,
+            sender_tier=AgentTier.FREE,
+            sender_balance=2 * 10**12,
+        )
+        amount = D("1.0")
+        fee_info = {
+            "base_amount": amount,
+            "fee_amount": D("0.01"),  # legacy 1% — replaced by cutover
+            "fee_percent": D("0.01"),
+            "tier_discount": "free",
+            "urgency": "normal",
+            "total_deduction": D("1.01"),
+            "recipient_receives": amount,
+        }
+        collector = FeeCollector.__new__(FeeCollector)
+        collector.db = None
+        collector.fee_wallet_address = None
+
+        _execute_hub_transfer(
+            db_session, sender, recipient_profile, amount, fee_info, req,
+            idempotency_key=None, fee_collector=collector,
+        )
+        db_session.flush()
+
+        # 1. Exactly ONE Sprint-2 commission row, no legacy 1% row.
+        sprint2_rows = db_session.query(FeeCollection).filter(
+            FeeCollection.payer_agent_id == sender.id
+        ).all()
+        assert len(sprint2_rows) == 1, (
+            "expected exactly one commission FeeCollection row"
+        )
+        row = sprint2_rows[0]
+        assert row.rate_applied_bps == 30  # FREE tier
+        assert row.amount_piconero == 3 * 10**9  # 0.3% of 1 XMR
+
+        # 2. NO legacy hub_routing fee row (would be inserted by
+        # confirm_hub_route, which we no longer call).
+        legacy_rows = db_session.query(FeeCollection).filter(
+            FeeCollection.source_type == "hub_routing",
+            FeeCollection.payer_agent_id.is_(None),
+        ).all()
+        assert len(legacy_rows) == 0
+
+        # 3. Sender paid exactly amount + 0.3% commission, NOT amount + 1%.
+        # Started with 2 XMR; 1 XMR amount + 0.003 XMR fee. If 1% had also
+        # been charged the balance would be 0.99 XMR (990_000_000_000 pico).
+        assert _balance_for(db_session, sender.id) == 997_000_000_000
+
+    def test_hub_transfer_charges_commission_only_pro_tier(self, db_session):
+        """Same end-to-end test for VERIFIED tier — verifies 0.1% rate."""
+        from decimal import Decimal as D
+        from api.routers.payments import _execute_hub_transfer
+        from sthrip.services.fee_collector import FeeCollector
+
+        sender, receiver, recipient_profile, req = self._setup(
+            db_session,
+            sender_tier=AgentTier.VERIFIED,
+            sender_balance=2 * 10**12,
+        )
+        amount = D("1.0")
+        fee_info = {
+            "base_amount": amount,
+            "fee_amount": D("0.01"),
+            "fee_percent": D("0.01"),
+            "tier_discount": "verified",
+            "urgency": "normal",
+            "total_deduction": D("1.01"),
+            "recipient_receives": amount,
+        }
+        collector = FeeCollector.__new__(FeeCollector)
+        collector.db = None
+        collector.fee_wallet_address = None
+
+        _execute_hub_transfer(
+            db_session, sender, recipient_profile, amount, fee_info, req,
+            idempotency_key=None, fee_collector=collector,
+        )
+        db_session.flush()
+
+        rows = db_session.query(FeeCollection).filter(
+            FeeCollection.payer_agent_id == sender.id
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].rate_applied_bps == 10  # Pro+ rate
+        assert rows[0].amount_piconero == 1 * 10**9  # 0.1% of 1 XMR
+
+        # 2 XMR - 1 XMR - 0.001 XMR = 0.999 XMR
+        assert _balance_for(db_session, sender.id) == 999_000_000_000
+
+    def test_hub_transfer_creates_transaction_and_hubroute_rows(self, db_session):
+        """Cutover preserves Transaction row (for /history) and HubRoute
+        row (for admin dashboard / /payments/{id} lookup)."""
+        from decimal import Decimal as D
+        from api.routers.payments import _execute_hub_transfer
+        from sthrip.services.fee_collector import FeeCollector
+        from sthrip.db.models import HubRoute
+
+        sender, receiver, recipient_profile, req = self._setup(
+            db_session, sender_tier=AgentTier.FREE, sender_balance=2 * 10**12,
+        )
+        amount = D("0.5")
+        fee_info = {
+            "base_amount": amount, "fee_amount": D("0.005"),
+            "fee_percent": D("0.01"), "tier_discount": "free",
+            "urgency": "normal", "total_deduction": D("0.505"),
+            "recipient_receives": amount,
+        }
+        collector = FeeCollector.__new__(FeeCollector)
+        collector.db = None
+        collector.fee_wallet_address = None
+
+        route = _execute_hub_transfer(
+            db_session, sender, recipient_profile, amount, fee_info, req,
+            idempotency_key=None, fee_collector=collector,
+        )
+        db_session.flush()
+
+        tx = db_session.query(Transaction).filter(
+            Transaction.tx_hash == route["payment_id"]
+        ).first()
+        assert tx is not None
+        assert tx.from_agent_id == sender.id
+        assert tx.to_agent_id == receiver.id
+
+        hub_row = db_session.query(HubRoute).filter(
+            HubRoute.payment_id == route["payment_id"]
+        ).first()
+        assert hub_row is not None
+        assert hub_row.status.value == "confirmed"
+        assert hub_row.fee_collected is True
 
 
 # ─────────────────────────────────────────────────────────────────────────────

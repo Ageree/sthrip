@@ -112,7 +112,7 @@ class TransactionRepository:
         commit/rollback via the surrounding session's ``with`` block.
         """
         # Lazy imports to avoid import cycles (services -> db -> services).
-        from sthrip.services.fee_calculator import compute_fee
+        from sthrip.services.fee_calculator import compute_fee, rate_bps_for_tier
         from sthrip.services.tier_cache import get_tier
         from sthrip.db.balance_repo import BalanceRepository
         from sthrip.db.enums import FeeCollectionStatus, PaymentType
@@ -135,34 +135,36 @@ class TransactionRepository:
         # 2. Look up sender tier (request-cached; falls back to direct DB read).
         tier = get_tier(from_agent_id, self.db)
 
-        # 3. Compute commission in piconero.
+        # 3. Compute commission in piconero (integer math, deterministic).
         fee_piconero = compute_fee(amount_piconero, tier)
 
-        # 4. Lock sender balance and verify funds. Stored as Decimal so we
-        # convert piconero ints to Decimal for compare/deduct.
-        from sthrip.services.fee_calculator import rate_bps_for_tier
+        # 4. BalanceRepository stores balances as XMR Decimal (Numeric(20, 12))
+        # while the fee calculator works in integer piconero (avoids float
+        # drift on dust). Convert at the boundary so the comparisons and the
+        # stored Transaction.amount / Transaction.fee values align with the
+        # existing XMR-scale balance ledger.
+        PICO = Decimal(10) ** 12
+        amount_xmr = Decimal(amount_piconero) / PICO
+        fee_xmr = Decimal(fee_piconero) / PICO
+        total_xmr = amount_xmr + fee_xmr
 
         balance_repo = BalanceRepository(self.db)
         # _get_for_update applies SELECT ... FOR UPDATE on Postgres; on SQLite
         # falls back to plain read (acceptable for tests; the test suite is
         # single-process).
         sender_balance = balance_repo._get_for_update(from_agent_id, token)
-
-        amount_dec = Decimal(amount_piconero)
-        fee_dec = Decimal(fee_piconero)
-        total_dec = amount_dec + fee_dec
         available = sender_balance.available or Decimal("0")
-        if available < total_dec:
+        if available < total_xmr:
             raise InsufficientBalanceError(
-                f"Insufficient balance: available={available}, "
-                f"required={total_dec} (amount={amount_dec} + fee={fee_dec})"
+                f"Insufficient balance: available={available} XMR, "
+                f"required={total_xmr} XMR (amount={amount_xmr} + fee={fee_xmr})"
             )
 
         # 5. Mutate balances. Sender pays amount + fee; receiver gets
         # amount only — fee is the hub's revenue.
-        sender_balance.available = available - total_dec
+        sender_balance.available = available - total_xmr
         sender_balance.updated_at = datetime.now(timezone.utc)
-        balance_repo.credit(to_agent_id, amount_dec, token)
+        balance_repo.credit(to_agent_id, amount_xmr, token)
 
         # 6. Create Transaction + FeeCollection rows.
         tx = models.Transaction(
@@ -170,12 +172,12 @@ class TransactionRepository:
             network=network,
             from_agent_id=from_agent_id,
             to_agent_id=to_agent_id,
-            amount=amount_dec,
+            amount=amount_xmr,
             token=token,
             payment_type=payment_type,
             status=status,
-            fee=fee_dec,
-            fee_collected=fee_dec,
+            fee=fee_xmr,
+            fee_collected=fee_xmr,
             memo=memo,
             metadata=metadata or {},
         )
@@ -184,7 +186,7 @@ class TransactionRepository:
             tx,
             from_agent_id=from_agent_id,
             to_agent_id=to_agent_id,
-            amount=amount_dec,
+            amount=amount_xmr,
             description=memo,
         )
         self.db.add(tx)
@@ -194,7 +196,7 @@ class TransactionRepository:
         fee_row = models.FeeCollection(
             source_type=PaymentType.FEE_COLLECTION.value,
             source_id=tx.id,
-            amount=fee_dec,
+            amount=fee_xmr,
             token=token,
             status=FeeCollectionStatus.PENDING,
             payer_agent_id=from_agent_id,
