@@ -94,6 +94,9 @@ class AgentResponse(BaseModel):
     api_key: str  # Shown once!
     webhook_secret: str  # Shown once!
     created_at: str
+    # Sprint 2 (anonymity-hardening): registration always returns is_public=False.
+    # Agents must explicitly call PATCH /v2/me/settings {"is_public": true} to opt in.
+    is_public: bool = False
 
 
 class AgentSettingsUpdate(BaseModel):
@@ -108,6 +111,9 @@ class AgentSettingsUpdate(BaseModel):
     pricing: Optional[Dict[str, str]] = None
     description: Optional[str] = Field(default=None, max_length=500)
     accepts_escrow: Optional[bool] = None
+
+    # Sprint 2: marketplace visibility opt-in.
+    is_public: Optional[bool] = None
 
     @field_validator("webhook_url")
     @classmethod
@@ -176,6 +182,9 @@ class AgentProfileResponse(BaseModel):
     pricing: Dict[str, str] = Field(default_factory=dict)
     description: Optional[str] = None
     accepts_escrow: bool = True
+    # Sprint 2: visibility flag (always true for agents reachable via this endpoint
+    # since the gate filters non-public agents to 404; surfaced for SDK clarity).
+    is_public: bool = False
 
 
 class AgentMarketplaceResponse(BaseModel):

@@ -32,6 +32,24 @@ def me_update(
     data = client.patch("/v2/me/settings", json=body)
     print(format_success(data))
 
+
+@me_app.command("publish")
+@run_command
+def me_publish():
+    """Opt this agent into the public marketplace (sets is_public=true)."""
+    client = make_client()
+    data = client.patch("/v2/me/settings", json={"is_public": True})
+    print(format_success(data))
+
+
+@me_app.command("unpublish")
+@run_command
+def me_unpublish():
+    """Hide this agent from the public marketplace (sets is_public=false)."""
+    client = make_client()
+    data = client.patch("/v2/me/settings", json={"is_public": False})
+    print(format_success(data))
+
 @app.command("rate-limit")
 @run_command
 def rate_limit():

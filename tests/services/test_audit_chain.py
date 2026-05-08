@@ -46,10 +46,13 @@ def _make_engine():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    # Only create the audit_log table (and Agent, because AuditLog has FK to agents)
-    from sthrip.db.models import Agent
+    # Only create the audit_log table (and Agent + IpSalt — AuditLog has FK
+    # to both via agent_id and ip_salt_id).
+    from sthrip.db.models import Agent, IpSalt
 
-    Base.metadata.create_all(engine, tables=[Agent.__table__, AuditLog.__table__])
+    Base.metadata.create_all(
+        engine, tables=[Agent.__table__, IpSalt.__table__, AuditLog.__table__],
+    )
     return engine
 
 
@@ -253,12 +256,14 @@ def test_entry_hmac_matches_recomputed():
             if row.request_body is not None else "null"
         # Use _ts_iso for consistent timezone-stripped timestamp matching
         from sthrip.services.audit_logger import _ts_iso
+        # Sprint 1 (AD-1): chain link consumes hex-encoded ip_hmac, not raw IP.
+        ip_for_chain = row.ip_hmac.hex() if row.ip_hmac else ""
         recomputed = _hash_chain_link(
             key=_TEST_AUDIT_KEY,
             prev_hmac=row.prev_hmac,
             action=row.action,
             agent_id=str(row.agent_id) if row.agent_id else "",
-            ip=row.ip_address or "",
+            ip=ip_for_chain,
             ts_iso=_ts_iso(row.created_at),
             details_json=details_json,
         )
@@ -306,7 +311,11 @@ def test_tamper_detect_action_field():
 
 
 def test_tamper_detect_ip_field():
-    """Flipping the ip_address field on a row causes verify_chain to report mismatch."""
+    """Flipping the ip_hmac field on a row causes verify_chain to report mismatch.
+
+    (Sprint 1, AD-1: ip_hmac replaces the legacy ip_address column; tampering
+    semantics are unchanged.)
+    """
     engine = _make_engine()
     SessionLocal = _session_factory(engine)
 
@@ -325,7 +334,8 @@ def test_tamper_detect_ip_field():
         from sthrip.db.models import AuditLog
 
         row = session.query(AuditLog).order_by(AuditLog.id).first()
-        row.ip_address = "9.9.9.9"
+        # Tamper: flip the ip_hmac to an arbitrary 32-byte value.
+        row.ip_hmac = b"\x99" * 32
         session.commit()
 
         from sthrip.services.audit_logger import verify_chain

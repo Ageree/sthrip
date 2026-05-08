@@ -73,10 +73,14 @@ def _make_mock_event(event_id: str, agent_id: str = "agent_1",
 
 def _make_mock_agent(agent_id: str = "agent_1",
                      webhook_url: str = "https://example.com/hook") -> MagicMock:
-    """Build a mock Agent with all attributes the fan-out code accesses."""
+    """Build a mock Agent.
+
+    Sprint 5 dropped ``Agent.webhook_url``; ``webhook_url`` is kept here as
+    a keyword for legacy test signatures but no longer set on the mock --
+    delivery happens via ``WebhookEndpointRepository`` mocks instead.
+    """
     mock = MagicMock()
     mock.id = agent_id
-    mock.webhook_url = webhook_url
     return mock
 
 
@@ -84,6 +88,30 @@ def _empty_endpoint_repo() -> MagicMock:
     """Return a WebhookEndpointRepository mock that returns no registered endpoints."""
     repo = MagicMock()
     repo.list_by_agent.return_value = []
+    return repo
+
+
+def _single_endpoint_repo(
+    url: str = "https://example.com/hook",
+    secret_plain: str = "whsec_test",
+) -> MagicMock:
+    """Mock repo with one active endpoint that decrypts to ``url``.
+
+    Sprint 5 replacement for the old ``mock_agent.webhook_url`` legacy path:
+    tests that previously asserted "agent has a single webhook URL" now
+    set up a single registered endpoint instead.
+    """
+    from sthrip.crypto import encrypt_value as _enc
+    endpoint = MagicMock()
+    endpoint.id = "ep_1"
+    endpoint.is_active = True
+    endpoint.failure_count = 0
+    endpoint.event_filters = None
+    endpoint.secret_encrypted = _enc(secret_plain)
+    repo = MagicMock()
+    repo.list_by_agent.return_value = [endpoint]
+    repo.get_url.return_value = url
+    repo.get_by_id.return_value = None
     return repo
 
 
@@ -292,7 +320,8 @@ class TestProcessEventPhase3StatusCheck:
         mock_agent_repo.get_webhook_secret.return_value = None
         mock_agent_repo_cls.return_value = mock_agent_repo
 
-        mock_endpoint_repo_cls.return_value = _empty_endpoint_repo()
+        # Sprint 5: deliver via a registered endpoint (legacy single-URL gone).
+        mock_endpoint_repo_cls.return_value = _single_endpoint_repo()
 
         svc = WebhookService()
         with patch.object(
@@ -455,7 +484,8 @@ class TestProcessEventHappyPathRegression:
         mock_agent_repo.get_webhook_secret.return_value = "whsec_ok"
         mock_agent_repo_cls.return_value = mock_agent_repo
 
-        mock_endpoint_repo_cls.return_value = _empty_endpoint_repo()
+        # Sprint 5: deliver via a registered endpoint (legacy single-URL gone).
+        mock_endpoint_repo_cls.return_value = _single_endpoint_repo()
 
         svc = WebhookService()
         with patch.object(
@@ -509,7 +539,8 @@ class TestProcessEventHappyPathRegression:
         mock_agent_repo.get_webhook_secret.return_value = None
         mock_agent_repo_cls.return_value = mock_agent_repo
 
-        mock_endpoint_repo_cls.return_value = _empty_endpoint_repo()
+        # Sprint 5: deliver via a registered endpoint (legacy single-URL gone).
+        mock_endpoint_repo_cls.return_value = _single_endpoint_repo()
 
         svc = WebhookService()
         with patch.object(
@@ -622,7 +653,8 @@ class TestProcessEventHappyPathRegression:
         mock_agent_repo.get_webhook_secret.return_value = "whsec_r"
         mock_agent_repo_cls.return_value = mock_agent_repo
 
-        mock_endpoint_repo_cls.return_value = _empty_endpoint_repo()
+        # Sprint 5: deliver via a registered endpoint (legacy single-URL gone).
+        mock_endpoint_repo_cls.return_value = _single_endpoint_repo()
 
         svc = WebhookService()
         with patch.object(

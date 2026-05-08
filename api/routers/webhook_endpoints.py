@@ -33,10 +33,17 @@ def _generate_secret() -> str:
 
 
 def _endpoint_to_response(endpoint) -> dict:
-    """Convert a WebhookEndpoint ORM object to a serialisable dict."""
+    """Convert a WebhookEndpoint ORM object to a serialisable dict.
+
+    The owner of the endpoint -- and only the owner (this route is
+    auth-gated by ``Depends(get_current_agent)``) -- gets the decrypted
+    URL back. If decryption fails the row is malformed; we surface an
+    opaque placeholder so the API never crashes mid-response.
+    """
+    decrypted_url = WebhookEndpointRepository.get_url(endpoint)
     return {
         "id": str(endpoint.id),
-        "url": endpoint.url,
+        "url": decrypted_url if decrypted_url is not None else "[unreadable]",
         "description": endpoint.description,
         "event_filters": endpoint.event_filters,
         "is_active": endpoint.is_active,
@@ -67,6 +74,15 @@ async def register_webhook(
             raise HTTPException(
                 status_code=400,
                 detail=f"Maximum {_MAX_ENDPOINTS_PER_AGENT} webhook endpoints per agent",
+            )
+
+        # Sprint 5: ``UniqueConstraint(agent_id, url)`` was dropped because
+        # uniqueness on Fernet ciphertexts is meaningless. Enforce it
+        # explicitly here via ``find_by_agent_and_url`` (decrypt + compare).
+        if repo.find_by_agent_and_url(agent.id, body.url) is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Webhook endpoint with this URL already exists for this agent",
             )
 
         secret_plain = _generate_secret()
@@ -148,8 +164,9 @@ async def test_webhook(
         if endpoint is None:
             raise HTTPException(status_code=404, detail="Webhook endpoint not found")
 
+        decrypted_url = WebhookEndpointRepository.get_url(endpoint)
         return {
             "message": "Test event queued",
             "webhook_id": str(webhook_id),
-            "url": endpoint.url,
+            "url": decrypted_url if decrypted_url is not None else "[unreadable]",
         }

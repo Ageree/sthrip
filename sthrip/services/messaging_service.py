@@ -13,6 +13,7 @@ from typing import List, Union
 from sqlalchemy.orm import Session
 
 from sthrip.db.models import Agent, MessageRelay
+from sthrip.services.payment_envelope_writer import apply_envelope
 
 logger = logging.getLogger("sthrip")
 
@@ -144,6 +145,16 @@ class MessagingService:
             sender_public_key=sender_public_key,
             size_bytes=size_bytes,
             expires_at=now + timedelta(hours=MESSAGE_TTL_HOURS),
+        )
+        # Sprint 3 dual-write: encrypt the participant graph (closes Lead Q5
+        # metadata-leak: ciphertext already hides content; envelope hides
+        # who messaged whom from anyone with ADMIN_API_KEY alone).
+        apply_envelope(
+            relay,
+            from_agent_id=from_uuid,
+            to_agent_id=to_uuid,
+            amount=None,
+            description=payment_id,
         )
         db.add(relay)
         db.flush()

@@ -38,18 +38,82 @@ router = APIRouter(prefix="/admin", tags=["admin-ui"])
 # All views must convert ORM objects to plain dicts *inside* the session scope
 # to avoid DetachedInstanceError on lazy-loaded relationships.
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sprint 4a: redacted-view helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+# When the operator keystore is unavailable (RemoteKeystore mode in production
+# until Sprint 4b lands the real backend), the admin UI cannot decrypt the
+# participant envelope. Rather than block the whole page, we render the
+# encrypted columns as opaque placeholders and surface only the bucketed
+# amount. ADMIN_API_KEY alone must NOT decrypt — that's the whole point of the
+# operator-side KEK split.
+
+_REDACTED_PLACEHOLDER = "encrypted"
+_REDACTED_AMOUNT_FALLBACK = "redacted"
+
+
+def _keystore_available() -> bool:
+    """Return True when the admin UI can decrypt envelopes for full view.
+
+    Stub mode (default in Sprint 3/4a) carries an in-process KEK so admin
+    decryption succeeds. Remote mode (Sprint 4b production) raises until
+    sthrip-op-keystore is deployed; we return False and the UI redacts.
+    """
+    try:
+        from sthrip.services.operator_keystore import get_keystore
+        keystore = get_keystore()
+        # Probe the KEK; remote mode raises NotImplementedError here.
+        kek = keystore.get_kek_for_envelope()
+        return kek is not None and len(kek) == 32
+    except Exception:
+        return False
+
+
+def _redact_participant(value):
+    """Replace a participant ID with the encrypted placeholder."""
+    return _REDACTED_PLACEHOLDER if value is not None else None
+
+
+def _redact_amount(row) -> str:
+    """Return the row's amount_bucket if present, else a generic placeholder.
+
+    The bucket is intentionally coarse (see envelope_crypto.amount_to_bucket)
+    so this leaks at most an order-of-magnitude rather than the exact figure.
+    """
+    bucket = getattr(row, "amount_bucket", None)
+    return bucket if bucket else _REDACTED_AMOUNT_FALLBACK
+
 def _serialize_agent(agent: Agent) -> dict:
     """Convert Agent ORM instance to a plain dict for template use.
 
     Keeps native Python types (datetime, enum, UUID, Decimal) so Jinja2
     templates can call .strftime(), .value, etc. without changes.
+
+    Sprint 5 (anonymity-hardening): the legacy ``agents.webhook_url`` column
+    was dropped. The admin UI never renders raw webhook URLs anymore -- it
+    surfaces a simple "encrypted webhook" indicator with a count of active
+    endpoints. The plaintext URL is only retrievable by the owning agent
+    via the authenticated ``GET /v2/webhook-endpoints`` route, never via
+    the admin dashboard.
     """
+    endpoint_count = 0
+    try:
+        # Lazy attribute may raise DetachedInstanceError outside a session;
+        # guard so the admin view stays robust.
+        endpoints = getattr(agent, "webhook_endpoints", []) or []
+        endpoint_count = sum(1 for ep in endpoints if getattr(ep, "is_active", True))
+    except Exception:
+        endpoint_count = 0
     return {
         "id": agent.id,
         "agent_name": agent.agent_name,
         "tier": agent.tier,
         "xmr_address": agent.xmr_address,
-        "webhook_url": agent.webhook_url,
+        # Sprint 5: never expose the URL. Templates that previously read
+        # `agent.webhook_url` will get None and fall back to the badge.
+        "webhook_url": None,
+        "webhook_endpoint_count": endpoint_count,
+        "has_encrypted_webhook": endpoint_count > 0,
         "is_active": getattr(agent, "is_active", True),
         "created_at": agent.created_at,
         "last_seen_at": agent.last_seen_at,
@@ -93,16 +157,26 @@ def _serialize_hub_route(tx: HubRoute) -> dict:
         "created_at": tx.created_at,
     }
 
-def _serialize_escrow(deal: "EscrowDeal") -> dict:
-    """Convert EscrowDeal ORM instance to a plain dict."""
+def _serialize_escrow(deal: "EscrowDeal", *, redacted: Optional[bool] = None) -> dict:
+    """Convert EscrowDeal ORM instance to a plain dict.
+
+    Sprint 4a redaction: when ``redacted`` is True (operator KEK
+    unavailable, e.g. RemoteKeystore mode without the service deployed),
+    participant IDs and the freeform description are replaced with
+    ``"encrypted"`` and the amount falls back to the coarse bucket. Pass
+    ``redacted=False`` to force full rendering even if the keystore probe
+    fails (used by tests). When ``redacted`` is None we probe the keystore.
+    """
+    if redacted is None:
+        redacted = not _keystore_available()
     return {
         "id": deal.id,
         "deal_hash": deal.deal_hash,
-        "buyer_id": deal.buyer_id,
-        "seller_id": deal.seller_id,
-        "amount": deal.amount,
+        "buyer_id": _redact_participant(deal.buyer_id) if redacted else deal.buyer_id,
+        "seller_id": _redact_participant(deal.seller_id) if redacted else deal.seller_id,
+        "amount": _redact_amount(deal) if redacted else deal.amount,
         "token": deal.token,
-        "description": deal.description,
+        "description": _REDACTED_PLACEHOLDER if redacted else deal.description,
         "fee_percent": deal.fee_percent,
         "fee_amount": deal.fee_amount,
         "release_amount": deal.release_amount,
@@ -120,6 +194,7 @@ def _serialize_escrow(deal: "EscrowDeal") -> dict:
         "completed_at": deal.completed_at,
         "cancelled_at": deal.cancelled_at,
         "expires_at": deal.expires_at,
+        "redacted": redacted,
     }
 
 

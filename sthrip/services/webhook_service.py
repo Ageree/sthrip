@@ -5,6 +5,7 @@ Retries with exponential backoff, fan-out to multiple registered endpoints
 
 import json
 import hashlib
+import os
 import threading
 import hmac
 import asyncio
@@ -12,9 +13,11 @@ import logging
 import aiohttp
 from fnmatch import fnmatch
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 logger = logging.getLogger("sthrip.webhook")
 from typing import Dict, Optional, List
+from uuid import UUID as UUID_Type
 from dataclasses import dataclass, field
 
 from ..db.database import get_db
@@ -23,6 +26,58 @@ from ..db.webhook_endpoint_repo import WebhookEndpointRepository
 from ..db.models import WebhookEvent, WebhookStatus, WebhookEndpoint
 from ..crypto import decrypt_value
 from .url_validator import validate_url_target, resolve_and_validate, SSRFBlockedError
+
+# Sprint 6: Tor SOCKS5 outbound for `.onion` webhook targets.
+# Per Lead Q4: only `.onion` targets ever route through Tor; clearnet
+# stays clearnet so we don't add latency or breakage to the common path.
+_ONION_FLAG_TRUE = frozenset({"1", "true", "yes", "on"})
+_DEFAULT_TOR_SOCKS_PROXY = "socks5h://127.0.0.1:9050"
+
+
+def _onion_routing_enabled() -> bool:
+    """Return True when the operator has opted into Tor routing.
+
+    Read on every call so flips don't require a redeploy. The function is
+    cheap (one env lookup + lowercase compare).
+    """
+    flag = os.environ.get("STHRIP_ONION_ENABLED", "").strip().lower()
+    return flag in _ONION_FLAG_TRUE
+
+
+def _is_onion_url(url: str) -> bool:
+    """True when the URL hostname endswith ``.onion`` (case-insensitive)."""
+    try:
+        host = urlparse(url).hostname or ""
+    except (ValueError, AttributeError):
+        return False
+    return host.lower().endswith(".onion")
+
+
+def _tor_socks_proxy() -> str:
+    """Return the configured Tor SOCKS5 proxy URL."""
+    return os.environ.get("STHRIP_TOR_SOCKS_PROXY", _DEFAULT_TOR_SOCKS_PROXY)
+
+
+def _hostname_or_redacted(url: str) -> str:
+    """Best-effort hostname for log messages without leaking the path/query."""
+    try:
+        host = urlparse(url).hostname or "<unknown>"
+    except (ValueError, AttributeError):
+        return "<unparseable>"
+    return host
+
+
+def _should_route_via_tor(url: str) -> bool:
+    """Should this outbound webhook be routed through the Tor SOCKS5 proxy?
+
+    Only when BOTH conditions hold:
+    1. ``STHRIP_ONION_ENABLED`` env var is truthy.
+    2. URL hostname endswith ``.onion``.
+
+    Per Lead decision Q4 — never route clearnet through Tor, even with the
+    flag on. That trade-off is documented in lead-decisions.md.
+    """
+    return _onion_routing_enabled() and _is_onion_url(url)
 
 @dataclass
 class WebhookResult:
@@ -93,6 +148,91 @@ class WebhookService:
         ).hexdigest()
         return f"sha256={signature}"
     
+    async def _send_webhook_via_tor(
+        self,
+        url: str,
+        payload: Dict,
+        secret: Optional[str] = None,
+        timeout: int = 30,
+    ) -> WebhookResult:
+        """Deliver a webhook to a ``.onion`` URL through the Tor SOCKS5 proxy.
+
+        Uses ``aiohttp_socks.ProxyConnector`` so the existing aiohttp session
+        management contract is preserved. We do NOT pin to a resolved IP —
+        the Tor client resolves the onion address inside the circuit
+        (``socks5h://``), so DNS-rebinding defences from the clearnet path
+        do not apply here.
+
+        Imports ``aiohttp_socks`` lazily so installs without the package
+        (e.g. unit tests that never trigger this branch) keep working.
+        """
+        try:
+            from aiohttp_socks import ProxyConnector  # type: ignore
+        except ImportError:
+            logger.error(
+                "aiohttp_socks not installed; cannot deliver to %s via Tor",
+                _hostname_or_redacted(url),
+            )
+            return WebhookResult(
+                success=False,
+                error="aiohttp_socks not installed for Tor outbound",
+            )
+
+        proxy_url = _tor_socks_proxy()
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Sthrip-Webhook/1.0",
+        }
+        import time as _time
+        timestamp = str(int(_time.time()))
+        headers["X-Sthrip-Timestamp"] = timestamp
+        if secret:
+            headers["X-Sthrip-Signature"] = self._sign_payload(
+                payload, secret, timestamp,
+            )
+        headers["X-Sthrip-Event-ID"] = payload.get("event_id", "unknown")
+
+        try:
+            connector = ProxyConnector.from_url(proxy_url)
+            # We deliberately use a NEW session here — the shared
+            # ``self._session`` doesn't carry the SOCKS connector and we
+            # don't want to taint the global pool with a Tor-only one.
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as response:
+                    body_bytes = await response.content.read(2048)
+                    body = body_bytes.decode("utf-8", errors="replace")
+                    success = 200 <= response.status < 300
+                    return WebhookResult(
+                        success=success,
+                        response_code=response.status,
+                        response_body=body[:1000] if body else None,
+                        error=None if success else f"HTTP {response.status}",
+                    )
+        except asyncio.TimeoutError:
+            return WebhookResult(success=False, error="Request timeout (tor)")
+        except aiohttp.ClientError:
+            return WebhookResult(
+                success=False,
+                error="Client error: connection failed (tor)",
+            )
+        except Exception:
+            logger.exception(
+                "Unexpected error delivering webhook via Tor to %s",
+                _hostname_or_redacted(url),
+            )
+            return WebhookResult(
+                success=False,
+                error="Unexpected error during Tor webhook delivery",
+            )
+
     async def _send_webhook(
         self,
         url: str,
@@ -100,7 +240,24 @@ class WebhookService:
         secret: Optional[str] = None,
         timeout: int = 30
     ) -> WebhookResult:
-        """Send single webhook request, pinning to resolved IP to prevent DNS rebinding."""
+        """Send single webhook request, pinning to resolved IP to prevent DNS rebinding.
+
+        Sprint 6: when the target is a ``.onion`` AND ``STHRIP_ONION_ENABLED``
+        is set, route through the Tor SOCKS5 proxy instead. The Tor client
+        resolves the onion address itself (``socks5h://``), so SSRF /
+        IP-pinning are bypassed for that path — they are clearnet defences
+        and meaningless for an onion service. Clearnet targets keep the
+        existing IP-pinning DNS-rebinding defence.
+        """
+        # Sprint 6: Tor outbound for `.onion` targets.
+        if _should_route_via_tor(url):
+            return await self._send_webhook_via_tor(
+                url=url,
+                payload=payload,
+                secret=secret,
+                timeout=timeout,
+            )
+
         # SSRF validation + DNS resolution: pin to resolved IP
         try:
             validated_url, resolved_ip = resolve_and_validate(url)
@@ -111,7 +268,7 @@ class WebhookService:
             )
 
         # Build IP-pinned URL: replace hostname with resolved IP
-        from urllib.parse import urlparse, urlunparse
+        from urllib.parse import urlunparse
         parsed = urlparse(validated_url)
         original_hostname = parsed.hostname
         # Reconstruct netloc with IP instead of hostname (preserve port if any)
@@ -284,15 +441,13 @@ class WebhookService:
                 webhook_repo.mark_delivered(event_id, 0, "Agent not found")
                 return WebhookResult(success=True)
 
-            # Capture legacy single-URL config (backward compat)
-            legacy_url = agent.webhook_url
-            legacy_secret = (
-                agent_repo.get_webhook_secret(agent.id) if legacy_url else None
-            )
-
-            # Gather registered endpoints: active, under failure threshold, matching event type
+            # Sprint 5: legacy ``agents.webhook_url`` column dropped.
+            # All targets come from ``webhook_endpoints`` only. URLs are
+            # decrypted in-memory via ``WebhookEndpointRepository.get_url``;
+            # any decrypt failure → endpoint disabled (defense in depth).
             registered_endpoints = endpoint_repo.list_by_agent(agent.id)
             delivery_targets: List[Dict] = []
+            disabled_endpoint_ids: List[UUID_Type] = []
 
             for ep in registered_endpoints:
                 if not ep.is_active:
@@ -300,6 +455,20 @@ class WebhookService:
                 if ep.failure_count >= self._MAX_ENDPOINT_FAILURES:
                     continue
                 if not self._matches_event_filter(event.event_type, ep.event_filters):
+                    continue
+                ep_url = endpoint_repo.get_url(ep)
+                if not ep_url:
+                    # Decrypt failure: disable the endpoint inline so it is
+                    # never delivered to with an unknown target. The
+                    # endpoint stays in the DB for operator inspection.
+                    logger.warning(
+                        "Endpoint %s (agent %s) has unreadable url_encrypted; "
+                        "disabling.",
+                        ep.id, agent.id,
+                    )
+                    ep.is_active = False
+                    ep.disabled_at = datetime.now(timezone.utc)
+                    disabled_endpoint_ids.append(ep.id)
                     continue
                 try:
                     ep_secret = decrypt_value(ep.secret_encrypted)
@@ -311,19 +480,9 @@ class WebhookService:
                     continue
                 delivery_targets.append({
                     "endpoint_id": ep.id,
-                    "url": ep.url,
+                    "url": ep_url,
                     "secret": ep_secret,
                     "is_legacy": False,
-                })
-
-            # Add legacy URL if present (only when it is not already covered by a registered endpoint)
-            registered_urls = {t["url"] for t in delivery_targets}
-            if legacy_url and legacy_url not in registered_urls:
-                delivery_targets.append({
-                    "endpoint_id": None,
-                    "url": legacy_url,
-                    "secret": legacy_secret,
-                    "is_legacy": True,
                 })
 
             # If nothing to deliver to, mark as delivered
@@ -425,9 +584,12 @@ class WebhookService:
                     if ep.failure_count >= self._MAX_ENDPOINT_FAILURES:
                         ep.is_active = False
                         ep.disabled_at = now
+                        # Sprint 5: do NOT log the URL (it's encrypted at rest;
+                        # logging the plaintext here would defeat that). Log
+                        # the endpoint id only.
                         logger.warning(
-                            "Endpoint %s (url=%s) disabled after %d consecutive failures",
-                            ep.id, ep.url, ep.failure_count,
+                            "Endpoint %s disabled after %d consecutive failures",
+                            ep.id, ep.failure_count,
                         )
 
         return WebhookResult(success=any_success)

@@ -66,12 +66,45 @@ logger = logging.getLogger("sthrip.audit")
 _GENESIS_HMAC: str = hashlib.sha256(b"genesis").hexdigest()
 
 # ---------------------------------------------------------------------------
-# Sensitive keys to redact (unchanged from original).
+# Sensitive keys to redact within an allowlisted value (defence-in-depth for
+# nested dicts that happen to be allowlisted at the top level).  Replaces the
+# old blocklist-only model — top-level filtering is now allowlist-based via
+# ``_AUDIT_REQUEST_BODY_ALLOWLIST``.
 # ---------------------------------------------------------------------------
 _SENSITIVE_KEYS = frozenset({
     "api_key", "password", "secret", "mnemonic", "seed",
     "webhook_secret", "admin_key", "token", "credentials",
 })
+
+# ---------------------------------------------------------------------------
+# Per-action allowlist for ``request_body`` storage.  Default deny — actions
+# absent from this map persist ``request_body=None`` (Sprint 1, AD-1).
+#
+# NOTE: when adding a new ``log_event(...)`` call-site in routers/services,
+# add the action and its allowed keys here.  The intent is that the audit
+# trail records *what* happened (action + agent_id + ip_hmac) without
+# capturing arbitrary payload fields that may include counterparty
+# identifiers, free-form descriptions, or pricing details.
+# ---------------------------------------------------------------------------
+_AUDIT_REQUEST_BODY_ALLOWLIST: dict[str, frozenset[str]] = {
+    # Auth & agent lifecycle ------------------------------------------------
+    "agent.registered": frozenset({"agent_name"}),
+    "agent.verified": frozenset({"agent_name"}),
+    "agent.disabled": frozenset({"agent_name"}),
+    "agent.settings_updated": frozenset({"old", "new"}),
+    "agent.key_rotated": frozenset(),
+    "auth.failed": frozenset({"reason"}),
+    # Payments / balance ----------------------------------------------------
+    "payment.hub_routing": frozenset({"payment_id", "to_agent", "amount"}),
+    "balance.deposit": frozenset({"mode", "amount"}),
+    "balance.withdraw": frozenset({"amount", "to_address", "mode"}),
+    # Admin -----------------------------------------------------------------
+    "admin.stats_viewed": frozenset(),
+    "admin.action": frozenset({"target", "result"}),
+    # Test placeholder ------------------------------------------------------
+    "test.action": frozenset({"action"}),
+    "verify.action": frozenset({"action"}),
+}
 
 # ---------------------------------------------------------------------------
 # Advisory lock constant for Postgres (arbitrary unique 64-bit integer).
@@ -107,10 +140,15 @@ class ChainStatus:
 # ---------------------------------------------------------------------------
 
 def _sanitize(data: Optional[dict]) -> Optional[dict]:
-    """Recursively redact sensitive keys in a details dict."""
+    """Recursively redact sensitive keys in a details dict.
+
+    Defence-in-depth: even when a key has been allowlisted at the top level,
+    nested dicts still get their sensitive keys masked.  Returns a NEW dict
+    (immutable input contract).
+    """
     if data is None:
         return None
-    result = {}
+    result: dict = {}
     for k, v in data.items():
         if k.lower() in _SENSITIVE_KEYS:
             result[k] = "***"
@@ -121,6 +159,29 @@ def _sanitize(data: Optional[dict]) -> Optional[dict]:
         else:
             result[k] = v
     return result
+
+
+def _apply_allowlist(action: str, details: Optional[dict]) -> Optional[dict]:
+    """Filter ``details`` to the keys allowlisted for ``action``.
+
+    Returns ``None`` when:
+    - ``details`` is None / not a dict;
+    - the action has no allowlist entry (default deny);
+    - the action's allowlist is empty;
+    - the filtered result would be empty.
+
+    Returns a NEW dict containing only allowlisted keys, with nested
+    sensitive-key redaction applied via ``_sanitize``.
+    """
+    if details is None or not isinstance(details, dict):
+        return None
+    allowed = _AUDIT_REQUEST_BODY_ALLOWLIST.get(action)
+    if not allowed:
+        return None
+    filtered = {k: v for k, v in details.items() if k in allowed}
+    if not filtered:
+        return None
+    return _sanitize(filtered)
 
 
 def _canonical_json(obj: Any) -> str:
@@ -281,7 +342,7 @@ def log_event(
         (monotonic chain) is required.
     """
     try:
-        sanitized = _sanitize(details)
+        sanitized = _apply_allowlist(action, details)
 
         if db is not None:
             # Caller-owned session: the advisory lock on Postgres is xact-scoped
@@ -367,12 +428,39 @@ def _write_with_chain(
         prev_hmac = _get_prev_hmac(db)
         details_json = _canonical_json(sanitized)
 
+        # Sprint 1 (AD-1): hash the raw IP under the active rotating salt
+        # before anything else.  The chain link uses the hex-encoded HMAC
+        # in the same canonical slot the raw IP used to occupy.
+        ip_hmac_bytes: Optional[bytes] = None
+        ip_salt_id: Optional[Any] = None
+        ip_hex_for_chain = ""
+        if ip_address:
+            try:
+                # Local import avoids a circular import: ip_salt_service
+                # imports IpSalt from sthrip.db.models, which is fine, but
+                # we want this module loadable even before the new table
+                # exists (e.g. inside a partially-applied migration test).
+                from sthrip.services.ip_salt_service import (
+                    current_ip_salt, compute_ip_hmac,
+                )
+                ip_salt_id, salt_secret = current_ip_salt(db)
+                ip_hmac_bytes = compute_ip_hmac(ip_address, salt_secret)
+                ip_hex_for_chain = ip_hmac_bytes.hex()
+            except Exception:
+                # Salt service unavailable (e.g. test setup without IpSalt
+                # table) — fall back to NOT persisting the IP at all.  Audit
+                # logging must never break the main request, and we MUST NOT
+                # persist the raw IP as a fallback.
+                logger.warning(
+                    "ip_salt_service unavailable; ip_hmac will be NULL", exc_info=True,
+                )
+
         entry_hmac = _hash_chain_link(
             key=key,
             prev_hmac=prev_hmac,
             action=action,
             agent_id=str(agent_id) if agent_id else "",
-            ip=ip_address or "",
+            ip=ip_hex_for_chain,
             ts_iso=_ts_iso(now),
             details_json=details_json,
         )
@@ -382,7 +470,8 @@ def _write_with_chain(
             action=action,
             resource_type=resource_type,
             resource_id=resource_id,
-            ip_address=ip_address,
+            ip_hmac=ip_hmac_bytes,
+            ip_salt_id=ip_salt_id,
             request_method=request_method,
             request_path=request_path,
             request_body=sanitized,
@@ -469,12 +558,15 @@ def verify_chain(
         # Recompute entry_hmac and compare.
         details_json = _canonical_json(row.request_body)
         ts_iso = _ts_iso(row.created_at)
+        # Sprint 1 (AD-1): the chain link consumes the hex-encoded ip_hmac
+        # in the slot the raw IP used to occupy.
+        ip_for_chain = row.ip_hmac.hex() if row.ip_hmac else ""
         recomputed = _hash_chain_link(
             key=key,
             prev_hmac=row.prev_hmac,
             action=row.action,
             agent_id=str(row.agent_id) if row.agent_id else "",
-            ip=row.ip_address or "",
+            ip=ip_for_chain,
             ts_iso=ts_iso,
             details_json=details_json,
         )

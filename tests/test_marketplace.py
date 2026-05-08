@@ -21,11 +21,30 @@ def _auth(api_key: str) -> dict:
 
 
 def _register(client, name: str, **kwargs) -> str:
-    """Register an agent and return its API key."""
+    """Register an agent and PUBLISH them in the marketplace.
+
+    Sprint 2 (anonymity-hardening) introduced ``is_public`` opt-in: default
+    registration leaves the agent hidden. Existing marketplace tests in this
+    file assert the agent appears in marketplace/discover/profile lookups, so
+    after registering we explicitly flip ``is_public=true`` to preserve their
+    intent. Tests that want to verify the default-private behaviour live in
+    ``test_marketplace_is_public.py``.
+    """
     payload = {"agent_name": name, "xmr_address": _VALID_XMR_ADDR, **kwargs}
     r = client.post("/v2/agents/register", json=payload)
     assert r.status_code == 201, f"Registration of '{name}' failed: {r.text}"
-    return r.json()["api_key"]
+    api_key = r.json()["api_key"]
+
+    # Opt-in to marketplace so the existing assertions about visibility hold.
+    publish_resp = client.patch(
+        "/v2/me/settings",
+        json={"is_public": True},
+        headers=_auth(api_key),
+    )
+    assert publish_resp.status_code == 200, (
+        f"publish '{name}' failed: {publish_resp.text}"
+    )
+    return api_key
 
 
 # ---------------------------------------------------------------------------

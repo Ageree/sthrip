@@ -42,6 +42,20 @@ class MilestoneRepository:
         Returns:
             List of created EscrowMilestone ORM objects in sequence order.
         """
+        # Sprint 3 dual-write: pull buyer/seller from the parent deal so each
+        # milestone row carries its own envelope. Lookup is one query and only
+        # happens at create-time, so the runtime cost is bounded. Lazy import
+        # keeps the db package free of a services-layer cycle.
+        from sthrip.services.payment_envelope_writer import apply_envelope
+
+        parent_deal: Optional[models.EscrowDeal] = (
+            self.db.query(models.EscrowDeal)
+            .filter(models.EscrowDeal.id == escrow_id)
+            .first()
+        )
+        buyer_id = parent_deal.buyer_id if parent_deal is not None else None
+        seller_id = parent_deal.seller_id if parent_deal is not None else None
+
         created: List[models.EscrowMilestone] = []
         for idx, m in enumerate(milestones_data, start=1):
             milestone = models.EscrowMilestone(
@@ -52,6 +66,13 @@ class MilestoneRepository:
                 delivery_timeout_hours=m["delivery_timeout_hours"],
                 review_timeout_hours=m["review_timeout_hours"],
                 status=MilestoneStatus.PENDING,
+            )
+            apply_envelope(
+                milestone,
+                from_agent_id=buyer_id,
+                to_agent_id=seller_id,
+                amount=m["amount"],
+                description=m["description"],
             )
             self.db.add(milestone)
             created.append(milestone)
@@ -64,10 +85,15 @@ class MilestoneRepository:
         self, escrow_id: UUID, sequence: int,
     ) -> Optional[models.EscrowMilestone]:
         """Get a milestone by escrow ID and sequence number."""
-        return self.db.query(models.EscrowMilestone).filter(
+        ms = self.db.query(models.EscrowMilestone).filter(
             models.EscrowMilestone.escrow_id == escrow_id,
             models.EscrowMilestone.sequence == sequence,
         ).first()
+        if ms is not None:
+            # Sprint 4a dual-read: feature-flag-gated envelope swap.
+            from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+            apply_envelope_to_row(ms)
+        return ms
 
     def get_by_escrow_and_sequence_for_update(
         self, escrow_id: UUID, sequence: int,
@@ -84,12 +110,17 @@ class MilestoneRepository:
 
     def get_by_escrow(self, escrow_id: UUID) -> List[models.EscrowMilestone]:
         """Get all milestones for an escrow, ordered by sequence."""
-        return (
+        rows = (
             self.db.query(models.EscrowMilestone)
             .filter(models.EscrowMilestone.escrow_id == escrow_id)
             .order_by(models.EscrowMilestone.sequence)
             .all()
         )
+        # Sprint 4a dual-read: feature-flag-gated envelope swap.
+        from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+        for ms in rows:
+            apply_envelope_to_row(ms)
+        return rows
 
     # ── State transitions ────────────────────────────────────────────────
 

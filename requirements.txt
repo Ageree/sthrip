@@ -3,7 +3,7 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.5.0
 pydantic-settings>=2.0.0
-python-multipart>=0.0.26
+python-multipart>=0.0.6
 jinja2>=3.1.0
 
 # Database
@@ -17,7 +17,12 @@ redis>=5.0.0
 # HTTP Client
 requests>=2.33.0
 aiohttp>=3.9.0
-httpx>=0.25.0
+httpx[socks]>=0.27.0
+# Tor SOCKS5 outbound for `.onion` webhook delivery (Sprint 6).
+# Used only when STHRIP_ONION_ENABLED=true and target endswith ".onion".
+aiohttp-socks>=0.8.4
+# requests SOCKS5 support for SDK Client(use_tor=True).
+PySocks>=1.7.1
 
 # Security
 cryptography>=41.0.0

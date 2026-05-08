@@ -52,15 +52,31 @@ class EscrowRepository:
             expires_at=accept_deadline,
         )
 
+        # Sprint 3 dual-write: encrypted participant envelope alongside FKs.
+        # Lazy import to avoid services↔db circular dependency.
+        from sthrip.services.payment_envelope_writer import apply_envelope
+        apply_envelope(
+            deal,
+            from_agent_id=buyer_id,
+            to_agent_id=seller_id,
+            amount=amount,
+            description=description,
+        )
+
         self.db.add(deal)
         self.db.flush()
         return deal
 
     def get_by_id(self, deal_id: UUID) -> Optional[models.EscrowDeal]:
         """Get deal by ID."""
-        return self.db.query(models.EscrowDeal).filter(
+        deal = self.db.query(models.EscrowDeal).filter(
             models.EscrowDeal.id == deal_id
         ).first()
+        if deal is not None:
+            # Sprint 4a dual-read: feature-flag-gated envelope swap.
+            from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+            apply_envelope_to_row(deal)
+        return deal
 
     def get_by_id_for_update(self, deal_id: UUID) -> Optional[models.EscrowDeal]:
         """Get deal by ID with row-level lock."""
@@ -74,9 +90,13 @@ class EscrowRepository:
 
     def get_by_hash(self, deal_hash: str) -> Optional[models.EscrowDeal]:
         """Get deal by hash."""
-        return self.db.query(models.EscrowDeal).filter(
+        deal = self.db.query(models.EscrowDeal).filter(
             models.EscrowDeal.deal_hash == deal_hash
         ).first()
+        if deal is not None:
+            from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+            apply_envelope_to_row(deal)
+        return deal
 
     def list_by_agent(
         self,
@@ -112,6 +132,10 @@ class EscrowRepository:
             .limit(limit)
             .all()
         )
+        # Sprint 4a dual-read: feature-flag-gated envelope swap.
+        from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+        for deal in items:
+            apply_envelope_to_row(deal)
         return items, total
 
     def accept(self, deal_id: UUID, delivery_timeout_hours: int) -> int:
@@ -199,7 +223,7 @@ class EscrowRepository:
     def get_pending_expiry(self) -> List[models.EscrowDeal]:
         """Get escrows that have passed their deadline and need auto-resolution."""
         now = datetime.now(timezone.utc)
-        return self.db.query(models.EscrowDeal).filter(
+        rows = self.db.query(models.EscrowDeal).filter(
             models.EscrowDeal.status.in_([
                 EscrowStatus.CREATED,
                 EscrowStatus.ACCEPTED,
@@ -207,3 +231,8 @@ class EscrowRepository:
             ]),
             models.EscrowDeal.expires_at <= now,
         ).all()
+        # Sprint 4a dual-read: feature-flag-gated envelope swap.
+        from sthrip.services.payment_envelope_reader import apply_envelope_to_row
+        for row in rows:
+            apply_envelope_to_row(row)
+        return rows

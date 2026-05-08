@@ -89,7 +89,13 @@ def test_sanitize_empty_dict():
 
 
 def test_log_event_sanitizes_details():
-    """CRIT-5: log_event applies sanitization to details before storing."""
+    """Sprint 1 (AD-1): allowlist filters disallowed keys entirely.
+
+    Previously (CRIT-5 legacy) sensitive keys were redacted to '***'.
+    Sprint 1 replaces the blocklist with a per-action allowlist (default
+    deny), so 'api_key' is dropped rather than stubbed.  The 'test.action'
+    allowlist is {'action'}.
+    """
     from sthrip.services.audit_logger import log_event
     mock_db = MagicMock()
     log_event(
@@ -99,5 +105,6 @@ def test_log_event_sanitizes_details():
     )
     mock_db.add.assert_called_once()
     entry = mock_db.add.call_args[0][0]
-    assert entry.request_body["api_key"] == "***"
-    assert entry.request_body["action"] == "test"
+    # api_key is dropped (not in allowlist), action survives.
+    assert "api_key" not in (entry.request_body or {})
+    assert entry.request_body == {"action": "test"}

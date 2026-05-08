@@ -70,6 +70,9 @@ class AgentProfile:
     description: Optional[str]
     accepts_escrow: bool
 
+    # Sprint 2 (anonymity-hardening): marketplace visibility opt-in flag.
+    is_public: bool
+
     # Metadata
     verified_at: Optional[str]
     last_seen_at: Optional[str]
@@ -140,6 +143,11 @@ class AgentRegistry:
                 if accepts_escrow is not None:
                     agent.accepts_escrow = accepts_escrow
 
+                # Sprint 2 (anonymity-hardening): registration NEVER opts the
+                # agent into the marketplace. Visibility flips only via the
+                # explicit PATCH /v2/me/settings {"is_public": true} flow.
+                agent.is_public = False
+
                 db.flush()
             except IntegrityError:
                 db.rollback()
@@ -155,30 +163,45 @@ class AgentRegistry:
                 "message": "Store API key and webhook secret securely - they cannot be retrieved again"
             }
 
-    def get_profile(self, agent_name: str) -> Optional[AgentProfile]:
-        """Get public agent profile"""
+    def get_profile(
+        self,
+        agent_name: str,
+        requesting_agent_id: Optional[str] = None,
+    ) -> Optional[AgentProfile]:
+        """Get public agent profile.
+
+        Sprint 2 (anonymity-hardening): requires ``Agent.is_public=True`` for
+        non-self callers. Self-callers (``requesting_agent_id`` matches the
+        target's id) bypass the gate so authenticated agents can always read
+        their own profile.
+
+        Returns ``None`` (caller surfaces as 404) when the gate blocks access.
+        """
         with get_db() as db:
             agent = db.query(Agent).filter(
                 Agent.agent_name == agent_name,
                 Agent.is_active == True
             ).first()
-            
+
             if not agent:
                 return None
-            
-            # Get reputation
-            rep = None
-            if agent.reputation:
-                rep = agent.reputation
-            
+
+            if not self._is_self(agent, requesting_agent_id) and not bool(agent.is_public):
+                return None
+
             return self._agent_to_profile(agent)
 
     def get_profile_by_address(
         self,
         address: str,
-        network: str = "monero"
+        network: str = "monero",
+        requesting_agent_id: Optional[str] = None,
     ) -> Optional[AgentProfile]:
-        """Find agent by wallet address"""
+        """Find agent by wallet address.
+
+        Same is_public gate as ``get_profile`` — non-self callers see ``None``
+        (404 in the router) when the agent has not opted in.
+        """
         with get_db() as db:
             if network == "monero":
                 agent = db.query(Agent).filter(Agent.xmr_address == address).first()
@@ -188,11 +211,18 @@ class AgentRegistry:
                 agent = db.query(Agent).filter(Agent.solana_address == address).first()
             else:
                 return None
-            
+
             if not agent:
                 return None
-            
-            return self.get_profile(agent.agent_name)
+
+            return self.get_profile(agent.agent_name, requesting_agent_id=requesting_agent_id)
+
+    @staticmethod
+    def _is_self(agent: Agent, requesting_agent_id: Optional[str]) -> bool:
+        """True when the caller is the same entity as the target agent."""
+        if requesting_agent_id is None:
+            return False
+        return str(agent.id) == str(requesting_agent_id)
     
     def discover_agents(
         self,
@@ -217,9 +247,13 @@ class AgentRegistry:
             offset: Pagination offset
         """
         with get_db() as db:
+            # Sprint 2: marketplace/discovery filter — only opt-in agents.
             query = db.query(Agent).options(
                 joinedload(Agent.reputation)
-            ).filter(Agent.is_active == True)
+            ).filter(
+                Agent.is_active == True,
+                Agent.is_public == True,
+            )
 
             if tier:
                 query = query.filter(Agent.tier == tier)
@@ -256,9 +290,17 @@ class AgentRegistry:
         capability: Optional[str] = None,
         accepts_escrow: Optional[bool] = None,
     ) -> int:
-        """Count agents matching the given filters."""
+        """Count agents matching the given filters.
+
+        Sprint 2: only counts opt-in (``is_public=True``) agents so the
+        ``total`` value returned alongside paginated discovery is consistent
+        with the items list.
+        """
         with get_db() as db:
-            query = db.query(func.count(Agent.id)).filter(Agent.is_active == True)
+            query = db.query(func.count(Agent.id)).filter(
+                Agent.is_active == True,
+                Agent.is_public == True,
+            )
             if tier:
                 query = query.filter(Agent.tier == tier)
             if verified_only:
@@ -278,15 +320,16 @@ class AgentRegistry:
         query_str: str,
         limit: int = 20
     ) -> List[AgentProfile]:
-        """Search agents by name"""
+        """Search agents by name. Sprint 2: hides non-public agents."""
         with get_db() as db:
             agents = db.query(Agent).options(
                 joinedload(Agent.reputation)
             ).filter(
                 Agent.agent_name.ilike(f"%{escape_ilike(query_str)}%"),
-                Agent.is_active == True
+                Agent.is_active == True,
+                Agent.is_public == True,
             ).limit(limit).all()
-            
+
             return [self._agent_to_profile(a) for a in agents if self._agent_to_profile(a)]
     
     def get_leaderboard(self, limit: int = 100) -> List[Dict]:
@@ -404,6 +447,7 @@ class AgentRegistry:
             pricing=agent.pricing if agent.pricing else {},
             description=agent.description,
             accepts_escrow=agent.accepts_escrow if agent.accepts_escrow is not None else True,
+            is_public=bool(agent.is_public),
             verified_at=agent.verified_at.isoformat() if agent.verified_at else None,
             last_seen_at=agent.last_seen_at.isoformat() if agent.last_seen_at else None,
             created_at=agent.created_at.isoformat()

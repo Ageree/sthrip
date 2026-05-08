@@ -142,6 +142,8 @@ async def register_agent(reg: AgentRegistration, request: Request):
             api_key=result["api_key"],
             webhook_secret=result["webhook_secret"],
             created_at=result["created_at"],
+            # Sprint 2: registration never opts into marketplace.
+            is_public=False,
         )
     except ValueError as e:
         logger.warning("Registration failed: %s", e)
@@ -347,6 +349,7 @@ async def marketplace(
             "capabilities": p.capabilities,
             "pricing": p.pricing,
             "accepts_escrow": p.accepts_escrow,
+            "is_public": p.is_public,
             "tier": p.tier,
             "trust_score": p.trust_score,
             "verified_at": p.verified_at,
@@ -368,6 +371,8 @@ async def get_agent_profile(agent_name: str, request: Request):
     """Get public agent profile"""
     _check_ip_rate_limit(request, "discovery", per_ip_limit=60, global_limit=1000, window_seconds=60)
 
+    # Sprint 2: anonymous endpoint — no requesting_agent_id, gate enforces 404
+    # for non-public agents. Self-lookup uses /v2/me which has auth.
     registry = get_registry()
     profile = registry.get_profile(agent_name)
     if not profile:
@@ -385,6 +390,7 @@ async def get_agent_profile(agent_name: str, request: Request):
         pricing=profile.pricing,
         description=profile.description,
         accepts_escrow=profile.accepts_escrow,
+        is_public=profile.is_public,
     )
 
 
@@ -434,6 +440,7 @@ async def discover_agents(
                 pricing=p.pricing,
                 description=p.description,
                 accepts_escrow=p.accepts_escrow,
+                is_public=p.is_public,
             )
             for p in profiles
         ],
@@ -473,6 +480,8 @@ async def get_current_agent_info(agent: Agent = Depends(get_current_agent)):
         "pricing": agent.pricing if agent.pricing else {},
         "description": agent.description,
         "accepts_escrow": agent.accepts_escrow if agent.accepts_escrow is not None else True,
+        # Sprint 2: surface visibility flag on /v2/me so the agent can introspect.
+        "is_public": bool(agent.is_public),
     }
 
 
@@ -493,15 +502,46 @@ async def update_agent_settings(
     old_values = {}
     new_values = {}
 
-    # Scalar fields (coerce privacy_level to enum)
+    # Sprint 5 (anonymity-hardening): webhook_url is no longer a column on
+    # ``agents``. When the caller supplies one we upsert it as an encrypted
+    # WebhookEndpoint row instead. The PATCH still accepts the field for
+    # backward compatibility with older SDK / CLI clients.
+    if settings.webhook_url is not None:
+        from sthrip.db.webhook_endpoint_repo import WebhookEndpointRepository
+        from sthrip.crypto import encrypt_value
+        endpoint_repo = WebhookEndpointRepository(db)
+        # Reuse the agent's existing webhook_secret if present (so the agent
+        # can keep verifying signatures). Otherwise mint a fresh one. We
+        # only generate-and-store; we never echo the new secret here -- the
+        # dedicated /v2/webhook-endpoints/* routes are the canonical place
+        # to mint+receive secrets.
+        secret_blob = db_agent.webhook_secret
+        if not secret_blob:
+            import secrets as _secrets
+            fresh = f"whsec_{_secrets.token_hex(24)}"
+            secret_blob = encrypt_value(fresh)
+            db_agent.webhook_secret = secret_blob
+        endpoint_repo.upsert_by_url(
+            agent_id=db_agent.id,
+            url=settings.webhook_url,
+            secret_encrypted=secret_blob,
+            description="legacy-patch",
+        )
+        # Surface the change in the audit trail without leaking the URL.
+        old_values["webhook_url"] = "[encrypted]"
+        new_values["webhook_url"] = "[encrypted]"
+
+    # Scalar fields (coerce privacy_level to enum). webhook_url is handled
+    # above via the endpoint repo, NOT as a scalar Agent column.
     scalar_fields = {
-        "webhook_url": settings.webhook_url,
         "privacy_level": settings.privacy_level,
         "xmr_address": settings.xmr_address,
         "base_address": settings.base_address,
         "solana_address": settings.solana_address,
         "description": settings.description,
         "accepts_escrow": settings.accepts_escrow,
+        # Sprint 2: marketplace visibility opt-in / opt-out.
+        "is_public": settings.is_public,
     }
     for field, value in scalar_fields.items():
         if value is not None:
