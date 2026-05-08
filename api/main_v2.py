@@ -36,6 +36,7 @@ from sthrip.services.webhook_service import get_webhook_service
 from sthrip.services.rate_limiter import get_rate_limiter, RateLimitExceeded
 
 from api.middleware import configure_middleware
+from api.middleware.tier_limit import configure_tier_limit_middleware
 from api.helpers import get_hub_mode, get_wallet_service, create_deposit_monitor
 from api.docs import setup_docs
 from api.routers import health, agents, payments, balance, webhooks, admin, wellknown, escrow, spending_policy, webhook_endpoints, messages, reputation, multisig_escrow, sla, reviews, matchmaking, subscriptions, channels, streams, conversion, swap, lending, treasury, multi_party, conditional_payments, split_payments
@@ -568,6 +569,185 @@ async def _recurring_payment_loop():
             logger.exception("Recurring payment loop error")
 
 
+async def _purge_loop():
+    """Phase 2 Sprint 1: daily auto-purge at 03:00 UTC.
+
+    Deletes terminal-state records older than ``STHRIP_DATA_RETENTION_DAYS``
+    from transactions, escrow_deals, escrow_milestones, message_relays, and
+    rolling-resets the audit_log HMAC chain. Writes one ``purge_metadata``
+    row per run.
+
+    Distributed lease ensures only one replica runs the purge per day.
+    """
+    from sthrip.services.purge_service import run_full_purge
+    from sthrip.services.distributed_lease import with_redis_lease
+
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
+    while True:
+        try:
+            sleep_seconds = _seconds_until_utc(hour=3, minute=0)
+            await asyncio.sleep(sleep_seconds)
+            with with_redis_lease(
+                _redis, "purge_loop", ttl=3600, fail_open=_fail_open
+            ) as acquired:
+                if not acquired:
+                    logger.debug("Purge loop: lease not acquired, skipping cycle")
+                    continue
+                retention = get_settings().sthrip_data_retention_days
+                with get_db() as db:
+                    summary = run_full_purge(retention, db=db)
+                    db.commit()
+                logger.info("Purge run complete: %s", summary)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Purge loop error")
+
+
+async def _subscription_billing_loop():
+    """Phase 2 Sprint 4: monthly XMR subscription billing on the 1st @ 04:00 UTC.
+
+    Distributed lease ensures only one replica runs the cycle. Idempotency
+    is anchored on ``(agent_id, month_start, status='monthly_charge')`` —
+    re-runs on the same day are no-ops.
+
+    The 04:00 UTC timing is intentionally one hour after the purge/canary
+    pair (03:00 / 03:05) and 30 min before the grace-expiry pass
+    (04:30) so the daily clock has clear, non-overlapping windows.
+    """
+    from sthrip.services.subscription_billing_service import (
+        bill_pro_subscriptions,
+    )
+    from sthrip.services.distributed_lease import with_redis_lease
+    from datetime import datetime, timezone
+
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
+    while True:
+        try:
+            sleep_seconds = _seconds_until_utc(hour=4, minute=0)
+            await asyncio.sleep(sleep_seconds)
+            now = datetime.now(timezone.utc)
+            # Only fire on the 1st of the month UTC.
+            if now.day != 1:
+                continue
+            with with_redis_lease(
+                _redis, "subscription_billing_loop", ttl=3600,
+                fail_open=_fail_open,
+            ) as acquired:
+                if not acquired:
+                    logger.debug(
+                        "Subscription billing: lease not acquired, skipping"
+                    )
+                    continue
+                with get_db() as db:
+                    summary = bill_pro_subscriptions(now, db=db)
+                    db.commit()
+                logger.info("Subscription billing run complete: %s", summary)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Subscription billing loop error")
+
+
+async def _grace_expiry_loop():
+    """Phase 2 Sprint 4: daily 04:30 UTC grace-expiry sweep.
+
+    Runs after the monthly cron so that an agent who topped up overnight
+    gets a successful retry first. Idempotent — only downgrades agents
+    whose ``tier_grace_until`` is strictly in the past.
+    """
+    from sthrip.services.subscription_billing_service import (
+        bill_pro_subscriptions,
+        handle_grace_expiry,
+    )
+    from sthrip.services.distributed_lease import with_redis_lease
+    from datetime import datetime, timezone
+
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
+    while True:
+        try:
+            sleep_seconds = _seconds_until_utc(hour=4, minute=30)
+            await asyncio.sleep(sleep_seconds)
+            now = datetime.now(timezone.utc)
+            with with_redis_lease(
+                _redis, "grace_expiry_loop", ttl=900, fail_open=_fail_open,
+            ) as acquired:
+                if not acquired:
+                    logger.debug(
+                        "Grace expiry: lease not acquired, skipping"
+                    )
+                    continue
+                with get_db() as db:
+                    # Daily retry — top-ups during grace are charged here.
+                    retry_summary = bill_pro_subscriptions(now, db=db)
+                    expiry_summary = handle_grace_expiry(now, db=db)
+                    db.commit()
+                logger.info(
+                    "Grace expiry run complete: retry=%s expiry=%s",
+                    retry_summary, expiry_summary,
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Grace expiry loop error")
+
+
+async def _canary_loop():
+    """Phase 2 Sprint 1: daily canary signing at 03:05 UTC.
+
+    Sequential to the purge job (5-minute gap) to avoid contention on the
+    audit_log table. Skipped silently when ``CANARY_SIGNING_KEY`` is not
+    configured — operators opt in by setting the env var.
+    """
+    from sthrip.services.canary_service import publish_daily_canary
+    from sthrip.services.distributed_lease import with_redis_lease
+
+    _redis = _get_lease_redis()
+    _fail_open = not get_settings().distributed_lease_required
+    while True:
+        try:
+            sleep_seconds = _seconds_until_utc(hour=3, minute=5)
+            await asyncio.sleep(sleep_seconds)
+            settings = get_settings()
+            if not settings.canary_signing_key:
+                logger.debug("Canary loop: CANARY_SIGNING_KEY not set, skipping")
+                continue
+            with with_redis_lease(
+                _redis, "canary_loop", ttl=600, fail_open=_fail_open
+            ) as acquired:
+                if not acquired:
+                    logger.debug("Canary loop: lease not acquired, skipping cycle")
+                    continue
+                with get_db() as db:
+                    publish_daily_canary(
+                        db=db, signing_key_b64=settings.canary_signing_key,
+                    )
+                    db.commit()
+                logger.info("Canary published")
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Canary loop error")
+
+
+def _seconds_until_utc(*, hour: int, minute: int) -> float:
+    """Return seconds until the next ``hour:minute`` UTC instant.
+
+    Defined here (rather than as a free helper in the service) because
+    the calculation only matters to the cron loop and depends on a
+    monotonic UTC clock the service tier doesn't otherwise need.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target = target + timedelta(days=1)
+    return max(1.0, (target - now).total_seconds())
+
+
 async def _conditional_payment_loop():
     """Evaluate conditional payment conditions every 30 seconds.
 
@@ -645,6 +825,32 @@ def _startup_services(hub_mode):
     conditional_payment_task = asyncio.create_task(_conditional_payment_loop())
     logger.info("Conditional payment evaluation task started")
 
+    # Phase 2 Sprint 1: daily auto-purge at 03:00 UTC
+    purge_task = asyncio.create_task(_purge_loop())
+    logger.info("Auto-purge task scheduled (daily 03:00 UTC)")
+
+    # Phase 2 Sprint 1: daily canary signing at 03:05 UTC
+    canary_task = asyncio.create_task(_canary_loop())
+    logger.info("Warrant canary task scheduled (daily 03:05 UTC)")
+
+    # Phase 2 Sprint 4: monthly XMR subscription billing (1st of month, 04:00 UTC)
+    subscription_billing_task = asyncio.create_task(
+        _subscription_billing_loop()
+    )
+    logger.info(
+        "Subscription billing task scheduled (1st of month 04:00 UTC)"
+    )
+
+    # Phase 2 Sprint 4: daily grace-expiry sweep (04:30 UTC)
+    grace_expiry_task = asyncio.create_task(_grace_expiry_loop())
+    logger.info("Grace expiry task scheduled (daily 04:30 UTC)")
+
+    # Phase 3 Sprint 6: TEE proxy health-check loop (60s).  No-op if
+    # STHRIP_PAYMENT_VIA_TEE is off.
+    from sthrip.services.payment_dispatch import health_check_loop as _tee_health_loop
+    tee_health_task = asyncio.create_task(_tee_health_loop())
+    logger.info("TEE health-check task scheduled (60s; gated by STHRIP_PAYMENT_VIA_TEE)")
+
     return {
         "monitor": monitor,
         "webhook_service": webhook_service,
@@ -656,6 +862,11 @@ def _startup_services(hub_mode):
         "sla_enforcement_task": sla_enforcement_task,
         "recurring_payment_task": recurring_payment_task,
         "conditional_payment_task": conditional_payment_task,
+        "purge_task": purge_task,
+        "canary_task": canary_task,
+        "subscription_billing_task": subscription_billing_task,
+        "grace_expiry_task": grace_expiry_task,
+        "tee_health_task": tee_health_task,
     }
 
 
@@ -735,6 +946,46 @@ async def _shutdown_services(services):
         conditional_task.cancel()
         try:
             await conditional_task
+        except asyncio.CancelledError:
+            pass
+
+    purge_task = services.get("purge_task")
+    if purge_task is not None:
+        purge_task.cancel()
+        try:
+            await purge_task
+        except asyncio.CancelledError:
+            pass
+
+    canary_task = services.get("canary_task")
+    if canary_task is not None:
+        canary_task.cancel()
+        try:
+            await canary_task
+        except asyncio.CancelledError:
+            pass
+
+    subscription_billing_task = services.get("subscription_billing_task")
+    if subscription_billing_task is not None:
+        subscription_billing_task.cancel()
+        try:
+            await subscription_billing_task
+        except asyncio.CancelledError:
+            pass
+
+    grace_expiry_task = services.get("grace_expiry_task")
+    if grace_expiry_task is not None:
+        grace_expiry_task.cancel()
+        try:
+            await grace_expiry_task
+        except asyncio.CancelledError:
+            pass
+
+    tee_health_task = services.get("tee_health_task")
+    if tee_health_task is not None:
+        tee_health_task.cancel()
+        try:
+            await tee_health_task
         except asyncio.CancelledError:
             pass
 
@@ -829,6 +1080,10 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
     configure_middleware(application)
+    # Phase 2 Sprint 3: tier-limit middleware. Registered AFTER the
+    # core middleware (request id / metrics / auth) so that
+    # ``request.state.agent`` and Bearer headers are available.
+    configure_tier_limit_middleware(application)
 
     application.include_router(health.router)
     application.include_router(wellknown.router)

@@ -1,9 +1,16 @@
 """Well-known discovery endpoint for agent payment protocol."""
 
+import logging
 import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+
+from sthrip.config import get_settings
+from sthrip.db.database import get_db
+
+logger = logging.getLogger("sthrip.wellknown")
 
 router = APIRouter(tags=["discovery"])
 
@@ -273,5 +280,69 @@ async def agent_payments_discovery():
     payload["onion_endpoint"] = onion
     return JSONResponse(
         content=payload,
+        media_type="application/json",
+    )
+
+
+@router.get("/.well-known/canary.txt")
+async def canary_endpoint():
+    """Phase 2 Sprint 1: warrant canary endpoint.
+
+    Returns the most recently signed canary if it is fresh (< 48h old),
+    or 503 with a structured error body if missing/stale. The path uses
+    the conventional ``.txt`` extension for canary discoverability while
+    serving ``application/json`` so machine readers can parse the
+    Ed25519 signature.
+
+    The handler opens its own short-lived DB session via the ``get_db``
+    context manager rather than depending on FastAPI's request-scoped
+    Depends(), matching the pattern used for other ``/.well-known``
+    routes that must remain available even when the request middleware
+    chain has issues.
+    """
+    # Local import keeps this router cheap to import at app startup —
+    # avoids pulling pynacl into the boot path of every request.
+    from sthrip.services.canary_service import get_current_canary
+
+    settings = get_settings()
+    try:
+        with get_db() as db:
+            current = get_current_canary(db=db)
+    except Exception:
+        logger.exception("canary read failed")
+        return JSONResponse(
+            status_code=503,
+            content={"error": "canary_read_failed"},
+            media_type="application/json",
+        )
+
+    if current is None:
+        # Stale or missing — pull the raw signed_at for diagnostics if a
+        # row exists at all. Best-effort; failure here just omits the
+        # field.
+        last_signed_at = None
+        try:
+            from sthrip.db.models import CanaryState
+            with get_db() as db:
+                row = (
+                    db.query(CanaryState)
+                    .filter(CanaryState.id == 1)
+                    .one_or_none()
+                )
+                if row is not None and row.signed_at is not None:
+                    last_signed_at = row.signed_at.isoformat()
+        except Exception:
+            logger.debug("could not read canary_state for diagnostic")
+        body = {"error": "canary_stale", "last_signed_at": last_signed_at}
+        return JSONResponse(
+            status_code=503,
+            content=body,
+            media_type="application/json",
+        )
+
+    # Pass-through: caller already includes signature_b64.
+    return JSONResponse(
+        status_code=200,
+        content=current,
         media_type="application/json",
     )

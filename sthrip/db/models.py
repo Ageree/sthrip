@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy import (
-    create_engine, Column, String, Integer, BigInteger, Boolean,
+    create_engine, Column, String, Integer, BigInteger, Boolean, Date,
     DateTime, ForeignKey, LargeBinary, Numeric, Text, JSON, Enum as SQLEnum,
     Index, UniqueConstraint, CheckConstraint
 )
@@ -79,6 +79,12 @@ class Agent(Base):
     tier = Column(SQLEnum(AgentTier), default=AgentTier.FREE)
     verified_at = Column(DateTime(timezone=True), nullable=True)
     verified_by = Column(String(255), nullable=True)
+
+    # Phase 2 Sprint 3: subscription billing grace window. When set, tier-limit
+    # enforcement honors the agent's declared tier until ``tier_grace_until``
+    # passes; after expiry the agent is treated as FREE for limit checks even
+    # if the ``tier`` column has not yet been downgraded by the billing cron.
+    tier_grace_until = Column(DateTime(timezone=True), nullable=True)
     
     # Staking
     staked_amount = Column(Numeric(20, 8), default=Decimal('0'))
@@ -527,7 +533,14 @@ class AuditLog(Base):
 
 
 class FeeCollection(Base):
-    """Revenue tracking"""
+    """Revenue tracking.
+
+    Phase 2 Sprint 2 added the integer ``amount_piconero``, ``rate_applied_bps``,
+    ``payer_agent_id``, and ``transaction_ref`` columns for the new
+    commission-on-transfer subsystem. Legacy ``amount``/``token``/``source_*``
+    columns remain so the original ``fee_collector.py`` (1% flat hub-routing
+    fee) keeps working without modification.
+    """
     __tablename__ = "fee_collections"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -546,8 +559,26 @@ class FeeCollection(Base):
 
     created_at = Column(DateTime(timezone=True), default=func.now())
 
+    # Phase 2 Sprint 2 commission fields. Nullable so legacy fee_collector
+    # rows keep working unchanged. New commission rows always populate them.
+    payer_agent_id = Column(
+        UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True
+    )
+    amount_piconero = Column(BigInteger, nullable=True)
+    rate_applied_bps = Column(Integer, nullable=True)
+    transaction_ref = Column(String(255), nullable=True)
+    collected_at = Column(DateTime(timezone=True), nullable=True)
+
     __table_args__ = (
         Index("ix_fee_collections_status_created", "status", "created_at"),
+        # Per-agent revenue aggregation (Sprint 4 admin dashboard).
+        Index(
+            "ix_fee_collections_payer_collected",
+            "payer_agent_id",
+            "collected_at",
+        ),
+        # Global MTD / period revenue queries.
+        Index("ix_fee_collections_collected_at", "collected_at"),
     )
 
 
@@ -1361,4 +1392,146 @@ class IdempotencyKey(Base):
     __table_args__ = (
         UniqueConstraint("agent_id", "endpoint", "key", name="uq_idempotency_agent_endpoint_key"),
         Index("ix_idempotency_keys_created_at", "created_at"),
+    )
+
+
+class PurgeMetadata(Base):
+    """Audit trail for the daily auto-purge job (Phase 2 Sprint 1).
+
+    One row per scheduled purge run. Counts deleted rows per source table
+    and records the synthetic audit_log "chain reset" row id when the purge
+    swept any audit log entries. Operators query this table to verify the
+    purge is running on schedule and how much data each run swept.
+    """
+
+    __tablename__ = "purge_metadata"
+
+    # BigInteger autoincrement on Postgres (BIGSERIAL behaviour); on SQLite
+    # we fall back to INTEGER PRIMARY KEY which the engine auto-increments.
+    # ``with_variant`` keeps a single column definition while letting each
+    # dialect resolve to its native auto-increment idiom.
+    id = Column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    run_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    transactions_deleted = Column(Integer, nullable=False, default=0)
+    escrow_deals_deleted = Column(Integer, nullable=False, default=0)
+    escrow_milestones_deleted = Column(Integer, nullable=False, default=0)
+    message_relays_deleted = Column(Integer, nullable=False, default=0)
+    audit_log_deleted = Column(Integer, nullable=False, default=0)
+    # Stringified UUID of the synthetic chain-reset row, NULL when no audit
+    # rows were purged.
+    audit_chain_reset_at_id = Column(String(64), nullable=True)
+
+
+class CanaryState(Base):
+    """Single-row warrant canary store (Phase 2 Sprint 1).
+
+    Holds the most recently signed canary payload + Ed25519 detached
+    signature. Always upsert with id=1 — older runs are overwritten in
+    place. Stale-detection is a function of ``signed_at`` vs now.
+    """
+
+    __tablename__ = "canary_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=False)
+    signed_at = Column(DateTime(timezone=True), nullable=False)
+    payload_json = Column(Text, nullable=False)
+    signature_b64 = Column(Text, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Sprint 3: per-agent monthly transaction counter for tier enforcement.
+# ---------------------------------------------------------------------------
+
+class AgentMonthlyStats(Base):
+    """Per-agent rolling monthly transaction counter.
+
+    Phase 2 Sprint 3: tier-limit enforcement reads ``transaction_count`` for
+    the current UTC month to gate FREE-tier accounts at 100 transfers/month.
+    Rows are upserted atomically by ``record_transaction`` via INSERT ... ON
+    CONFLICT (Postgres) or INSERT-OR-UPDATE (SQLite). One row per
+    ``(agent_id, month_start)``; rolls over naturally on the 1st of each
+    month UTC because ``month_start`` is the natural sharding key.
+    """
+
+    __tablename__ = "agent_monthly_stats"
+
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    # DATE column — first day of month UTC. Stored as ``datetime.date``.
+    # Composite PK with ``agent_id``; indexed via the table_args index below.
+    month_start = Column(Date, primary_key=True, nullable=False)
+    transaction_count = Column(Integer, nullable=False, default=0)
+    last_updated = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+    __table_args__ = (
+        Index(
+            "ix_agent_monthly_stats_agent_month_desc",
+            "agent_id",
+            "month_start",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Sprint 4: append-only ledger of XMR subscription billing events.
+# ---------------------------------------------------------------------------
+
+class AgentBillingHistory(Base):
+    """Append-only XMR subscription billing ledger.
+
+    One row per billing event:
+
+    * ``monthly_charge`` — successful 1st-of-month deduction
+    * ``monthly_grace_started`` — insufficient balance at billing time
+    * ``monthly_grace_retry`` — successful charge during grace window
+    * ``monthly_grace_expired_downgrade`` — auto-downgrade after 7d grace
+    * ``upgrade_charge`` — pro-rated mid-month upgrade
+    * ``downgrade_refund`` — pro-rated mid-month downgrade refund
+    * ``monthly_failure_alerted`` — non-billing operational alert
+
+    Idempotency anchor: ``(agent_id, month_start)`` is unique within
+    ``status='monthly_charge'`` (Postgres partial unique index;
+    SQLite enforces equivalent semantics in the service layer).
+    """
+
+    __tablename__ = "agent_billing_history"
+
+    # NOTE: ``Integer`` (not ``BigInteger``) because SQLite only autoincrements
+    # plain INTEGER PRIMARY KEY rows. On Postgres the column is widened to
+    # BIGSERIAL by the migration so production capacity is unaffected.
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    month_start = Column(Date, nullable=False)
+    amount_usd = Column(Numeric(12, 2), nullable=False)
+    amount_piconero = Column(BigInteger, nullable=False)
+    rate_applied = Column(Numeric(20, 8), nullable=False)
+    status = Column(String(64), nullable=False)
+    tier_at_event = Column(String(32), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_agent_billing_history_agent_created",
+            "agent_id",
+            "created_at",
+        ),
+        Index(
+            "ix_agent_billing_history_status_created",
+            "status",
+            "created_at",
+        ),
     )

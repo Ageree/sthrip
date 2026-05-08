@@ -102,15 +102,36 @@ def _build_recipient_profile(agent: Agent):
 def _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key, fee_collector=None):
     """Atomically deduct sender, credit recipient, create and confirm hub route.
 
-    The duplicate check (via create_hub_route) runs BEFORE balance mutations
-    to prevent double-credit on idempotent replay.
+    Phase 2 Sprint 2 cutover: commission deduction (0.3% Free / 0.1% Pro+) is
+    handled atomically by ``TransactionRepository.create_with_commission``,
+    which holds a SELECT FOR UPDATE on the sender balance, verifies funds,
+    deducts ``amount + fee`` from sender, credits ``amount`` to receiver,
+    inserts the Transaction row, and inserts the FeeCollection row — all in
+    the same DB transaction.
+
+    The legacy ``fee_collector.confirm_hub_route(...)`` path is intentionally
+    NOT called here because it would insert a SECOND FeeCollection row at the
+    legacy 1% rate (using the dict from ``calculate_hub_routing_fee``), which
+    would mean users pay 1% + 0.3% (Free) or 1% + 0.1% (Pro+) — a regression.
+    The HubRoute row is still created (admin dashboard + ``/payments/{id}``
+    lookup depend on it) and its status is flipped inline to CONFIRMED.
+
+    The duplicate check (via ``create_hub_route``) runs BEFORE balance
+    mutations to prevent double-credit on idempotent replay.
     """
     from uuid import UUID as _UUID
+    from sthrip.db.models import HubRouteStatus
+    from sthrip.db.transaction_repo import (
+        InsufficientBalanceError,
+        TransactionRepository,
+    )
 
     collector = fee_collector or get_fee_collector()
-    total_deduction = fee_info["total_deduction"]
 
-    # Check for idempotent duplicate BEFORE any balance mutations
+    # Idempotent duplicate check + HubRoute row insert. Note: this writes a
+    # HubRoute row but does NOT touch agent balances or insert a FeeCollection
+    # row at the legacy 1% rate — those side-effects only happen if we later
+    # call confirm_hub_route, which we do NOT (commission path replaces it).
     route = collector.create_hub_route(
         from_agent_id=str(agent.id),
         to_agent_id=recipient.id,
@@ -124,30 +145,55 @@ def _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempoten
     if route.get("duplicate"):
         return route
 
-    balance_repo = BalanceRepository(db)
-    try:
-        balance_repo.deduct(agent.id, total_deduction)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Insufficient balance")
-    balance_repo.credit(_UUID(recipient.id), amount)
+    # Convert XMR Decimal to integer piconero for the commission calculator.
+    # Compute via the same Decimal->piconero path the wallet RPC uses.
+    from decimal import Decimal as _Decimal
+    amount_piconero = int(_Decimal(amount) * _Decimal(10**12))
 
-    collector.confirm_hub_route(route["payment_id"], db=db)
-
-    # Create a Transaction record so /payments/history and /history reflect
-    # hub-routing payments.  Uses the hub-route payment_id as tx_hash.
     tx_repo = TransactionRepository(db)
-    tx_repo.create(
-        tx_hash=route["payment_id"],
-        network="hub",
-        from_agent_id=agent.id,
-        to_agent_id=_UUID(recipient.id),
-        amount=amount,
-        fee=fee_info["fee_amount"],
-        fee_collected=fee_info["fee_amount"],
-        payment_type=PaymentType.HUB_ROUTING.value,
-        status=TransactionStatus.CONFIRMED.value,
-        memo=getattr(req, "memo", None),
+    try:
+        tx = tx_repo.create_with_commission(
+            tx_hash=route["payment_id"],
+            network="hub",
+            from_agent_id=agent.id,
+            to_agent_id=_UUID(recipient.id),
+            amount_piconero=amount_piconero,
+            payment_type=PaymentType.HUB_ROUTING.value,
+            status=TransactionStatus.CONFIRMED.value,
+            memo=getattr(req, "memo", None),
+            idempotency_key=idempotency_key,
+        )
+    except InsufficientBalanceError:
+        raise HTTPException(status_code=400, detail="Insufficient balance")
+
+    # Surface the *real* commission fee (in XMR) on the response by mutating
+    # fee_info — the legacy ``calculate_hub_routing_fee`` figure is the OLD
+    # 1% number which would mislead clients now that we charge the commission
+    # rate. ``tx.fee`` is already stored in XMR Decimal scale by the repo.
+    commission_fee_xmr = _Decimal(tx.fee or 0)
+    fee_info["fee_amount"] = commission_fee_xmr
+    # Only the rate stored on the Transaction matters now; keep fee_percent
+    # as a string label so the admin/legacy clients still see something.
+    fee_info["fee_percent"] = (
+        _Decimal("0.003") if agent.tier.value == "free" else _Decimal("0.001")
     )
+    fee_info["total_deduction"] = _Decimal(amount) + commission_fee_xmr
+
+    # Flip HubRoute to CONFIRMED so admin dashboards and the /payments/{id}
+    # lookup reflect the completed state. Inline so we don't trigger the
+    # legacy FeeCollection insert in confirm_hub_route.
+    from sthrip.db.models import HubRoute as _HubRoute
+    is_sqlite = db.bind and db.bind.dialect.name == "sqlite"
+    _q = db.query(_HubRoute).filter(_HubRoute.payment_id == route["payment_id"])
+    if not is_sqlite:
+        _q = _q.with_for_update()
+    hub_row = _q.first()
+    if hub_row is not None and hub_row.status == HubRouteStatus.PENDING:
+        hub_row.status = HubRouteStatus.CONFIRMED
+        hub_row.confirmed_at = datetime.now(timezone.utc)
+        hub_row.fee_amount = commission_fee_xmr
+        hub_row.fee_collected = True
+        hub_row.fee_collected_at = datetime.now(timezone.utc)
 
     return route
 
@@ -283,7 +329,14 @@ async def send_hub_routed_payment(
                 from_agent_tier=agent.tier.value,
                 urgency=req.urgency,
             )
-            route = _execute_hub_transfer(db, agent, recipient, amount, fee_info, req, idempotency_key, fee_collector=fee_collector)
+            # Phase 3 Sprint 6: route through the dispatcher so flag-on
+            # traffic goes to the GCP TEE proxy, flag-off traffic stays on
+            # the legacy local handler. Fall-back is transparent.
+            from sthrip.services import payment_dispatch
+            route = payment_dispatch.dispatch_hub_routing(
+                db, agent, recipient, amount, fee_info, req,
+                idempotency_key, fee_collector=fee_collector,
+            )
 
             if route.get("duplicate"):
                 return route

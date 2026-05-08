@@ -4,7 +4,9 @@
 > today, and where the platform leaves residual risk visible to the operator
 > and to users.
 >
-> Last updated: 2026-05-06. Replaces the prior MPC/bridge-era threat model.
+> Last updated: 2026-05-07. Phase 2 Sprint 1: data minimization via 60-day
+> rolling auto-purge + Ed25519-signed warrant canary at
+> `/.well-known/canary.txt`. Replaces the prior MPC/bridge-era threat model.
 
 ## Scope
 
@@ -42,6 +44,7 @@ For the per-feature catalogue with commit hashes, see
 | Webhook URL deanonymizes an agent (host or domain → identity) | Sprint 5 (`4aecfcb`) — `agents.webhook_url` and `webhook_endpoints.url` dropped from the schema; URLs Fernet-encrypted at rest, never appear in marketplace responses or admin views. Sprint 6 (`16126a5`) — when the decrypted target is `.onion`, delivery routes via SOCKS5 through the Tor sidecar. | Clearnet webhook deliveries remain visible to the network observer at delivery time. Per Lead Decision Q4, outbound Tor is `.onion`-only by default — agents who register a clearnet webhook still expose their host to network-position adversaries during delivery. |
 | On-path network observer (Tor exit, ISP, state-level) correlates client → hub → agent | Sprint 6 (`16126a5`) — Tor v3 hidden service sidecar in `railway/tor-sidecar-deploy/` exposes the API on `.onion`. SDK supports `use_tor=True`. Webhook outbound through SOCKS5 when the target is `.onion`. | Clearnet API path remains observable. Per-target outbound routing means clearnet webhook callbacks remain visible. The `.onion` endpoint is published only when `STHRIP_ONION_ENABLED=true`. |
 | Runtime hub compromise (RCE, malicious dependency, container escape) | Defence-in-depth: least-privilege Railway services, Tor `ControlPort` disabled, encrypted secrets at rest. Sprint 4b moves the operator KEK off the API process entirely so a runtime compromise of the API does not yield long-term decryption capability. | The hub sees plaintext during the routing window. ANY runtime memory dump captures one in-flight request's plan. This is unavoidable for a custodial routing hub and is the hardest residual risk to remove without changing the product to non-custodial. |
+| Hub runtime memory compromise — Railway host attacker reads in-flight plaintext (Phase 3) | **Pre-Phase-3**: HIGH residual — the row above is the floor. **Post-Phase-3 (Sprint 7 enabled)**: payment hot-path runs in a GCP Confidential VM (AMD SEV-SNP) — Phase 3 Sprints 5 (`ed3821c`), 6 (`6fee072`), 7. Operator pins the image hash, the SDK fetches `/.well-known/attestation.json`, verifies the Ed25519 signature with `STHRIP_TEE_ATTESTATION_PUBKEY`, and refuses to send when the attested `image_hash_sha256` does not match `expected_image_hash`. mTLS + per-request `X-Proxy-Token` between Railway and the TEE. Feature-flagged behind `STHRIP_PAYMENT_VIA_TEE`. | Residual risks: AMD SEV-SNP primitive bug (CVE-class), AMD/GCP supply-chain compromise of the firmware or measurement chain, image-pinning bypass via SDK callers who opt out of `verify_tee=True`, and the Railway proxy still sees plaintext on the way to the TEE (the routing window narrows from "the entire hub" to "the proxy hop"). Until the operator deploys the TEE artefact AND flips the flag, this row is identical to the row above. |
 | Malicious insider operator | Audit log HMAC chain with rotating salts (Sprint 1, `5a68ec8`) — provides forensic provenance across rotation windows. Operator KEK in a separate Railway service after Sprint 4b — splits trust between the API service and the keystore service. | An operator with persistent admin access to BOTH the API service AND the keystore service is a complete deanonymization vector. The two-service split is hostile-coworker resistant, not hostile-owner resistant. Sthrip cannot defend against the entity that runs Sthrip. |
 | Webhook correlation attacker (third party watches webhook deliveries) | Sprint 5 (`4aecfcb`) — webhook URLs not exposed via marketplace or admin. HMAC-signed webhook deliveries (existing). Sprint 6 (`16126a5`) — agents who care can register a `.onion` webhook and SOCKS5 outbound carries the call. | An attacker who already knows a webhook URL (because they registered the agent themselves, or compromised the agent host) can correlate. Webhook timing analysis on clearnet endpoints remains available to network adversaries. |
 | Discovery JSON leaks `onion_endpoint` to clearnet probes | Sprint 6 (`16126a5`) — `onion_endpoint` field appears in `/.well-known/agent-payments.json` only when both `STHRIP_ONION_ENABLED=true` AND `STHRIP_ONION_ENDPOINT` are set. Default is off. | When intentionally enabled, the `.onion` address IS public information — clients need to find it. The mitigation is the opt-in default, not endpoint secrecy. |
@@ -78,8 +81,53 @@ This document covers all eight (cross-referenced for the reviewer):
 Two additional rows (5: webhook URL deanonymization; 10: discovery JSON
 leak) cover sub-cases that materially change the residual-risk picture.
 
+## Revenue / commission (Phase 2 Sprint 2)
+
+0.3% Free / 0.1% Pro+ commission on internal transfers; deducted from
+sender at write time; recorded in fee_collections aggregation table;
+per-agent caching prevents tier-bypass across a single request. Commission
+is computed in integer piconero with ROUND_HALF_UP (no float drift) and
+floored at 1 piconero so dust transfers cannot bypass revenue accounting.
+The commission deduction is atomic with the balance update: ``SELECT
+... FOR UPDATE`` on the sender row, ``balance >= amount + fee`` check,
+``deduct(amount + fee)`` from sender, ``credit(amount)`` to receiver,
+insert ``FeeCollection`` row — all in one DB transaction so a failure
+rolls everything back. Idempotency: client retries with a known
+``idempotency_key`` return the cached transaction without re-deducting
+fee.
+
 ## Branch and references
 
 This document was rewritten as part of Sprint 7 on the
 `feat/anonymity-hardening` branch. For the per-sprint contracts and
 verification reports, see `.harness/anonymize-platform/`.
+
+## Subscription billing (Phase 2 Sprint 4 — 2026-05-07)
+
+`agent_billing_history` records monthly XMR subscription charges,
+grace-period transitions, and self-service mid-month upgrade/downgrade
+events. Each row holds USD amount, XMR amount in piconero, rate applied,
+status, and tier snapshot — but no off-chain identity, bank, or card
+data (billing is XMR-native).
+
+Threats and mitigations:
+
+* **Double-charge from cron retries**: anchored by a partial unique
+  index on `(agent_id, month_start) WHERE status='monthly_charge'` on
+  Postgres and a guarded SELECT on SQLite. Re-runs on the same UTC day
+  are no-ops.
+* **External rate-feed outage cascading into mass-downgrades**: the
+  XMR/USD spot price is cached for 5 minutes; on CoinGecko outage the
+  cache extends to 24h. Beyond 24h the billing cron raises
+  `RateUnavailableError` and aborts the run rather than silently using
+  an ancient rate.
+* **Insufficient balance on billing day**: opens a 7-day grace period
+  during which the agent retains paid-tier behavior. The daily 04:30
+  UTC `handle_grace_expiry` pass downgrades agents whose grace window
+  has fully elapsed.
+* **Atomicity**: balance deduct + ledger insert + tier mutation share
+  a single DB transaction; any raise rolls back the entire block.
+
+Retention follows the Phase 1 auto-purge contract (default 60 days), so
+the billing ledger is bounded by the same operator-controlled retention
+window as the rest of the audit-relevant data.

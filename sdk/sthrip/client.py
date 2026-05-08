@@ -38,7 +38,10 @@ from .exceptions import (
     PaymentError,
     RateLimitError,
     StrhipError,
+    TEEAttestationStaleError,
+    TEEMismatchError,
 )
+from . import _tee_verify
 
 _VERSION = "0.4.0"
 _USER_AGENT = "sthrip-sdk/{}".format(_VERSION)
@@ -134,6 +137,18 @@ class Sthrip(object):
         ``STHRIP_TOR_SOCKS_PROXY``). Useful for clients that resolve a
         ``.onion`` API URL or that want to anonymise their network path.
         When False (default), behaves exactly as before — no proxy.
+    verify_tee : bool, optional
+        When True (Phase 3 Sprint 7), the SDK fetches
+        ``/.well-known/attestation.json`` from the configured base URL,
+        verifies the Ed25519 signature using a pinned pubkey
+        (``STHRIP_TEE_ATTESTATION_PUBKEY`` env), and confirms the
+        attested ``image_hash_sha256`` matches *expected_image_hash*.
+        Verified attestations are cached for 5 minutes.  When False
+        (default), the SDK behaviour is byte-for-byte unchanged.
+    expected_image_hash : str, optional
+        Image hash the TEE must attest to.  Falls back to
+        ``STHRIP_TEE_IMAGE_HASH``.  Only consulted when
+        ``verify_tee=True``.
     """
 
     def __init__(
@@ -146,8 +161,10 @@ class Sthrip(object):
         allowed_agents=None,
         require_escrow_above=None,
         use_tor=False,
+        verify_tee=False,
+        expected_image_hash=None,
     ):
-        # type: (str, str, ..., ..., ..., list, ..., bool) -> None
+        # type: (str, str, ..., ..., ..., list, ..., bool, bool, str) -> None
         self._api_url = _resolve_api_url(api_url)
         self._use_tor = bool(use_tor)
         self._tor_proxy = (
@@ -174,6 +191,20 @@ class Sthrip(object):
 
         # Sync spending policy to server if any policy params were set
         self._sync_spending_policy()
+
+        # ---------- Sprint 7: TEE attestation ---------------------------
+        self._verify_tee = bool(verify_tee)
+        # Resolve expected hash now (env or kwarg). When _verify_tee=False
+        # this value is unused, so we don't raise on missing env.
+        self._expected_image_hash = (
+            expected_image_hash
+            if expected_image_hash is not None
+            else os.environ.get("STHRIP_TEE_IMAGE_HASH", "")
+        )
+        # Cached attestation: {"payload": dict, "fetched_at": float}
+        self._attestation_cache = None  # type: dict | None
+        # 5-minute TTL per Sprint 7 contract.
+        self._attestation_ttl_s = 300.0
 
     # -- key resolution -----------------------------------------------------
 
@@ -375,6 +406,90 @@ class Sthrip(object):
     def _raw_put(self, path, json_body=None, authenticated=True):
         # type: (str, dict, bool) -> dict
         return self._raw_request("PUT", path, json_body=json_body, authenticated=authenticated)
+
+    # -- TEE attestation (Sprint 7) -----------------------------------------
+
+    def verify_tee_attestation(self, now=None):
+        # type: (float) -> dict | None
+        """Fetch + verify the TEE attestation when ``verify_tee=True``.
+
+        No-op when ``verify_tee=False`` (preserves byte-for-byte SDK
+        back-compat for callers who never opted in).
+
+        Cache: verified payloads are kept for 5 minutes; subsequent calls
+        within the TTL skip the network round-trip.
+
+        Raises
+        ------
+        TEEMismatchError
+            Pubkey mismatch, signature failure, or attested image hash
+            does not match ``expected_image_hash``.
+        TEEAttestationStaleError
+            Endpoint returned non-2xx and no fresh cache is available.
+        """
+        if not self._verify_tee:
+            return None
+
+        import time as _time
+
+        clock = now if now is not None else _time.time()
+
+        # Serve from cache if fresh.
+        cache = self._attestation_cache
+        if cache is not None:
+            if (clock - cache["fetched_at"]) <= self._attestation_ttl_s:
+                return cache["payload"]
+
+        # Fetch fresh attestation.
+        url = "{}/.well-known/attestation.json".format(self._api_url)
+        try:
+            response = self._session.get(url, timeout=_REQUEST_TIMEOUT)
+        except requests.RequestException as exc:
+            # Network failure with no fresh cache — refuse to proceed.
+            raise TEEAttestationStaleError(
+                "TEE attestation fetch failed: {}".format(exc)
+            )
+
+        if not getattr(response, "ok", False):
+            raise TEEAttestationStaleError(
+                "TEE attestation endpoint returned status {}".format(
+                    getattr(response, "status_code", "unknown")
+                )
+            )
+
+        try:
+            payload = response.json()
+        except (ValueError, AttributeError) as exc:
+            raise TEEAttestationStaleError(
+                "TEE attestation response not JSON: {}".format(exc)
+            )
+
+        if not _tee_verify.has_required_fields(payload):
+            raise TEEMismatchError("TEE attestation payload missing fields")
+
+        pubkey_b64 = os.environ.get("STHRIP_TEE_ATTESTATION_PUBKEY", "")
+        if not pubkey_b64:
+            raise TEEMismatchError(
+                "STHRIP_TEE_ATTESTATION_PUBKEY not set; cannot verify"
+            )
+
+        if not _tee_verify.verify_signature(payload, pubkey_b64):
+            raise TEEMismatchError("TEE attestation signature invalid")
+
+        attested_hash = payload.get("image_hash_sha256", "")
+        if self._expected_image_hash and attested_hash != self._expected_image_hash:
+            raise TEEMismatchError(
+                "TEE image hash mismatch: attested={} expected={}".format(
+                    attested_hash, self._expected_image_hash,
+                )
+            )
+
+        # Cache successful verification.
+        self._attestation_cache = {
+            "payload": payload,
+            "fetched_at": clock,
+        }
+        return payload
 
     # -- Public API ---------------------------------------------------------
 

@@ -1,15 +1,34 @@
 {
-  "current_sprint": 1,
-  "iteration": 2,
-  "last_status": "sprint-1-generator-iter2-done",
+  "current_sprint": "complete",
+  "iteration": 0,
+  "last_status": "all-8-sprints-committed-loop-stopped",
   "sprint_history": [
-    {
-      "sprint": 1,
-      "iteration": 1,
-      "verdict": "FAIL",
-      "blocker": "HIGH-1 chain backfill propagation, HIGH-2 missing verify_chain assertion in migration, HIGH-3 single-row test gap"
-    }
+    {"sprint": 1, "iteration": 1, "verdict": "FAIL", "blocker": "HIGH-1 chain backfill propagation, HIGH-2 missing verify_chain assertion in migration, HIGH-3 single-row test gap"},
+    {"sprint": 1, "iteration": 2, "verdict": "PASS", "commit": "5a68ec8", "summary": "audit_log IP scrubbing + request_body allowlist; 49 tests; 88.10% cov"},
+    {"sprint": 2, "iteration": 1, "verdict": "PASS", "commit": "0b03e69", "summary": "marketplace is_public opt-in hard-cut; 18 new + 42 modified tests"},
+    {"sprint": 3, "iteration": 1, "verdict": "PASS", "commit": "9eb2eca", "summary": "encrypted payment-graph envelopes dual-write; 46 new tests; 92.34% cov"},
+    {"sprint": "4a", "iteration": 1, "verdict": "PASS", "commit": "c7ae822", "summary": "dual-read behind STHRIP_READ_FROM_ENVELOPE flag; backfill cron rerun-safe; admin redacted view; 49 new tests"},
+    {"sprint": 5, "iteration": 1, "verdict": "PASS", "commit": "4aecfcb", "summary": "drop agents.webhook_url + webhook_endpoints.url; add url_encrypted Fernet; 7-phase idempotent migration; 20+77 tests"},
+    {"sprint": 6, "iteration": 1, "verdict": "PASS", "commit": "16126a5", "summary": "Tor onion sidecar + SDK use_tor=True + per-target webhook routing; Lead Q4 invariant verified; 40 new tests"},
+    {"sprint": 7, "iteration": 1, "verdict": "PASS", "commit": "e6ef31b", "summary": "honest PRIVACY_FEATURES rewrite + new docs/THREAT_MODEL.md; 10 threat rows; every claim traces to code"},
+    {"sprint": "4b", "iteration": 1, "verdict": "PASS", "commit": "e2dc8cb", "summary": "RemoteKeystore httpx impl + railway/op-keystore-deploy/ FastAPI server + STHRIP_DROP_LEGACY_FK-gated migration; 42 new tests; safe-by-default verified empirically"}
   ],
   "branch": "feat/anonymity-hardening",
-  "updated_at": "2026-05-06T16:30:00Z"
+  "main_work_complete": true,
+  "code_work_complete": true,
+  "loop_status": "stopped",
+  "loop_cron_id_deleted": "36d692f2",
+  "operator_action_required": [
+    "1. Deploy sthrip-op-keystore Railway service from railway/op-keystore-deploy/ (KEK_OP_BASE64 + AUTH_TOKEN env)",
+    "2. Set OP_KEYSTORE_AUTH_TOKEN + OP_KEYSTORE_URL on API service",
+    "3. Build Railway Tor sidecar service from railway/tor-sidecar-deploy/, persistent volume on /var/lib/tor/sthrip-hsv3",
+    "4. Capture .onion address, set STHRIP_ONION_ENABLED=true + STHRIP_ONION_ENDPOINT + STHRIP_TOR_SOCKS_PROXY",
+    "5. Run scripts/backfill_payment_envelope.py until zero NULL envelopes across 4 tables",
+    "6. Set STHRIP_READ_FROM_ENVELOPE=true; soak 24h; monitor fallback_decrypt_error",
+    "7. Set STHRIP_DROP_LEGACY_FK=true; alembic upgrade head — point of no return",
+    "8. Set OP_KEYSTORE_MODE=remote on API service",
+    "Order matters. Skipping any step degrades the guarantees in PRIVACY_FEATURES.md."
+  ],
+  "merge_path": "After operator validation in staging, merge feat/anonymity-hardening to main. 8 commits in dependency order: 5a68ec8 → 0b03e69 → 9eb2eca → c7ae822 → 4aecfcb → 16126a5 → e6ef31b → e2dc8cb",
+  "updated_at": "2026-05-07T01:30:00Z"
 }

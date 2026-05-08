@@ -56,6 +56,7 @@ from sthrip.db.models import (
     TreasuryPolicy, TreasuryForecast, TreasuryRebalanceLog,
     AgentCreditScore, AgentLoan, LendingOffer,
     ConditionalPayment, MultiPartyPayment, MultiPartyRecipient,
+    AgentMonthlyStats,
 )
 
 # The IdempotencyKey model may not exist yet on main — import defensively.
@@ -102,6 +103,8 @@ _COMMON_TEST_TABLES_F4 = [
     ConditionalPayment.__table__,
     MultiPartyPayment.__table__,
     MultiPartyRecipient.__table__,
+    # Phase 2 Sprint 3: per-agent monthly transaction counter
+    AgentMonthlyStats.__table__,
 ]
 
 _GET_DB_MODULES = [

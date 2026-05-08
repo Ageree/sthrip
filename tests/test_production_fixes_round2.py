@@ -199,8 +199,20 @@ class TestBodySizeLimit:
     """Body size check must cover DELETE requests too."""
 
     def test_body_limit_covers_delete(self):
-        """Chunked body check must include DELETE method."""
-        with open("api/middleware.py") as f:
+        """Chunked body check must include DELETE method.
+
+        Phase 2 Sprint 3 converted ``api/middleware.py`` into a package; the
+        body-size middleware now lives in ``api/middleware/__init__.py``.
+        """
+        import os.path
+
+        candidates = ["api/middleware/__init__.py", "api/middleware.py"]
+        path = next((p for p in candidates if os.path.exists(p)), None)
+        assert path is not None, (
+            "Could not locate api/middleware module (looked in "
+            f"{candidates})"
+        )
+        with open(path) as f:
             source = f.read()
         # Find the method check line for chunked body enforcement
         assert '"DELETE"' in source or "'DELETE'" in source, (

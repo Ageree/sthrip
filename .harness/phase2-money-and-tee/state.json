@@ -1,0 +1,66 @@
+{
+  "phase": "COMPLETE",
+  "current_sprint": null,
+  "sprint_status": "all_sprints_passed",
+  "branch": "feat/revenue-and-tee",
+  "branched_from": "feat/anonymity-hardening",
+  "completion_date": "2026-05-07",
+  "ready_for_merge": true,
+  "sprints": {
+    "1": {"title": "Auto-purge + warrant canary", "phase": 1, "status": "completed", "commit": "a3a6e38", "result": "PASS", "new_tests": 17, "regressions": 0},
+    "2": {"title": "Commission on transfers", "phase": 2, "status": "completed", "commits": ["768d0ea", "b1d05a3"], "result": "PASS (after iter 2)", "new_tests": 30, "regressions": 0},
+    "3": {"title": "Subscription tier + enforcement", "phase": 2, "status": "completed", "commit": "dd29657", "result": "PASS", "new_tests": 14, "regressions": 0},
+    "4": {"title": "XMR billing cron + grace handling", "phase": 2, "status": "completed", "commit": "959377a", "result": "PASS", "new_tests": 15, "regressions": 0},
+    "5": {"title": "GCP project + Confidential VM template", "phase": 3, "status": "completed", "commit": "ed3821c", "result": "PASS", "new_tests": 8, "regressions": 0},
+    "6": {"title": "Payment proxy from Railway to GCP", "phase": 3, "status": "completed", "commit": "6fee072", "result": "PASS", "new_tests": 12, "regressions": 0},
+    "7": {"title": "Remote attestation + cutover docs", "phase": 3, "status": "completed", "commit": "1ffb77c", "result": "PASS", "new_tests": 8, "regressions": 0}
+  },
+  "totals": {
+    "total_sprints": 7,
+    "total_commits": 8,
+    "total_new_tests": 104,
+    "suite_growth": "2795 → 2899 (+104)",
+    "regressions": 0,
+    "pre_existing_failures": 24
+  },
+  "commit_chain": [
+    "a3a6e38 feat(privacy): auto-purge + warrant canary (Phase 1 Sprint 1)",
+    "768d0ea feat(revenue): commission on transfers (0.3% Free / 0.1% Pro+, Phase 2 Sprint 2)",
+    "b1d05a3 feat(revenue): wire hub-routing to commission path (Sprint 2 iter 2)",
+    "dd29657 feat(revenue): subscription tier enforcement + self-service endpoints (Phase 2 Sprint 3)",
+    "959377a feat(revenue): XMR subscription billing cron + grace handling (Phase 2 Sprint 4)",
+    "ed3821c feat(tee): GCP Confidential VM payment-service deploy artifacts (Phase 3 Sprint 5)",
+    "6fee072 feat(tee): payment dispatch proxy w/ feature flag + fall-back (Phase 3 Sprint 6)",
+    "1ffb77c feat(tee): remote attestation + SDK verify_tee + cutover runbook (Phase 3 Sprint 7 — FINAL)"
+  ],
+  "key_saves_during_harness": [
+    "Sprint 2 iter 2: caught & prevented 1.3%/1.1% double-charge from layering new commission on legacy 1% fee_collector. Fee stack consolidated to 0.3%/0.1% only.",
+    "Sprint 5 M-1 carry-over: TEE service skipped HubRoute row creation; Sprint 6 closed by writing HubRoute Railway-side after TEE 2xx.",
+    "Sprint 6 carry-over: 4xx-non-dict body would misroute as success in dispatcher; Sprint 7 closed via TEEUserError client-side raise + dispatcher HTTPException translation."
+  ],
+  "operator_action_items": [
+    "Merge feat/revenue-and-tee → main after staging soak",
+    "Set CANARY_SIGNING_KEY (Ed25519 base64) on Railway",
+    "Set STHRIP_DATA_RETENTION_DAYS (default 60 OK)",
+    "Verify Phase 1: /.well-known/canary.txt returns signed JSON, daily purge cron logs",
+    "Create GCP project sthrip-tee, billing enabled, IAM",
+    "Generate mTLS certs per gcp/payment_tee_deploy/mtls/README.md",
+    "Generate STHRIP_TEE_ATTESTATION_KEY (Ed25519); private to TEE, public to Railway as STHRIP_TEE_ATTESTATION_PUBKEY",
+    "Build & push image: gcr.io/<project>/sthrip-payment-tee. Capture sha256 → STHRIP_TEE_IMAGE_HASH",
+    "Provision Confidential VM: bash gcp/payment_tee_deploy/setup-vm.sh. Capture VM IP → STHRIP_TEE_ENDPOINT",
+    "Append STHRIP_TEE_IMAGE_HASH to sdk/sthrip/attestation_anchors.py, ship SDK update",
+    "Set STHRIP_PAYMENT_VIA_TEE=false initially. Soak 24-48h with health-check loop",
+    "Flip flag in staging first, smoke test, then production",
+    "Monitor /admin/revenue + payment latency 24h",
+    "After 7-day soak: announce in PRIVACY_FEATURES.md update + blog post"
+  ],
+  "deferred_to_future_phase": [
+    "Per-replica rate cache (Sprint 4 MEDIUM)",
+    "AgentBillingHistory.id type unification (Integer ORM vs BigInteger migration; SQLite test compat)",
+    "Admin revenue dashboard (mentioned in product-spec; not in this harness scope, can ship anytime)",
+    "Extract sthrip/payment_core/ submodule to remove ALLOWED_OVERRIDES carve-outs (Sprint 5 deferred)",
+    "Annual prepay subscription discount (lead-decisions: 'не в этом цикле')",
+    "Attestation chain validation against AMD root cert",
+    "Multi-region attestation"
+  ]
+}

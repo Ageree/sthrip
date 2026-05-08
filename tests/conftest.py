@@ -36,6 +36,12 @@ from sthrip.db.models import (
     MultiPartyPayment, MultiPartyRecipient,
     # F-4: DB-backed idempotency
     IdempotencyKey,
+    # Phase 2 Sprint 1: auto-purge + warrant canary
+    AuditLog, IpSalt, PurgeMetadata, CanaryState,
+    # Phase 2 Sprint 3: per-agent monthly transaction counter
+    AgentMonthlyStats,
+    # Phase 2 Sprint 4: XMR subscription billing ledger
+    AgentBillingHistory,
 )
 
 # Stable Fernet key for tests (base64url-encoded 32-byte key).
@@ -80,6 +86,15 @@ _COMMON_TEST_TABLES = [
     MultiPartyRecipient.__table__,
     # F-4: DB-backed idempotency
     IdempotencyKey.__table__,
+    # Phase 2 Sprint 1: auto-purge + warrant canary
+    AuditLog.__table__,
+    IpSalt.__table__,
+    PurgeMetadata.__table__,
+    CanaryState.__table__,
+    # Phase 2 Sprint 3: subscription tier monthly counter
+    AgentMonthlyStats.__table__,
+    # Phase 2 Sprint 4: XMR subscription billing ledger
+    AgentBillingHistory.__table__,
 ]
 
 # Modules where get_db must be patched.

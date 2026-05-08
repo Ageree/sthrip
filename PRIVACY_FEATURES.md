@@ -139,3 +139,91 @@ Only the Tor leg of that claim is in the request path today (Sprint 6,
 `16126a5`). Stealth addresses are inherited from the underlying Monero
 wallet RPC (a protocol property, not something Sthrip implements). The
 remaining components are roadmap items in the table above.
+
+## Subscription Billing Retention (Phase 2 Sprint 4 — 2026-05-07)
+
+The `agent_billing_history` ledger records every XMR subscription billing
+event (monthly charge, grace start/retry, expiry downgrade, mid-month
+upgrade, mid-month refund). Each row stores:
+
+* `agent_id` (FK)
+* `month_start` (calendar month)
+* `amount_usd` and `amount_piconero`
+* `rate_applied` (XMR/USD spot rate at the moment of the event)
+* `status` (event type)
+* `tier_at_event` (snapshot of the tier at billing time)
+* `created_at`
+
+This is custodial pricing data. The hub already sees plaintext routed
+amounts in RAM during transfer routing (closed by Phase 3 TEE migration);
+billing is no different in privacy posture, just less frequent. The
+ledger is subject to the **same Phase 1 auto-purge** cron as
+`transactions` and `audit_log`: rows older than `STHRIP_DATA_RETENTION_DAYS`
+(default 60) are deleted on the daily 03:00 UTC sweep. Operators can
+shorten retention but should not lengthen it without an updated
+disclosure.
+
+No bank, card, or off-chain identity is ever stored — billing is
+XMR-native and anonymous beyond the agent's hub identity.
+
+## Phase 2 / Phase 3 — Revenue + TEE migration (2026-05-07)
+
+> Honest framing: every Phase 2/3 mitigation below applies **only when
+> the operator has deployed the matching artefact AND set the
+> corresponding feature flag**. Until those flags are flipped on the
+> production Railway deployment, the runtime privacy posture is
+> unchanged from Phase 1.
+
+### Phase 2 (shipped on `feat/revenue-and-tee`)
+
+| Sprint | Capability | Commit | Operator action required |
+|--------|------------|--------|--------------------------|
+| 1 | Auto-purge tightened to default-on + Ed25519 warrant canary at `/.well-known/canary.txt` | (Phase 1 baseline) | Set `CANARY_SIGNING_KEY`. |
+| 2 | 0.3% / 0.1% commission, atomic with balance write, idempotent on retry | `b1d05a3` | None — flag-free. |
+| 3 | Subscription tier enforcement, self-service upgrade/downgrade endpoints | `dd29657` | None. |
+| 4 | XMR-native subscription billing cron, 7-day grace handling, double-charge guard | `959377a` | Set `STHRIP_BILLING_CRON_ENABLED=true`. |
+
+Privacy posture: commission and billing are **custodial pricing data**.
+The hub already saw plaintext routed amounts during transfer routing
+before Phase 2; commission tracking does not enlarge the runtime
+exposure surface. Subscription billing rides the same Phase 1 auto-purge
+retention cron, so the ledger is bounded by
+`STHRIP_DATA_RETENTION_DAYS` (default 60).
+
+### Phase 3 — TEE migration (Sprints 5-7, shipped pending operator deploy)
+
+| Sprint | Capability | Commit | Operator flag |
+|--------|------------|--------|---------------|
+| 5 | GCP Confidential VM payment-service deploy artefacts (Dockerfile, `setup-vm.sh`, mTLS scaffold, narrow `payment_service.py`) | `ed3821c` | `STHRIP_PAYMENT_VIA_TEE` (set false initially). |
+| 6 | Railway-side `payment_dispatch` proxy with feature flag + automatic local fall-back on TEE 5xx / network failure; HubRoute admin row written Railway-side after TEE confirms (M-1 fix) | `6fee072` | Same flag — flip to `true` post-soak. |
+| 7 (this sprint) | Remote SEV-SNP attestation at `/.well-known/attestation.json` (Ed25519-signed payload), SDK `verify_tee=True` opt-in with image-hash pinning + 5-min cache, operator runbook, stale-on-fetch refusal | `<sprint-7-commit>` | `STHRIP_TEE_ATTESTATION_KEY` (TEE), `STHRIP_TEE_ATTESTATION_PUBKEY` + `STHRIP_TEE_IMAGE_HASH` (SDK callers). |
+
+What this **buys** (when fully deployed and flipped on):
+* Payment hot-path executes inside an AMD SEV-SNP enclave — Railway
+  host operator can no longer read the plaintext routing plan from
+  process memory.
+* SDK callers who opt in (`verify_tee=True`) get a deploy-time pin: if
+  the operator silently rolls a different image, the SDK refuses to
+  send.
+* mTLS + per-request `X-Proxy-Token` between Railway and the TEE; the
+  TEE side runs an `import_guard` that crashes the container at boot
+  if any forbidden module slips in.
+
+What this does **not** buy (residual risk):
+* The Railway proxy still sees plaintext during the routing window —
+  the routing-time exposure narrows from "the whole hub" to "the
+  Railway proxy hop", but does not vanish. A non-custodial product
+  would be the only path to remove it entirely.
+* AMD SEV-SNP primitive / firmware compromise (CVE-class) breaks the
+  guarantee — by design we cannot defend against AMD root-of-trust
+  failures.
+* SDK callers who never set `verify_tee=True` get no attestation
+  benefit. The default is opt-in to preserve back-compat.
+* Until the operator (a) builds and pushes the TEE image, (b) sets
+  `STHRIP_TEE_IMAGE_HASH` on Railway and `STHRIP_PAYMENT_VIA_TEE=true`,
+  and (c) populates `KNOWN_GOOD_HASHES` in the SDK, this row is
+  identical to "Hub runtime memory compromise" in
+  [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+
+The cutover runbook lives at
+[gcp/payment_tee_deploy/CUTOVER.md](gcp/payment_tee_deploy/CUTOVER.md).

@@ -1,0 +1,7 @@
+# mTLS keys and certs MUST NOT enter git history.
+mtls/certs/
+*.pem
+*.key
+*.crt
+*.srl
+*.csr

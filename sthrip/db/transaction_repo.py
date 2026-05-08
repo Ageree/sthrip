@@ -14,6 +14,15 @@ from . import models
 from ._repo_base import _MAX_QUERY_LIMIT
 
 
+class InsufficientBalanceError(ValueError):
+    """Sender does not have enough balance to cover ``amount + fee``.
+
+    Subclass of ``ValueError`` so existing ``except ValueError``-style call
+    sites (e.g. the legacy hub-routing path in api/routers/payments.py)
+    keep working unchanged.
+    """
+
+
 class TransactionRepository:
     """Transaction data access"""
 
@@ -62,6 +71,151 @@ class TransactionRepository:
             description=memo,
         )
         self.db.add(tx)
+        return tx
+
+    def create_with_commission(
+        self,
+        tx_hash: str,
+        network: str,
+        from_agent_id: UUID,
+        to_agent_id: UUID,
+        amount_piconero: int,
+        token: str = "XMR",
+        payment_type: str = "hub_routing",
+        status: str = "confirmed",
+        memo: Optional[str] = None,
+        metadata: Optional[Dict] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> models.Transaction:
+        """Atomic transfer + commission deduction.
+
+        Phase 2 Sprint 2 hot-path write:
+
+        1. **Idempotency check first** — if ``idempotency_key`` matches an
+           existing IdempotencyKey row, return the cached Transaction and
+           DO NOT re-deduct the fee. Prevents double-charge on client retries.
+        2. **Lock sender balance** with ``SELECT ... FOR UPDATE`` (or SQLite
+           best-effort row read) so concurrent transfers serialize.
+        3. **Compute commission** via ``fee_calculator.compute_fee`` using
+           the cached or freshly-read ``Agent.tier``.
+        4. **Verify** ``balance.available >= amount + fee``. If not, raise
+           ``InsufficientBalanceError`` — no partial mutation.
+        5. **Deduct ``amount + fee``** from sender, **credit ``amount``** to
+           receiver (full amount, no skim).
+        6. **Insert** Transaction row + FeeCollection row. All in the same
+           DB transaction, so a failure rolls everything back.
+
+        ``amount_piconero`` is the integer piconero amount (1 XMR = 10**12
+        piconero). Stored in ``Transaction.amount`` as Decimal.
+
+        NOTE: This method does NOT call ``commit()`` — the caller controls
+        commit/rollback via the surrounding session's ``with`` block.
+        """
+        # Lazy imports to avoid import cycles (services -> db -> services).
+        from sthrip.services.fee_calculator import compute_fee, rate_bps_for_tier
+        from sthrip.services.tier_cache import get_tier
+        from sthrip.db.balance_repo import BalanceRepository
+        from sthrip.db.enums import FeeCollectionStatus, PaymentType
+
+        if amount_piconero < 0:
+            raise ValueError(
+                f"amount_piconero must be non-negative, got {amount_piconero}"
+            )
+
+        # 1. Idempotency replay check — return cached Transaction without
+        # re-deducting fee. Match on tx_hash since the hub-routing path
+        # derives tx_hash deterministically from idempotency_key.
+        if idempotency_key is not None:
+            existing = self.db.query(models.Transaction).filter(
+                models.Transaction.tx_hash == tx_hash
+            ).first()
+            if existing is not None:
+                return existing
+
+        # 2. Look up sender tier (request-cached; falls back to direct DB read).
+        tier = get_tier(from_agent_id, self.db)
+
+        # 3. Compute commission in piconero (integer math, deterministic).
+        fee_piconero = compute_fee(amount_piconero, tier)
+
+        # 4. BalanceRepository stores balances as XMR Decimal (Numeric(20, 12))
+        # while the fee calculator works in integer piconero (avoids float
+        # drift on dust). Convert at the boundary so the comparisons and the
+        # stored Transaction.amount / Transaction.fee values align with the
+        # existing XMR-scale balance ledger.
+        PICO = Decimal(10) ** 12
+        amount_xmr = Decimal(amount_piconero) / PICO
+        fee_xmr = Decimal(fee_piconero) / PICO
+        total_xmr = amount_xmr + fee_xmr
+
+        balance_repo = BalanceRepository(self.db)
+        # _get_for_update applies SELECT ... FOR UPDATE on Postgres; on SQLite
+        # falls back to plain read (acceptable for tests; the test suite is
+        # single-process).
+        sender_balance = balance_repo._get_for_update(from_agent_id, token)
+        available = sender_balance.available or Decimal("0")
+        if available < total_xmr:
+            raise InsufficientBalanceError(
+                f"Insufficient balance: available={available} XMR, "
+                f"required={total_xmr} XMR (amount={amount_xmr} + fee={fee_xmr})"
+            )
+
+        # 5. Mutate balances. Sender pays amount + fee; receiver gets
+        # amount only — fee is the hub's revenue.
+        sender_balance.available = available - total_xmr
+        sender_balance.updated_at = datetime.now(timezone.utc)
+        balance_repo.credit(to_agent_id, amount_xmr, token)
+
+        # 6. Create Transaction + FeeCollection rows.
+        tx = models.Transaction(
+            tx_hash=tx_hash,
+            network=network,
+            from_agent_id=from_agent_id,
+            to_agent_id=to_agent_id,
+            amount=amount_xmr,
+            token=token,
+            payment_type=payment_type,
+            status=status,
+            fee=fee_xmr,
+            fee_collected=fee_xmr,
+            memo=memo,
+            metadata=metadata or {},
+        )
+        from sthrip.services.payment_envelope_writer import apply_envelope
+        apply_envelope(
+            tx,
+            from_agent_id=from_agent_id,
+            to_agent_id=to_agent_id,
+            amount=amount_xmr,
+            description=memo,
+        )
+        self.db.add(tx)
+        self.db.flush()
+
+        now = datetime.now(timezone.utc)
+        fee_row = models.FeeCollection(
+            source_type=PaymentType.FEE_COLLECTION.value,
+            source_id=tx.id,
+            amount=fee_xmr,
+            token=token,
+            status=FeeCollectionStatus.PENDING,
+            payer_agent_id=from_agent_id,
+            amount_piconero=fee_piconero,
+            rate_applied_bps=rate_bps_for_tier(tier),
+            transaction_ref=tx_hash,
+            collected_at=now,
+        )
+        self.db.add(fee_row)
+        self.db.flush()
+
+        # Phase 2 Sprint 3: increment the sender's monthly transaction
+        # counter for tier-limit enforcement. Same DB transaction as the
+        # transfer + fee, so rollback rewinds all three together.
+        # System-op writers (deposit_monitor, recurring cron, etc.) call the
+        # legacy ``create()`` and intentionally do NOT bump this counter.
+        from sthrip.services.agent_stats_service import record_transaction
+        record_transaction(from_agent_id, self.db)
+
         return tx
 
     def get_by_hash(self, tx_hash: str) -> Optional[models.Transaction]:

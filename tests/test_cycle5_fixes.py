@@ -142,15 +142,40 @@ class TestDuplicateRouteNoBalanceMutation:
     """Idempotent duplicate must NOT deduct/credit balances again."""
 
     def test_execute_hub_transfer_checks_duplicate_before_balance(self):
-        """_execute_hub_transfer must check for duplicate route BEFORE balance mutations."""
+        """_execute_hub_transfer must check for duplicate route BEFORE balance mutations.
+
+        Phase 2 Sprint 2 cutover: balance mutations now happen inside
+        ``TransactionRepository.create_with_commission``. The invariant is
+        unchanged — ``create_hub_route`` (which short-circuits on duplicate)
+        must run before any commission/balance work.
+        """
         from api.routers.payments import _execute_hub_transfer
         source = inspect.getsource(_execute_hub_transfer)
-        # The create_hub_route call (which returns duplicate) must come BEFORE deduct/credit
-        deduct_pos = source.find("balance_repo.deduct")
-        create_route_pos = source.find("create_hub_route")
-        assert create_route_pos < deduct_pos, (
-            "_execute_hub_transfer must check for duplicate route BEFORE "
-            "calling balance_repo.deduct to prevent double-credit"
+        # Strip the docstring so we only inspect actual code; the docstring
+        # may mention symbol names in a different order than the code uses.
+        import ast
+        mod = ast.parse(source)
+        fn = mod.body[0]
+        if (
+            isinstance(fn.body[0], ast.Expr)
+            and isinstance(fn.body[0].value, ast.Constant)
+            and isinstance(fn.body[0].value.value, str)
+        ):
+            fn.body = fn.body[1:]
+        code_only = ast.unparse(fn)
+
+        commission_pos = code_only.find("create_with_commission")
+        create_route_pos = code_only.find("create_hub_route")
+        duplicate_check_pos = code_only.find("duplicate")
+        assert create_route_pos != -1
+        assert commission_pos != -1
+        assert duplicate_check_pos != -1
+        assert create_route_pos < commission_pos, (
+            "create_hub_route (duplicate guard) must run before "
+            "create_with_commission to prevent double-deduct"
+        )
+        assert duplicate_check_pos < commission_pos, (
+            "duplicate-return short-circuit must run before commission deduct"
         )
 
 
