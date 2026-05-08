@@ -54,7 +54,6 @@ setup(
         
         # Crypto
         "pycryptodome>=3.18.0",
-        "hashlib2>=1.1.0",
         
         # Monitoring
         "psutil>=5.9.0",
